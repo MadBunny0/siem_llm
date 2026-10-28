@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-09-08T10:30:00Z",
+  "rule": {
+    "id": "3003",
+    "level": 12,
+    "description": "Brute force attack detected on SSH service",
+    "groups": ["authentication_failed", "bruteforce", "sshd"]
+  },
+  "agent": {"id": "004", "name": "production-db-01"},
+  "data": {"srcip": "45.33.22.11", "dstuser": "root"},
+  "full_log": "Failed password for root from 45.33.22.1 port 22 ssh2 - 15 attempts"
+}

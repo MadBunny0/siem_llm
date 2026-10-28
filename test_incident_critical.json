@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-09-08T10:45:00Z",
+  "rule": {
+    "id": "4004",
+    "level": 15,
+    "description": "Privilege escalation detected via sudo",
+    "groups": ["privilege_escalation", "critical", "attack"]
+  },
+  "agent": {"id": "005", "name": "admin-server-01"},
+  "data": {"srcip": "10.0.0.200", "dstuser": "admin", "command": "sudo -u root /bin/bash"},
+  "full_log": "USER=developer COMMAND=sudo -u root /bin/bash"
+}

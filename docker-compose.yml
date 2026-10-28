@@ -1,0 +1,84 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: siem
+      POSTGRES_USER: siem
+      POSTGRES_PASSWORD: siem
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U siem -d siem"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  db-init:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "app.init_db"]
+    restart: "no"
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: ["pull", "qwen2.5:3b"]
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2.5:3b
+      CORRELATION_WINDOW_MINUTES: 5
+      AUTO_RESPONSE: "false"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      ollama-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=2)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  ollama_data:

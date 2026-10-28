@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-09-08T10:00:00Z",
+  "rule": {
+    "id": "1001",
+    "level": 3,
+    "description": "User logged in successfully from new IP",
+    "groups": ["authentication_success", "access"]
+  },
+  "agent": {"id": "002", "name": "web-server-01"},
+  "data": {"srcip": "10.0.1.100", "dstuser": "john.doe"},
+  "full_log": "Accepted password for john.doe from 10.0.1.100 port 22 ssh2"
+}

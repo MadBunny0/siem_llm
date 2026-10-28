@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-09-07T17:00:00Z",
+  "rule": {
+    "id": "5710",
+    "level": 10,
+    "description": "sshd: Attempt to login using a non-existent user.",
+    "groups": ["authentication_failed", "sshd"]
+  },
+  "agent": {"id": "001", "name": "test-linux"},
+  "data": {"srcip": "192.0.2.10", "dstuser": "admin"},
+  "full_log": "Failed password for invalid user admin from 192.0.2.10"
+}
