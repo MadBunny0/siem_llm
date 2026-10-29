@@ -22,14 +22,20 @@ def normalize_wazuh(alert: Dict[str, Any]) -> Dict[str, Any]:
             timestamp = datetime.now(timezone.utc)
 
     source = agent.get("name") or agent.get("id") or data.get("srcip") or "wazuh"
-    event_type = (
-        rule.get("groups", ["security_event"])[0]
-        if rule.get("groups") else "security_event"
-    )
+    user = data.get("dstuser") or data.get("user") or agent.get("username")
+    src_ip = data.get("srcip") or data.get("src_ip")
+    level = rule.get("level", 3)
+    groups = rule.get("groups") or []
+    event_type = groups[0] if groups else "security_event"
 
     return {
         "timestamp": timestamp,
         "source": str(source),
         "event_type": str(event_type),
+        "user": str(user) if user else None,
+        "src_ip": str(src_ip) if src_ip else None,
+        "asset_id": None,  # устанавливается модулем оценки риска на основе Asset
+        "criticality_level": int(level) if isinstance(level, (int, str)) else 3,
+        "raw_message": str(alert.get("full_log")) if alert.get("full_log") else None,
         "raw_data": alert,
     }

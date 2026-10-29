@@ -9,11 +9,13 @@ ALLOWED_ACTIONS = {
 }
 
 def validate_recommendation(severity: str, recommendation: dict) -> dict:
-    action = recommendation.get("recommended_action", "monitor")
-    allowed = action in ALLOWED_ACTIONS.get(severity, {"monitor"})
+    action = recommendation.get("recommended_action") or recommendation.get("action") or "monitor"
+    allowed_actions = ALLOWED_ACTIONS.get(severity.lower(), {"monitor"})
+    allowed = action in allowed_actions
+    safe_action = action if allowed else "monitor"
     return {
         "approved": allowed,
-        "action": action if allowed else "monitor",
+        "action": safe_action,
         "reason": (
             "Действие разрешено политикой"
             if allowed else
