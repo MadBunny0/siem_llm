@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Analysis, Event, Incident
+from app.models import Analysis, Asset, Event, Incident
 from app.schemas import IncidentOut, WazuhAlert
 from app.services.audit import audit
 from app.services.correlation import create_or_update_incident, find_related_events
@@ -24,29 +24,46 @@ def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
         timestamp=normalized["timestamp"],
         source=normalized["source"],
         event_type=normalized["event_type"],
-        raw_data=normalized["raw_data"]
+        user=normalized.get("user"),
+        src_ip=normalized.get("src_ip"),
+        asset_id=normalized.get("asset_id"),
+        criticality_level=normalized.get("criticality_level"),
+        raw_message=normalized.get("raw_message"),
+        raw_data=normalized["raw_data"],
     )
 
     db.add(event)
     db.flush()
 
     related = find_related_events(db, event)
-    incident = create_or_update_incident(db, related)
 
-    score, severity = calculate_risk([
-        {"raw_data": e.raw_data} for e in related
-    ])
+    # расчет риска с учетом критичности активов
+    risk_events = [
+        {
+            "raw_data": e.raw_data,
+            "asset_criticality": _get_asset_criticality(db, e.asset_id),
+        }
+        for e in related
+    ]
+    score, severity = calculate_risk(risk_events)
+    incident = create_or_update_incident(db, related, risk_score=score)
     incident.severity = severity
     db.commit()
     db.refresh(incident)
 
-    audit("incident_created_or_updated", {
-        "incident_id": incident.id,
-        "event_id": event.id,
-        "related_events": len(related),
-        "risk_score": score,
-        "severity": severity,
-    })
+    audit(
+        "incident_created_or_updated",
+        {
+            "incident_id": incident.id,
+            "event_id": event.id,
+            "related_events": len(related),
+            "risk_score": score,
+            "severity": severity,
+        },
+        db=db,
+        incident_id=incident.id,
+        event_id=event.id,
+    )
 
     return {
         "event_id": event.id,
@@ -55,6 +72,13 @@ def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
         "risk_score": score,
         "severity": severity,
     }
+
+
+def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
+    if asset_id is None:
+        return None
+    asset = db.get(Asset, asset_id)
+    return asset.criticality if asset else None
 
 
 @router.get("/incidents", response_model=list[IncidentOut])
@@ -75,16 +99,20 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
         "title": incident.title,
         "description": incident.description,
         "severity": incident.severity,
+        "risk_score": incident.risk_score,
         "events": [
             {
                 "id": e.id,
                 "timestamp": e.timestamp,
                 "source": e.source,
                 "event_type": e.event_type,
+                "user": e.user,
+                "src_ip": e.src_ip,
                 "raw_data": e.raw_data,
             }
             for e in incident.events
         ],
+        "incident_id": incident.id,
     }
 
     try:
@@ -105,7 +133,7 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
         recommendation["reason"] = recommendation["explanation"]
 
     validation = validate_recommendation(incident.severity, recommendation)
-    execution = execute_playbook(validation["action"], context)
+    execution = execute_playbook(validation["action"], context, db)
 
     analysis = Analysis(
         incident_id=incident.id,
@@ -121,12 +149,17 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
     incident.status = "in_progress"
     db.commit()
 
-    audit("llm_analysis_completed", {
-        "incident_id": incident.id,
-        "recommendation": recommendation,
-        "validation": validation,
-        "execution": execution,
-    })
+    audit(
+        "llm_analysis_completed",
+        {
+            "incident_id": incident.id,
+            "recommendation": recommendation,
+            "validation": validation,
+            "execution": execution,
+        },
+        db=db,
+        incident_id=incident.id,
+    )
 
     return {
         "incident_id": incident.id,
