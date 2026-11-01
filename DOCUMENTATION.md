@@ -97,7 +97,7 @@
 | **`users`** | Пользователи системы (аналитики SOC): логин, хеш пароля, роль, дата создания. |
 | **`assets`** | Защищаемые активы (серверы, БД, сетевые устройства): название, описание, **критичность** (`critical`/`high`/`medium`/`low`). **Именно критичность актива влияет на итоговый риск** — атака на критический сервер даёт максимальный балл. |
 | **`events`** | Нормализованные события из Wazuh: `timestamp`, `source`, `event_type`, `user`, `src_ip`, `asset_id`, `criticality_level`, `raw_message`, `raw_data` (полный исходный JSON для расследований). Связь «многие ко многим» с инцидентами. |
-| **`incidents`** | Инциденты: `title`, `description`, `severity` (low/medium/high/critical), `status`, `asset_id`, `attack_type`, `risk_score`, `analyst_id`, связь с событиями/анализами/ответными действиями. |
+| **`incidents`** | Инциденты: `title`, `description`, `severity` (low/medium/high/critical), `status`, `asset_id`, `attack_type`, `risk_score`, `analyst_id`, связь с событиями/анализами/ответными действиями. API возвращает дополнительно `asset` (с критичностью) для каждого инцидента. |
 | **`analyses`** | Результаты анализа LLM: инцидент, модель, промпт, ответ модели (рекомендация + валидация + выполнение). |
 | **`correlation_rules`** | **Правила корреляции из БД** (ключевое нововведение): `name`, `conditions` (JSON: поле, оператор `eq/neq/in/like`, значение), `time_window_minutes`, `priority`, `is_active`. Раньше корреляция была жёсткой (`src_ip` + `dstuser`), теперь — **настраиваемая без изменения кода**. |
 | **`playbooks`** | Сценарии автоматизированного реагирования: `name`, `description`, `trigger_conditions`, `allowed_actions`, `steps` (порядок операций, например блокировка IP через фаервол), `priority`, `is_active`. |
