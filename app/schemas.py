@@ -1,5 +1,17 @@
+"""Pydantic-схемы для REST API."""
+
 from datetime import datetime
 from pydantic import BaseModel, Field
+
+
+class AssetOut(BaseModel):
+    """Ответ о защищаемом активе (для инцидентов)."""
+
+    id: int
+    name: str
+    criticality: str
+    network_segment: str | None = None
+
 
 class WazuhAlert(BaseModel):
     timestamp: str | None = None
@@ -8,12 +20,21 @@ class WazuhAlert(BaseModel):
     data: dict = Field(default_factory=dict)
     full_log: str | None = None
 
+from app.models import Asset  # noqa: F401
+
+
 class IncidentOut(BaseModel):
+    """Ответ о инциденте (включая риск, тип атаки, актив)."""
+
     id: int
     title: str
     description: str
     severity: str
     status: str
+    risk_score: int
+    attack_type: str | None
+    asset_id: int | None
+    asset: AssetOut | None = None
     created_at: datetime
     class Config:
         from_attributes = True

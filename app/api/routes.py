@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Analysis, Asset, Event, Incident
-from app.schemas import IncidentOut, WazuhAlert
+from app.schemas import AssetOut, IncidentOut, WazuhAlert
 from app.services.audit import audit
 from app.services.correlation import create_or_update_incident, find_related_events
 from app.services.llm import analyze_incident
@@ -83,9 +83,16 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
 
 @router.get("/incidents", response_model=list[IncidentOut])
 def incidents(db: Session = Depends(get_db)):
-    return list(db.scalars(
+    items = list(db.scalars(
         select(Incident).order_by(Incident.created_at.desc())
     ).all())
+    return [
+        {
+            **incident.model_dump(exclude={'asset'}),
+            "asset": AssetOut.model_validate(incident.asset) if incident.asset else None,
+        }
+        for incident in items
+    ]
 
 
 @router.post("/incidents/{incident_id}/analyze")
