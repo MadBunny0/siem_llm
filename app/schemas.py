@@ -7,6 +7,20 @@ from pydantic import BaseModel, Field
 class AssetOut(BaseModel):
     """Ответ о защищаемом активе (для инцидентов)."""
 
+
+class NotificationOut(BaseModel):
+    """Ответ об ITSM-уведомлении (лог отправки)."""
+
+    id: int
+    event_type: str
+    incident_id: int | None
+    recipient: str
+    channel: str
+    message: str
+    payload: dict | None = None
+    status: str
+    created_at: datetime
+
     id: int
     name: str
     criticality: str

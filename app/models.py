@@ -91,6 +91,27 @@ class Asset(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    # связь с инцидентами — один актив может порождать несколько инцидентов
+    incidents: Mapped[list["Incident"]] = relationship(back_populates="asset")
+
+
+# ---------------------------------------------------------------------------
+# Сущность Notification — ITSM-уведомления аналитикам SOC
+# ---------------------------------------------------------------------------
+class Notification(Base):
+    __tablename__ = "notification_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(100))  # incident_created, incident_analyzed, action_executed, correlation_triggered
+    incident_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"))
+    recipient: Mapped[str] = mapped_column(String(255))  # email аналитика / Slack-канал
+    channel: Mapped[str] = mapped_column(String(50))  # email, slack, teams
+    message: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, sent, failed
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    metadata: Mapped[dict | None] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

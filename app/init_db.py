@@ -8,12 +8,68 @@ from app import models  # noqa: F401 - registers all SQLAlchemy models
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     print("Database schema initialized successfully.", flush=True)
+    _seed_default_assets()
     _seed_default_correlation_rules()
     _seed_default_playbooks()
 
 
+def _seed_default_assets() -> None:
+    """Создание базовых защищаемых активов (согласно Главе 3.2)."""
+    from sqlalchemy.orm import Session
+
+    assets = [
+        {
+            "name": "mail-prod-01",
+            "type": "server",
+            "criticality": "critical",
+            "network_segment": "DMZ",
+            "description": "Продуктовый почтовый сервер",
+            "ip_addresses": "10.20.30.10",
+        },
+        {
+            "name": "db-primary-01",
+            "type": "database",
+            "criticality": "critical",
+            "network_segment": "internal",
+            "description": "Основной сервер баз данных (PostgreSQL)",
+            "ip_addresses": "10.20.40.5",
+        },
+        {
+            "name": "fw-edge-01",
+            "type": "network_device",
+            "criticality": "high",
+            "network_segment": "edge",
+            "description": "Периметровый фаервол",
+            "ip_addresses": "10.0.0.1",
+        },
+        {
+            "name": "wks-finance-12",
+            "type": "workstation",
+            "criticality": "medium",
+            "network_segment": "internal",
+            "description": "АРМ финансового отдела",
+            "ip_addresses": "10.20.50.12",
+        },
+        {
+            "name": "app-web-01",
+            "type": "application",
+            "criticality": "high",
+            "network_segment": "internal",
+            "description": "Веб-сервер клиентского приложения",
+            "ip_addresses": "10.20.60.20",
+        },
+    ]
+    with Session(engine) as session:
+        for asset_data in assets:
+            stmt = select(models.Asset).where(models.Asset.name == asset_data["name"])
+            existing = session.scalar(stmt)
+            if not existing:
+                asset = models.Asset(**asset_data)
+                session.add(asset)
+        session.commit()
+
+
 def _seed_default_correlation_rules() -> None:
-    """Создание базовых правил корреляции, если их ещё нет (согласно Главе 3.2)."""
     from sqlalchemy.orm import Session
     rules = [
         {

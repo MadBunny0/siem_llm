@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import Playbook, ResponseAction
+from app.services.notification import notify_analyst
 
 logger = logging.getLogger("playbook")
 
@@ -52,6 +53,8 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
             db.add(resp_action)
             db.flush()
             result["response_action_id"] = resp_action.id
+            # ITSM-уведомление аналитикам о выполненном ответном действии
+            notify_analyst(db, None, "action_executed")
         return result
 
     logger.warning("CONTROLLED RESPONSE: action=%s context=%s", action, context)

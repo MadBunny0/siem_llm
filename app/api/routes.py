@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Analysis, Asset, Event, Incident
-from app.schemas import AssetOut, IncidentOut, WazuhAlert
+from app.models import Analysis, Asset, Event, Incident, Notification
+from app.schemas import AssetOut, IncidentOut, NotificationOut, WazuhAlert
 from app.services.audit import audit
 from app.services.correlation import create_or_update_incident, find_related_events
 from app.services.llm import analyze_incident
@@ -155,6 +155,10 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
     db.add(analysis)
     incident.status = "in_progress"
     db.commit()
+    db.refresh(incident)
+
+    # ITSM-уведомление аналитикам о результатах анализа LLM
+    notify_analyst(db, incident, "incident_analyzed")
 
     audit(
         "llm_analysis_completed",
@@ -174,6 +178,13 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
         "validation": validation,
         "execution": execution,
     }
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def notifications(db: Session = Depends(get_db)):
+    return list(db.scalars(
+        select(Notification).order_by(Notification.created_at.desc())
+    ).all())
 
 
 @router.get("/health")
