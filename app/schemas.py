@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field
 class AssetOut(BaseModel):
     """Ответ о защищаемом активе (для инцидентов)."""
 
+    id: int
+    name: str
+    criticality: str
+    network_segment: str | None = None
+
 
 class NotificationOut(BaseModel):
     """Ответ об ITSM-уведомлении (лог отправки)."""
@@ -20,11 +25,6 @@ class NotificationOut(BaseModel):
     payload: dict | None = None
     status: str
     created_at: datetime
-
-    id: int
-    name: str
-    criticality: str
-    network_segment: str | None = None
 
 
 class WazuhAlert(BaseModel):
