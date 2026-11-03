@@ -32,7 +32,8 @@ def _ensure_schema_updates() -> None:
         # индексы под корреляцию (stage-11: окно + совпадение атрибутов в SQL)
         "CREATE INDEX IF NOT EXISTS ix_events_timestamp ON events (timestamp)",
         "CREATE INDEX IF NOT EXISTS ix_events_src_ip ON events (src_ip)",
-        "CREATE INDEX IF NOT EXISTS ix_events_user ON events (user)",
+        # "user" — зарезервированное слово Postgres (без кавычек парсится как функция user())
+        'CREATE INDEX IF NOT EXISTS ix_events_user ON events ("user")',
         "CREATE INDEX IF NOT EXISTS ix_events_asset_id ON events (asset_id)",
     ]
     with engine.begin() as conn:
