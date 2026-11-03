@@ -84,6 +84,18 @@ services:
       api:
         condition: service_healthy
 
+  # Веб-интерфейс PostgreSQL (stage-12): http://localhost:8080
+  # Сервер: db · Пользователь: siem · Пароль: siem · База: siem
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: db
+    depends_on:
+      db:
+        condition: service_healthy
+
   # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
   # Обычный `docker compose up` его не поднимает. Настройка интеграции — WAZUH_INTEGRATION.md
   # Автотесты (78) внутри контейнера — локальный Python не нужен (stage-11):

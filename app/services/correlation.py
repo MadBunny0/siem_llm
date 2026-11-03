@@ -206,6 +206,11 @@ def create_or_update_incident(db: Session, events, risk_score: int = 0) -> Incid
             for e in events:
                 if e not in incident.events:
                     incident.events.append(e)
+            # описание актуализируется под фактическое число событий
+            # (stage-12: раньше оставалось от момента создания — расхождение с таймлайном)
+            incident.description = (
+                f"Инцидент сформирован на основе {len(incident.events)} связанных событий."
+            )
             return incident
 
     first = events[0]

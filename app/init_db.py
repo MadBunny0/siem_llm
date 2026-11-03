@@ -165,8 +165,8 @@ def _seed_default_correlation_rules() -> None:
                 {"field": "src_ip", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 10,
-            "min_events": 4,
-            "priority": 2,
+            "min_events": 5,  # выше brute_force: 4 события одной учётки = brute, 5+ разных = spraying
+            "priority": 3,  # spraying специфичнее brute_force — детерминированно перебивает его
             "is_active": True,
         },
         {
