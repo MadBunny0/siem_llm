@@ -48,11 +48,14 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-03 (после stage-07)
+## 4. Статус на 2026-11-03 (после stage-08)
 
-- **stage-07 влит в `main`** (PR #5, merge-коммит `506229a`). Ветка `stage-07-ch3-gap-fixes` удалена (локально и на GitHub).
-- Git вычищен: все служебные ветки (stage-02…stage-07, hotfixes/*) удалены как полностью слитые; остались только `main` (локально и на GitHub). Remote — `siem_llm` (GitHub MadBunny0/siem_llm).
-- Новые доработки ведутся от `main`; следующий этап — stage-08 (P2: тесты → UI → CRUD → Wazuh-стенд).
+- **stage-07 влит в `main`** (PR #5, `506229a`), ветки вычищены. Текущая рабочая ветка: **`stage-08-p2-tests-ui-crud`** (от main), коммиты: `3116110` бэкенд-CRUD, `06b9d79` тесты, `9d72843` UI. PR ещё не создавался.
+- **Stage-08 (P2) сделан:**
+  - Тесты: +27 (test_llm — мок Ollama через фейковый httpx.AsyncClient; test_assets; test_routes — TestClient + sqlite StaticPool, патч `app.api.routes.analyze_incident`). Итого 57. **Не запускались** (Python на ПК нет).
+  - Бэкенд: CRUD `/correlation-rules` и `/playbooks` (POST/PUT/DELETE, 409 при удалении playbook с response_actions); `GET /incidents/{id}` (детально: events+analyses); `PATCH /incidents/{id}/status` (new/in_progress/closed, 422 на иное); `GET /audit-logs?limit`. Схемы: EventOut, IncidentDetailOut, IncidentStatusIn, AuditLogOut, CorrelationRuleIn/Out, PlaybookIn/Out.
+  - UI (main.jsx ~1580 строк, styles.css +блок): 6 вкладок (Инциденты / Анализы / Уведомления / Аудит / Правила / Playbooks); детальная карточка инцидента (таймлайн событий, история анализов, смена статуса, плашка «Требуется подтверждение» + кнопка confirm-action — проверяет и `response_raw` сохранённых анализов); CRUD-формы правил (конструктор условий eq/neq/in/like) и playbooks (чекбоксы действий, steps через JSON).
+- **Осталось из P2:** Wazuh в docker-compose / стенд VirtualBox; (опционально) Alembic, авторизация. **Проверка запуском** (`pytest`, `docker compose up --build`) — на ПК с инструментами; сборка фронтенда (Node) тоже не проверялась.
 - **Запуск и тесты на этом ПК запрещены** (нет инструментов; Python отсутствует — синтаксическая проверка инструментами не проводилась, только вычитка). Проверка — только чтение кода.
 - **Stage-07 реализован:** все P0-баги закрыты, основная часть P1 выполнена (детали — `GAP_ANALYSIS_CH3.md`, раздел 9).
 
@@ -72,8 +75,10 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 5. Следующие шаги (roadmap)
 
-1. P2 по списку выше, по приоритету: тесты → UI → CRUD → Wazuh-стенд.
-2. После Главы 3 — переход к Главе 4 (реализация и эксперименты; отдельное обсуждение).
+1. Пользователь: PR из `stage-08-p2-tests-ui-crud` → main; после вливания почистить ветку.
+2. Проверить запуском на ПК с инструментами: `pytest` (57 тестов), `docker compose up --build`, сборка фронтенда.
+3. Остаток P2: Wazuh в docker-compose (профиль) / стенд VirtualBox; опционально Alembic + авторизация.
+4. После Главы 3 — переход к Главе 4 (реализация и эксперименты; отдельное обсуждение).
 
 ## 6. Соглашения по работе
 
@@ -89,3 +94,4 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 - 2026-11-03 — создан: первичный gap-анализ Главы 3, баги P0, roadmap.
 - 2026-11-03 — stage-07: реализованы P0-фиксы и основная часть P1 (см. раздел 4); обновлён статус, roadmap сокращён до P2.
+- 2026-11-03 — stage-08: P2 выполнен (тесты, CRUD API, UI-вкладки) силами субагентов + ревью; ветка `stage-08-p2-tests-ui-crud`, ожидает PR.
