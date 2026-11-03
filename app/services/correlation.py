@@ -14,18 +14,46 @@ def load_correlation_rules(db: Session) -> list[CorrelationRule]:
     ).all())
 
 
+def _event_type_values(event: Event) -> list[str]:
+    """Все значения типа события: event_type + группы правила Wazuh.
+
+    Реальные алерты Wazuh аккумулируют группы служебными тегами вперёд
+    (например ["syslog", "sshd", "authentication_failed"]), таксономическая
+    группа оказывается последней, а event_type у нас = groups[0] (§3.3.1).
+    Поэтому условия правил сопоставляются со всем набором групп (stage-11) —
+    иначе seed-правила не срабатывали бы на настоящем стенде.
+    """
+    values = []
+    if event.event_type:
+        values.append(str(event.event_type))
+    groups = (event.raw_data or {}).get("rule", {}).get("groups") or []
+    values.extend(str(g) for g in groups if g)
+    return values
+
+
 def match_condition(event: Event, condition: dict) -> bool:
     """Проверка одного условия правила корреляции."""
     field = condition.get("field")
     operator = condition.get("operator", "eq")
     expected = condition.get("value")
 
+    if field == "event_type":
+        values = _event_type_values(event)
+        if operator == "like":
+            return any(str(expected) in v for v in values)
+        if operator == "eq":
+            return any(v == str(expected) for v in values)
+        if operator == "in":
+            expected_list = [str(v) for v in expected]
+            return any(v in expected_list for v in values)
+        if operator == "neq":
+            return all(v != str(expected) for v in values)
+        return False
+
     if field == "src_ip":
         actual = event.src_ip
     elif field == "user":
         actual = event.user
-    elif field == "event_type":
-        actual = event.event_type
     elif field == "criticality":
         actual = event.criticality_level
     else:
@@ -156,7 +184,12 @@ def evaluate_correlation(db: Session, event: Event) -> tuple[CorrelationRule | N
             confidence = sum(match_factor_count(event, e) for e in related) / (3 * len(related))
         else:
             confidence = 1.0  # одиночное событие — корреляция не разбавляет оценку
-        if best_rule is None or rule.priority >= best_rule.priority:
+        # выбор правила: наивысший приоритет; при равном приоритете — то,
+        # что дало больше связанных событий (детерминированный выбор для демо)
+        if (
+            best_rule is None
+            or (rule.priority, len(related)) > (best_rule.priority, len(best_related))
+        ):
             best_rule = rule
             best_related = related
             best_confidence = confidence

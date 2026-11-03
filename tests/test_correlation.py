@@ -377,3 +377,42 @@ def test_evaluate_correlation_min_events_threshold(db):
     hit_rule, _related, confidence = evaluate_correlation(db, event)
     assert hit_rule is None
     assert confidence == 0.0
+
+
+def test_event_type_matches_real_wazuh_group_ordering(db):
+    """Реальный алерт Wazuh несёт группы служебными тегами вперёд:
+    ["syslog", "sshd", "authentication_failed"] → event_type = "syslog".
+    Условие по таксономической группе должно срабатывать по всему набору групп
+    (stage-11), иначе seed-правила не работают на настоящем стенде."""
+    from app.services.correlation import evaluate_correlation, match_condition
+
+    event = Event(
+        timestamp=datetime.now(timezone.utc),
+        source="wazuh",
+        event_type="syslog",  # groups[0] реального алерта Wazuh
+        user="admin",
+        src_ip="192.168.1.100",
+        criticality_level=5,
+        raw_message="Failed password for admin from 192.168.1.100",
+        raw_data={"rule": {"groups": ["syslog", "sshd", "authentication_failed"]}},
+    )
+    db.add(event)
+    db.flush()
+
+    condition = {"field": "event_type", "operator": "like", "value": "authentication_failed"}
+    assert match_condition(event, condition) is True
+
+    db.add(
+        CorrelationRule(
+            name="brute_rule",
+            description="test",
+            conditions=[{"field": "event_type", "operator": "like", "value": "authentication_failed"}],
+            time_window_minutes=5,
+            min_events=1,
+            is_active=True,
+        )
+    )
+    db.flush()
+    hit_rule, related, confidence = evaluate_correlation(db, event)
+    assert hit_rule is not None and hit_rule.name == "brute_rule"
+    assert len(related) == 1  # порог пройден самим событием

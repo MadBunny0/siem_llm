@@ -54,6 +54,40 @@ docker compose --profile wazuh exec wazuh-manager \
 
 ---
 
+## Демо-матрица: seed-правила корреляции ↔ техники MITRE ATT&CK ↔ стенд
+
+Seed-правила сопоставляются с **всем набором групп** алерта Wazuh (реальные алерты несут
+служебные теги вперёд: `["syslog", "sshd", "authentication_failed"]`), поэтому срабатывают
+на настоящих событиях, а не только на ручных тестовых.
+
+| Seed-правило (порог) | Техника MITRE | Wazuh-правила (примеры) | Как воспроизвести на стенде | Из коробки? |
+|---|---|---|---|---|
+| `brute_force_attempts` (3 за 5 мин) | T1110 Метод перебора | 5710, 5712, 5716 (sshd), 5503 (PAM) | `hydra -l root -P rockyou.txt <IP_target> ssh -t 4` либо серия `ssh root@<IP>` с неверным паролем | ✅ |
+| `password_spraying` (4 за 10 мин) | T1110.003 Распыление паролей | те же (много разных `dstuser` с одного `srcip`) | `hydra -L users.txt -p Password1 <IP_target> ssh` | ✅ |
+| `repeated_scan` (2 за 10 мин) | T1046 Изучение сетевых служб | 5722 «sshd: Possible attack…», любые события с `srcip` | `nmap -sT <IP_target>` | ✅ |
+| `web_attack` (2 за 5 мин) | T1190 Недостатки в общедоступном приложении | 31100–31151 (Apache/nginx: sqlinjection, xss; группы `web,attack`) | `curl "http://<IP_target>/index.php?id=1' OR '1'='1"` ×2 (агент читает access-лог) | ✅ (нужен агент с чтением access-лога) |
+| `privilege_escalation_attempt` (1) | T1068 / T1548 Повышение привилегий | группы `privilege_escalation` — по умолчанию редки; добавьте кастомное правило (ниже) | изменить `/etc/sudoers` или добавить пользователя в группу sudo | ⚙️ кастомное правило |
+| `malware_detection` (1) | T1204 Вредоносное ПО | ClamAV (52500+) / VirusTotal (553, 554) | EICAR-файл на цели + ClamAV/VT-интеграция | ⚙️ интеграция |
+| `data_exfiltration` (1) | T1048 Эксфильтрация | IDS (Suricata) — правила exfil-класса | объёмный исходящий трафик на нестандартный порт | ⚙️ IDS (Suricata) |
+
+Пример кастомного правила для `privilege_escalation_attempt` (на менеджере в
+`/var/ossec/etc/rules/local_rules.xml`) — это одновременно демонстрация требования
+§3.3.2 (p:61): «перечень правил может быть дополнен без изменения программного кода»:
+
+```xml
+<group name="privilege_escalation,">
+  <rule id="100500" level="8">
+    <match>added to group sudo|/etc/sudoers|usermod</match>
+    <description>Изменение привилегий: пользователь добавлен в sudo / изменён sudoers</description>
+  </rule>
+</group>
+```
+
+Для правил ⚙️ можно также добавить условия через `POST /api/v1/correlation-rules` (CRUD,
+stage-08) — без правки кода системы.
+
+---
+
 ## Способ 2 (полный): VirtualBox-стенд для экспериментов Главы 4
 
 Контейнерного менеджера достаточно для демонстрации конвейера. Для **экспериментальной
@@ -96,9 +130,11 @@ sudo systemctl enable --now wazuh-agent
 
 | Атака | Команда (пример) | Что должно произойти в системе |
 |---|---|---|
-| Подбор пароля SSH | `hydra -l root -P /usr/share/wordlists/rockyou.txt <IP_target> ssh -t 4` | правило 5710/5712 (`authentication_failed`), после 3 событий за окно — инцидент `brute_force_attempts`, высокий риск |
-| Сетевое сканирование | `nmap -sS <IP_target>` | события `syslog`/`sshd` с одного IP → правило `repeated_scan` |
-| Множественные неудачные входы | `for u in root admin test; do ssh $u@<IP_target>; done` | серия `authentication_failed` → инцидент |
+| Подбор пароля SSH | `hydra -l root -P /usr/share/wordlists/rockyou.txt <IP_target> ssh -t 4` | правило 5710/5712 (`authentication_failed`) → seed-правило `brute_force_attempts` (3 за 5 мин) → инцидент, высокий риск; LLM рекомендует `block_ip`; на критическом активе — подтверждение админа |
+| Распыление паролей | `hydra -L users.txt -p Password1 <IP_target> ssh` | серия с разными `dstuser` → seed-правило `password_spraying` (T1110.003) |
+| Сетевое сканирование | `nmap -sT <IP_target>` | события с одного IP → seed-правило `repeated_scan` (T1046) |
+| Веб-атака | `curl "http://<IP_target>/index.php?id=1' OR '1'='1"` ×2 | группы `web,attack` → seed-правило `web_attack` (T1190) |
+| Повышение привилегий | `sudo usermod -aG sudo testuser` на цели (+ кастомное правило Wazuh из демо-матрицы) | группа `privilege_escalation` → seed-правило `privilege_escalation_attempt` (T1068/T1548) |
 
 ### Что фиксировать в эксперименте (для Главы 4)
 
