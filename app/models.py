@@ -131,7 +131,8 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    # колонка БД осталась "metadata" — имя атрибута зарезервировано SQLAlchemy (Declarative API)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -146,7 +147,7 @@ class CorrelationRule(Base):
     __tablename__ = "correlation_rules"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)  # nullable: описание опционально в API (stage-11)
     conditions: Mapped[dict] = mapped_column(JSON)  # список условий срабатывания
     time_window_minutes: Mapped[int] = mapped_column(Integer, default=5)
     min_events: Mapped[int] = mapped_column(Integer, default=1)  # порог повторений (§3.3.2 ВКР)
@@ -167,7 +168,7 @@ class Playbook(Base):
     __tablename__ = "playbooks"
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[str] = mapped_column(Text)
+    description: Mapped[str | None] = mapped_column(Text)  # nullable: описание опционально в API (stage-11)
     trigger_conditions: Mapped[dict] = mapped_column(JSON)  # условия применения
     allowed_actions: Mapped[list[str]] = mapped_column(JSON)  # допустимые действия
     steps: Mapped[list[dict]] = mapped_column(JSON)  # порядок выполнения операций
@@ -196,7 +197,8 @@ class ResponseAction(Base):
     )
     result: Mapped[str | None] = mapped_column(Text)
     initiated_by: Mapped[str] = mapped_column(String(100))  # playbook, validation, manual
-    metadata: Mapped[dict | None] = mapped_column(JSON)
+    # колонка БД осталась "metadata" — имя атрибута зарезервировано SQLAlchemy (Declarative API)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON)
     incident: Mapped["Incident"] = relationship(back_populates="response_actions")
 
 

@@ -22,8 +22,11 @@ class ITSMClient:
         self.service_now_url = service_now_url
         self.jira_url = jira_url
 
-    def create_ticket(self, incident: "Incident") -> dict:
+    def create_ticket(self, incident: "Incident | None") -> dict:
         """Создание инцидента в системе учёта заявок (Глава 3.4 ВКР)."""
+        if incident is None:
+            logger.warning("ITSM ticket NOT sent: incident not found")
+            return {"created": False, "reason": "incident_not_found"}
         if settings.auto_response:
             logger.info(
                 "ITSM ticket created: incident_id=%s title=%s severity=%s",
@@ -88,20 +91,21 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
                 executed_at=datetime.now(timezone.utc),
                 result="выполнено",
                 initiated_by="playbook",
-                metadata=context,
+                metadata_json=context,
             )
             db.add(resp_action)
             db.flush()
             result["response_action_id"] = resp_action.id
             # ITSM-регистрация инцидента в системе учёта заявок (сценарий 3.4 ВКР)
-            try:
-                itsm_result = itsm.create_ticket(db.get(Incident, incident_id)) if incident_id else None
-                result["itsm_ticket"] = itsm_result
-            except Exception as exc:
-                logger.error("ITSM ticket creation failed: %s", exc)
-                result["itsm_ticket"] = {"created": False, "error": str(exc)}
-            # ITSM-уведомление аналитикам о выполненном ответном действии
-            notify_analyst(db, db.get(Incident, incident_id), "action_executed") if incident_id else None
+            incident_obj = db.get(Incident, incident_id) if incident_id else None
+            if incident_obj is not None:
+                try:
+                    result["itsm_ticket"] = itsm.create_ticket(incident_obj)
+                except Exception as exc:
+                    logger.error("ITSM ticket creation failed: %s", exc)
+                    result["itsm_ticket"] = {"created": False, "error": str(exc)}
+                # ITSM-уведомление аналитикам о выполненном ответном действии
+                notify_analyst(db, incident_obj, "action_executed")
         return result
 
     logger.warning("CONTROLLED RESPONSE: action=%s context=%s", action, context)

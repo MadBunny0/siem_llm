@@ -191,7 +191,7 @@ async def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
     )
     audit(
         "risk_calculated",
-        {"risk_score": score, "severity": severity, "p_implement": confidence},
+        {"risk_score": score, "severity": severity, "p_implement": _p_implement(risk_events)},
         db=db,
         incident_id=incident.id,
     )

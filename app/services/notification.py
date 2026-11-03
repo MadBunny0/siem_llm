@@ -80,7 +80,10 @@ def notify_analyst(
         logger.warning("notify_analyst: db session not provided")
         return None
 
-    recipients = _choose_recipients(incident.severity, incident.asset.criticality)
+    recipients = _choose_recipients(
+        incident.severity,
+        incident.asset.criticality if incident.asset else None,
+    )
     message, payload = build_incident_notification(incident, event_type)
 
     created = []

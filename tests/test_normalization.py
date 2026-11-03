@@ -2,6 +2,7 @@ from app.services.normalization import normalize_wazuh
 
 
 def test_normalize_wazuh_basic():
+    # форма реального алерта Wazuh: full_log на верхнем уровне, groups с служебными тегами
     alert = {
         "timestamp": "2026-10-28T12:00:00Z",
         "rule": {"level": 5, "groups": ["authentication_failed"], "description": "Test rule"},
@@ -9,8 +10,8 @@ def test_normalize_wazuh_basic():
         "data": {
             "srcip": "192.168.1.100",
             "dstuser": "root",
-            "full_log": "Failed password for root from 192.168.1.100",
         },
+        "full_log": "Failed password for root from 192.168.1.100",
     }
     normalized = normalize_wazuh(alert)
 
