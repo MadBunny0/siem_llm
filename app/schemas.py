@@ -58,6 +58,21 @@ class WazuhAlert(BaseModel):
     full_log: str | None = None
 
 
+class LoginIn(BaseModel):
+    """Вход в систему (JSON вместо OAuth2-формы — без python-multipart)."""
+
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class RegisterIn(BaseModel):
+    """Создание пользователя администратором (POST /auth/register)."""
+
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=6)
+    role: str = Field(default="analyst", pattern="^(analyst|admin)$")
+
+
 class IncidentOut(BaseModel):
     """Ответ о инциденте (включая риск, тип атаки, актив)."""
 

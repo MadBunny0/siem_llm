@@ -23,6 +23,7 @@ from app.models import (
     Incident,
     Notification,
     Playbook,
+    User,
 )
 from app.schemas import (
     AnalysisOut,
@@ -32,11 +33,15 @@ from app.schemas import (
     IncidentDetailOut,
     IncidentOut,
     IncidentStatusIn,
+    LoginIn,
     NotificationOut,
     PlaybookIn,
     PlaybookOut,
+    RegisterIn,
     WazuhAlert,
 )
+from app.services.auth import get_current_user, require_admin
+from app.services.security import create_access_token, hash_password, verify_password
 from app.services.audit import audit
 from app.services.assets import resolve_asset_id
 from app.services.correlation import create_or_update_incident, evaluate_correlation
@@ -48,6 +53,44 @@ from app.services.risk import calculate_risk
 from app.services.validation import validate_recommendation
 
 router = APIRouter(prefix="/api/v1", tags=["SIEM"])
+
+
+# ---------------------------------------------------------------------------
+# Авторизация (stage-09) — JWT Bearer; /ingest/wazuh и /health остаются
+# открытыми для интеграции с Wazuh и мониторинга
+# ---------------------------------------------------------------------------
+@router.post("/auth/login")
+def login(payload: LoginIn, db: Session = Depends(get_db)):
+    """Вход: выдача JWT-токена по логину/паролю."""
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Неверное имя пользователя или пароль")
+    token = create_access_token(user.id, user.username, user.role)
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.get("/auth/me")
+def me(user: User = Depends(get_current_user)):
+    """Текущий пользователь по токену (для UI: username, роль)."""
+    return {"id": user.id, "username": user.username, "role": user.role}
+
+
+@router.post("/auth/register", status_code=201)
+def register(payload: RegisterIn, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """Создание пользователя SOC — только администратором."""
+    if db.scalar(select(User).where(User.username == payload.username)):
+        raise HTTPException(status_code=409, detail="Пользователь с таким именем уже существует")
+    user = User(
+        username=payload.username,
+        password_hash=hash_password(payload.password),
+        role=payload.role,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    audit("user_created", {"user_id": user.id, "username": user.username, "role": user.role}, db=db)
+    db.commit()
+    return {"id": user.id, "username": user.username, "role": user.role}
 
 
 @router.post("/ingest/wazuh")
@@ -190,7 +233,7 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
 
 
 @router.get("/incidents", response_model=list[IncidentOut])
-def incidents(db: Session = Depends(get_db)):
+def incidents(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     items = list(db.scalars(
         select(Incident).order_by(Incident.created_at.desc())
     ).all())
@@ -199,7 +242,11 @@ def incidents(db: Session = Depends(get_db)):
 
 
 @router.get("/incidents/{incident_id}", response_model=IncidentDetailOut)
-def incident_detail(incident_id: int, db: Session = Depends(get_db)):
+def incident_detail(
+    incident_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Детальная карточка инцидента: события, история анализов, актив (§3.2)."""
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -211,7 +258,12 @@ ALLOWED_INCIDENT_STATUSES = ("new", "in_progress", "closed")
 
 
 @router.patch("/incidents/{incident_id}/status", response_model=IncidentOut)
-def update_incident_status(incident_id: int, payload: IncidentStatusIn, db: Session = Depends(get_db)):
+def update_incident_status(
+    incident_id: int,
+    payload: IncidentStatusIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Смена статуса инцидента оператором (журналируется в аудит)."""
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -235,7 +287,11 @@ def update_incident_status(incident_id: int, payload: IncidentStatusIn, db: Sess
 
 
 @router.post("/incidents/{incident_id}/analyze")
-async def analyze(incident_id: int, db: Session = Depends(get_db)):
+async def analyze(
+    incident_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Ручной запуск интеллектуального анализа инцидента (§3.3.4, §3.4)."""
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -244,7 +300,11 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/incidents/{incident_id}/confirm-action")
-def confirm_action(incident_id: int, db: Session = Depends(get_db)):
+def confirm_action(
+    incident_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
     """Подтверждение администратором отложенного действия (§3.4, p:17, p:102).
 
     Выполняет последнее рекомендованное действие по инциденту, если оно
@@ -423,14 +483,14 @@ async def _run_incident_analysis(
 
 
 @router.get("/notifications", response_model=list[NotificationOut])
-def notifications(db: Session = Depends(get_db)):
+def notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return list(db.scalars(
         select(Notification).order_by(Notification.created_at.desc())
     ).all())
 
 
 @router.get("/analyses", response_model=list[AnalysisOut])
-def analyses(db: Session = Depends(get_db)):
+def analyses(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Статистика качества работы LLM-модуля (Таблица 3.1, §3.2 ВКР)."""
     return list(db.scalars(
         select(Analysis).order_by(Analysis.created_at.desc())
@@ -438,7 +498,7 @@ def analyses(db: Session = Depends(get_db)):
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])
-def audit_logs(limit: int = 100, db: Session = Depends(get_db)):
+def audit_logs(limit: int = 100, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Журнал аудита всех этапов обработки инцидентов (§3.1, модуль 8; §3.4, p:117)."""
     limit = max(1, min(limit, 500))
     return list(db.scalars(
@@ -451,14 +511,14 @@ def audit_logs(limit: int = 100, db: Session = Depends(get_db)):
 # внесения изменений в программный код»)
 # ---------------------------------------------------------------------------
 @router.get("/correlation-rules", response_model=list[CorrelationRuleOut])
-def correlation_rules(db: Session = Depends(get_db)):
+def correlation_rules(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return list(db.scalars(
         select(CorrelationRule).order_by(CorrelationRule.priority.desc(), CorrelationRule.id)
     ).all())
 
 
 @router.post("/correlation-rules", response_model=CorrelationRuleOut)
-def create_correlation_rule(payload: CorrelationRuleIn, db: Session = Depends(get_db)):
+def create_correlation_rule(payload: CorrelationRuleIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     rule = CorrelationRule(**payload.model_dump())
     db.add(rule)
     db.commit()
@@ -469,7 +529,7 @@ def create_correlation_rule(payload: CorrelationRuleIn, db: Session = Depends(ge
 
 
 @router.put("/correlation-rules/{rule_id}", response_model=CorrelationRuleOut)
-def update_correlation_rule(rule_id: int, payload: CorrelationRuleIn, db: Session = Depends(get_db)):
+def update_correlation_rule(rule_id: int, payload: CorrelationRuleIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     rule = db.get(CorrelationRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -483,7 +543,7 @@ def update_correlation_rule(rule_id: int, payload: CorrelationRuleIn, db: Sessio
 
 
 @router.delete("/correlation-rules/{rule_id}")
-def delete_correlation_rule(rule_id: int, db: Session = Depends(get_db)):
+def delete_correlation_rule(rule_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     rule = db.get(CorrelationRule, rule_id)
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
@@ -499,14 +559,14 @@ def delete_correlation_rule(rule_id: int, db: Session = Depends(get_db)):
 # действий без модификации программного кода»)
 # ---------------------------------------------------------------------------
 @router.get("/playbooks", response_model=list[PlaybookOut])
-def playbooks(db: Session = Depends(get_db)):
+def playbooks(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     return list(db.scalars(
         select(Playbook).order_by(Playbook.priority.desc(), Playbook.id)
     ).all())
 
 
 @router.post("/playbooks", response_model=PlaybookOut)
-def create_playbook(payload: PlaybookIn, db: Session = Depends(get_db)):
+def create_playbook(payload: PlaybookIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     playbook = Playbook(**payload.model_dump())
     db.add(playbook)
     db.commit()
@@ -517,7 +577,7 @@ def create_playbook(payload: PlaybookIn, db: Session = Depends(get_db)):
 
 
 @router.put("/playbooks/{playbook_id}", response_model=PlaybookOut)
-def update_playbook(playbook_id: int, payload: PlaybookIn, db: Session = Depends(get_db)):
+def update_playbook(playbook_id: int, payload: PlaybookIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     playbook = db.get(Playbook, playbook_id)
     if not playbook:
         raise HTTPException(status_code=404, detail="Playbook not found")
@@ -531,7 +591,7 @@ def update_playbook(playbook_id: int, payload: PlaybookIn, db: Session = Depends
 
 
 @router.delete("/playbooks/{playbook_id}")
-def delete_playbook(playbook_id: int, db: Session = Depends(get_db)):
+def delete_playbook(playbook_id: int, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     playbook = db.get(Playbook, playbook_id)
     if not playbook:
         raise HTTPException(status_code=404, detail="Playbook not found")

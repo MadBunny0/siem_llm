@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     auto_response: bool = False
     # автоматический LLM-анализ критических инцидентов без задержек (§3.3.3 ВКР, p:80)
     auto_analysis: bool = True
+    # JWT-авторизация пользователей SOC (stage-09)
+    jwt_secret: str = "dev-secret-change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    token_expire_minutes: int = 480
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
