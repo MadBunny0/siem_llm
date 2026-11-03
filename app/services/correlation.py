@@ -8,9 +8,15 @@ from app.models import CorrelationRule, Event, Incident
 
 
 def load_correlation_rules(db: Session) -> list[CorrelationRule]:
-    """Загрузка активных правил корреляции из БД (согласно Главе 3.2 — CorrelationRule)."""
+    """Загрузка активных правил корреляции из БД (согласно Главе 3.2 — CorrelationRule).
+
+    Порядок детерминирован (приоритет ↓, затем id) — выбор правила при
+    срабатывании нескольких не зависит от произвольного порядка строк БД.
+    """
     return list(db.scalars(
-        select(CorrelationRule).where(CorrelationRule.is_active.is_(True))
+        select(CorrelationRule)
+        .where(CorrelationRule.is_active.is_(True))
+        .order_by(CorrelationRule.priority.desc(), CorrelationRule.id)
     ).all())
 
 
@@ -206,6 +212,11 @@ def create_or_update_incident(db: Session, events, risk_score: int = 0) -> Incid
             for e in events:
                 if e not in incident.events:
                     incident.events.append(e)
+            # описание актуализируется под фактическое число событий
+            # (stage-12: раньше оставалось от момента создания — расхождение с таймлайном)
+            incident.description = (
+                f"Инцидент сформирован на основе {len(incident.events)} связанных событий."
+            )
             return incident
 
     first = events[0]

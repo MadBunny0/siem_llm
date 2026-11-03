@@ -388,11 +388,18 @@ def test_planned_mode_default_critical_only(client, db_session, monkeypatch):
     assert "analysis" not in resp.json()
 
 
-def test_planned_mode_levels_include_high(client, db_session, monkeypatch):
-    """AUTO_ANALYSIS_LEVELS=critical,high: high-инцидент анализируется автоматически."""
+def test_planned_mode_levels_include_high(client, db_session, engine, monkeypatch):
+    """AUTO_ANALYSIS_LEVELS=critical,high: автоанализ уходит в фон (scheduled),
+    фоновая задача с собственной сессией доводит его до Analysis (stage-12)."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
     seed_rule(db_session)
     monkeypatch.setattr(settings, "auto_analysis", True)
     monkeypatch.setattr(settings, "auto_analysis_levels", "critical,high")
+    # фоновая задача создаёт свою сессию — направляем её в тестовую БД
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     async def fake_analyze(context):
         return {
@@ -408,8 +415,12 @@ def test_planned_mode_levels_include_high(client, db_session, monkeypatch):
     resp = client.post(f"{API}/ingest/wazuh", json=make_alert())
     data = resp.json()
     assert data["severity"] == "high"
-    assert "analysis" in data
-    assert data["analysis"]["results"][0]["action"] == "monitor"
+    assert data["analysis"] == {"scheduled": True, "severity": "high"}
+    # TestClient выполняет фоновые задачи синхронно после ответа:
+    # анализ должен появиться в общей статистике с признаком auto
+    analyses = db_session.query(Analysis).all()
+    assert len(analyses) == 1
+    assert analyses[0].response_raw["initiated_by"] == "auto_analysis"
 
 
 def test_validation_policy_endpoint(client, db_session):
@@ -425,3 +436,85 @@ def test_validation_policy_endpoint(client, db_session):
     assert resp.status_code == 200
     policies = {p["severity"]: p["allowed_actions"] for p in resp.json()}
     assert policies["low"] == ["monitor", "collect_evidence"]
+
+
+def test_incident_description_actualized(client, db_session):
+    """Описание инцидента отражает фактическое число событий при обновлении (stage-12)."""
+    seed_rule(db_session)
+    client.post(f"{API}/ingest/wazuh", json=make_alert())
+    client.post(f"{API}/ingest/wazuh", json=make_alert())
+
+    detail = client.get(f"{API}/incidents/1").json()
+    assert "2 связанных событий" in detail["description"]
+    assert len(detail["events"]) == 2
+
+
+def test_demo_populate(client, db_session):
+    """POST /demo/populate — мок-сценарии: 19 событий → 7 инцидентов всех уровней."""
+    from app.models import Asset, CorrelationRule
+
+    # seed правил корреляции (как в init_db) — демо берёт правила из БД
+    for name, conds, window, min_events, priority in [
+        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2),
+        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3),
+        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3),
+        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1),
+        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2),
+        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3),
+    ]:
+        db_session.add(
+            CorrelationRule(
+                name=name, description=name, conditions=conds,
+                time_window_minutes=window, min_events=min_events,
+                priority=priority, is_active=True,
+            )
+        )
+    # seed активов — моки используют имена агентов = имена активов
+    for name, criticality in [
+        ("mail-prod-01", "critical"), ("db-primary-01", "critical"),
+        ("fw-edge-01", "high"), ("wks-finance-12", "medium"), ("app-web-01", "high"),
+    ]:
+        db_session.add(Asset(name=name, type="server", criticality=criticality))
+    db_session.commit()
+
+    resp = client.post(f"{API}/demo/populate")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["created_events"] == 19
+    incidents = data["incidents"]
+    assert len(incidents) == 7
+    severities = {i["severity"] for i in incidents}
+    assert "critical" in severities and "low" in severities and "high" in severities
+    rules = {i["rule"] for i in incidents}
+    assert {"brute_force_attempts", "password_spraying", "privilege_escalation_attempt",
+            "repeated_scan", "web_attack", "malware_detection"} <= rules
+
+    # активы привязаны (моки используют seed-имена агентов)
+    items = client.get(f"{API}/incidents").json()
+    with_assets = [i for i in items if i["asset"]]
+    assert len(with_assets) >= 5
+
+
+def test_execute_action_manual(client, db_session):
+    """POST /incidents/{id}/execute-action — ручной запуск действия админом (stage-12)."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    # без зарегистрированного playbook действие блокируется с причиной
+    blocked = client.post(
+        f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"}
+    )
+    assert blocked.status_code == 200
+    assert blocked.json()["validation"]["approved"] is False
+    assert blocked.json()["execution"]["mode"] == "blocked"
+
+    # после регистрации playbook — исполняется (simulation)
+    client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
+    ok = client.post(
+        f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"}
+    )
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["validation"]["approved"] is True
+    assert body["execution"]["mode"] == "simulation"
+    assert body["action"] == "block_ip"

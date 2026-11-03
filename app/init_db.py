@@ -165,8 +165,8 @@ def _seed_default_correlation_rules() -> None:
                 {"field": "src_ip", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 10,
-            "min_events": 4,
-            "priority": 2,
+            "min_events": 5,  # выше brute_force: 4 события одной учётки = brute, 5+ разных = spraying
+            "priority": 3,  # spraying специфичнее brute_force — детерминированно перебивает его
             "is_active": True,
         },
         {
@@ -239,8 +239,13 @@ def _seed_default_correlation_rules() -> None:
             if not existing:
                 rule = models.CorrelationRule(**rule_data)
                 session.add(rule)
-            elif existing.min_events != rule_data.get("min_events", 1):
-                existing.min_events = rule_data.get("min_events", 1)  # обновление порога
+            elif (
+                existing.min_events != rule_data.get("min_events", 1)
+                or existing.priority != rule_data.get("priority", 1)
+            ):
+                # обновление порога и приоритета (stage-12: priority тоже актуализируется)
+                existing.min_events = rule_data.get("min_events", 1)
+                existing.priority = rule_data.get("priority", 1)
                 session.add(existing)
         session.commit()
 

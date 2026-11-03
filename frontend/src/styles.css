@@ -1162,3 +1162,416 @@
   cursor: help;
 }
 
+/* ===================== Stage 12: UX-правки — шрифт, адаптивность, спиннеры, feedback кнопок ===================== */
+
+/* ---------- [3] Базовая типографика: укрупнение шрифтов ---------- */
+
+body {
+  font-size: 15px;
+  min-width: 0;
+}
+
+.brand strong { font-size: 15px; }
+.brand small { font-size: 11px; }
+
+.nav-item { font-size: 14px; padding: 12px 14px; }
+
+.stack-title, .eyebrow, .muted, .pipeline-title { font-size: 10px; }
+.stack span { font-size: 10.5px; }
+
+.topbar h1 { font-size: 26px; }
+.system-status { font-size: 12px; }
+
+.ghost { font-size: 12.5px; padding: 9px 14px; }
+.primary { font-size: 11.5px; }
+.analyze { font-size: 13px; }
+
+.stat span { font-size: 11.5px; }
+.stat b { font-size: 28px; }
+.stat em { font-size: 10.5px; }
+
+.panel-head { flex-wrap: wrap; gap: 8px; }
+.panel-head h2 { font-size: 17px; }
+.panel-head p { font-size: 11.5px; }
+.detail-head h2 { font-size: 19px; }
+
+.search input { font-size: 12.5px; }
+.filter-tabs button { font-size: 11px; padding: 6px 10px; }
+
+.badge { font-size: 9px; }
+.chip { font-size: 9.5px; }
+
+.incident-title strong { font-size: 13px; }
+.incident-main p { font-size: 11px; }
+.incident-main span { font-size: 10.5px; }
+.chevron { font-size: 18px; }
+
+.empty h3, .detail-empty h2 { font-size: 14.5px; }
+.empty p, .detail-empty p { font-size: 11px; }
+
+.detail-grid label, .section label, .recommendation label { font-size: 10px; }
+.detail-grid span:not(.badge) { font-size: 12.5px; }
+.description { font-size: 12.5px; }
+
+.status-controls label { font-size: 10px; }
+.status-btn { font-size: 12px; padding: 9px 8px; }
+
+.result-head h3 { font-size: 13px; }
+.approved { font-size: 10px; }
+.recommendation strong { font-size: 13px; }
+.analysis-result p { font-size: 11.5px; }
+.analysis-result pre { font-size: 9px; }
+.result-action { font-size: 12px; }
+.result-head-row b { font-size: 9.5px; }
+.result-reason { font-size: 10px; }
+
+.detail-loading { font-size: 11px; }
+.detail-hint { font-size: 11.5px; }
+
+.timeline-row strong { font-size: 11.5px; }
+.timeline-time { font-size: 10px; }
+.timeline-meta { font-size: 10px; }
+.timeline summary { font-size: 10px; }
+.timeline pre, .details-json pre { font-size: 9px; }
+.details-json summary { font-size: 10.5px; }
+
+.history-head strong { font-size: 12px; }
+.history-head span { font-size: 10px; }
+.history-action { font-size: 11px; }
+.history-item p { font-size: 11px; }
+
+.table { font-size: 13px; }
+.table th { font-size: 10px; }
+.table td.clamp { font-size: 11.5px; }
+.rule-desc { font-size: 10.5px; }
+.link-btn { font-size: 12px; }
+.ghost.small { font-size: 11.5px; }
+.icon-btn { font-size: 13px; }
+.active-flag { font-size: 10.5px; }
+
+.pending-banner strong { font-size: 12.5px; }
+.pending-banner span { font-size: 11px; }
+.pending-waiting { font-size: 11px; }
+
+.checkbox-item { font-size: 11.5px; }
+.modal-subtitle { font-size: 12px; }
+.form-group label { font-size: 10.5px; }
+
+.login-subtitle { font-size: 12px; }
+.login-error { font-size: 12px; }
+.login-hint { font-size: 11px; }
+.user-name { font-size: 13px; }
+.badge-role { font-size: 9px; }
+.btn-logout { font-size: 11.5px; }
+
+.alert { font-size: 11.5px; }
+.toast { font-size: 11.5px; }
+footer { font-size: 10px; }
+
+.execution-result span, .execution-result b, .execution-result small { font-size: 9.5px; }
+.pipeline-stage .stage-label { font-size: 8.5px; }
+.pipeline-stage .stage-status { font-size: 13px; }
+
+/* ---------- [5] Спиннеры ---------- */
+
+.spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  flex: none;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: siem-spin 0.7s linear infinite;
+  vertical-align: -2px;
+}
+
+.spinner-sm {
+  width: 10px;
+  height: 10px;
+}
+
+.spinner-dark {
+  border-color: rgba(142, 166, 255, 0.25);
+  border-top-color: #8ea6ff;
+}
+
+@keyframes siem-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Кнопки со спиннером: выравнивание кольца и текста по центру */
+.primary,
+.analyze,
+.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+/* [5а] Панель результата анализа затемняется на время нового запроса */
+.analysis-result.busy-dim {
+  opacity: 0.5;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+/* ---------- [4] Анимации и feedback интерактивных элементов ---------- */
+
+.nav-item,
+.ghost,
+.primary,
+.analyze,
+.filter-tabs button,
+.status-btn,
+.icon-btn,
+.toggle,
+.btn-logout,
+.link-btn,
+.exec-btn,
+.incident-row {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+
+.ghost:hover:not(:disabled) {
+  background: #1a2438;
+  border-color: #35466a;
+  color: #dbe1ec;
+}
+
+.ghost:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.primary:hover:not(:disabled),
+.analyze:hover:not(:disabled) {
+  box-shadow: 0 4px 16px rgba(104, 121, 255, 0.35);
+  filter: brightness(1.12);
+}
+
+/* Ощущение нажатия: лёгкое сжатие кнопки */
+.nav-item:active:not(.active),
+.ghost:active:not(:disabled),
+.primary:active:not(:disabled),
+.analyze:active:not(:disabled),
+.status-btn:active:not(:disabled),
+.icon-btn:active:not(:disabled),
+.filter-tabs button:active,
+.btn-logout:active,
+.exec-btn:active:not(:disabled),
+.toggle:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Широкие строки инцидентов затемняются вместо масштабирования */
+.incident-row:active {
+  background: #0d1626;
+}
+
+.link-btn:active {
+  color: #6d8aff;
+}
+
+/* Невыбранные фильтры (Все/Critical/...) подсвечиваются при наведении */
+.filter-tabs button:hover:not(.selected):not(:disabled) {
+  background: #141d31;
+  color: #aeb9cf;
+}
+
+.toggle:hover:not(:disabled) {
+  border-color: #35466a;
+}
+
+/* Видимый фокус с клавиатуры для всех кнопок */
+button:focus-visible {
+  outline: 2px solid #6d7dff;
+  outline-offset: 2px;
+}
+
+.search:focus-within {
+  border-color: #4f5fff;
+  box-shadow: 0 0 0 2px rgba(79, 95, 255, 0.2);
+}
+
+/* ---------- [6] Бейдж источника анализа ---------- */
+
+.initiated-badge {
+  display: inline-block;
+  font-size: 9px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+
+.initiated-badge.auto {
+  background: #172c49;
+  color: #80b2ff;
+}
+
+.initiated-badge.manual {
+  background: #14332a;
+  color: #67d9a9;
+}
+
+.result-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* ---------- [7] Сворачиваемая памятка «Роль аналитика» ---------- */
+
+.role-hint {
+  border: 1px solid #1d293e;
+  background: #080e19;
+  border-radius: 8px;
+  padding: 10px 13px;
+  margin: 12px 0 0;
+}
+
+.role-hint summary {
+  cursor: pointer;
+  color: #8ea6ff;
+  font-size: 11.5px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.role-hint summary:hover {
+  color: #b7c6ff;
+}
+
+.role-hint ol {
+  margin: 9px 0 0;
+  padding-left: 18px;
+  color: #94a1b8;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.role-hint li + li {
+  margin-top: 4px;
+}
+
+/* ---------- Кнопка ручного выполнения действия (только admin) ---------- */
+
+.exec-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #2c5c49;
+  background: #14332a;
+  color: #67d9a9;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+  flex: none;
+}
+
+.exec-btn:hover:not(:disabled) {
+  background: #1b4536;
+  border-color: #3a7a5f;
+  color: #8ee0bb;
+}
+
+.exec-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.exec-btn .spinner {
+  border-color: rgba(103, 217, 169, 0.3);
+  border-top-color: #67d9a9;
+}
+
+/* ---------- Конвейер: подпись этапа Playbook при ожидании подтверждения ---------- */
+
+.stage-note {
+  font-size: 8.5px;
+  color: #ffd98a;
+  margin-top: 3px;
+  white-space: nowrap;
+}
+
+/* ---------- Панель-head: группа кнопок ленты инцидентов ---------- */
+
+.panel-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---------- [3] Адаптивность ---------- */
+
+/* ≤1400px: workspace в одну колонку — панель детали под лентой инцидентов */
+@media (max-width: 1400px) {
+  .workspace { grid-template-columns: 1fr; }
+  .detail-panel { min-height: auto; }
+  .stats { grid-template-columns: repeat(4, 1fr); }
+  .main { padding: 24px 26px 18px; }
+}
+
+/* ≤1024px: сайдбар превращается в верхнюю панель с горизонтальным nav */
+@media (max-width: 1024px) {
+  .app-shell { flex-direction: column; }
+
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 13px 16px;
+    border-right: 0;
+    border-bottom: 1px solid #1c2538;
+  }
+
+  .brand { padding: 0; }
+
+  .sidebar nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex: 1;
+    min-width: 260px;
+  }
+
+  .nav-item { width: auto; padding: 9px 12px; }
+
+  .user-box {
+    margin-top: 0;
+    margin-left: auto;
+    border-top: 0;
+    padding: 0;
+  }
+
+  .stats { grid-template-columns: repeat(2, 1fr); }
+  .main { padding: 16px 16px 14px; }
+  .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .filters { flex-wrap: wrap; }
+  .panel { min-height: auto; }
+  .tab-panel { min-height: auto; }
+}
+
+/* ≤640px: компактные сетки, чтобы ничего не уезжало */
+@media (max-width: 640px) {
+  .detail-grid { grid-template-columns: 1fr; }
+  .modal { padding: 20px 16px; }
+  .modal div[style*="grid-template-columns"] { grid-template-columns: 1fr !important; }
+  .pending-banner { flex-direction: column; align-items: flex-start; }
+  .pending-banner button { width: 100%; }
+  .status-buttons { flex-direction: column; }
+}
+

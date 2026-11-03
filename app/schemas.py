@@ -119,6 +119,12 @@ class IncidentStatusIn(BaseModel):
     status: str = Field(pattern="^(new|in_progress|closed)$")
 
 
+class ExecuteActionIn(BaseModel):
+    """Ручной запуск playbook-действия администратором (stage-12)."""
+
+    action: str = Field(min_length=1)
+
+
 class AuditLogOut(BaseModel):
     """Запись журнала аудита (§3.1, модуль 8)."""
 
