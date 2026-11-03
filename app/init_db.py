@@ -108,7 +108,7 @@ def _seed_default_correlation_rules() -> None:
             "description": "Множественные неудачные попытки входа с одного IP за короткое время",
             "conditions": [
                 {"field": "event_type", "operator": "like", "value": "authentication_failed"},
-                {"field": "src_ip", "operator": "in", "value": []},
+                {"field": "user", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 5,
             "priority": 2,
@@ -118,7 +118,7 @@ def _seed_default_correlation_rules() -> None:
             "name": "repeated_scan",
             "description": "Повторяющиеся события с одного IP в течение окна корреляции",
             "conditions": [
-                {"field": "src_ip", "operator": "like", "value": ""},
+                {"field": "src_ip", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 10,
             "priority": 1,
