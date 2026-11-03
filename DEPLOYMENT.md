@@ -196,7 +196,8 @@ docker compose run --rm ollama-init  # докачать модель, если �
 
 | Симптом | Причина / решение |
 |---|---|
-| Docker Desktop не стартует | WSL2 не установлен/устарел: `wsl --update`; виртуализация выключена в BIOS |
+| Docker Desktop: «There was a problem with WSL… wsl.exe --version: exit status 1 (Системе не удается найти указанный путь)» | Компоненты WSL не установлены/сломаны (stub без начинки). 1) Включить виртуализацию в BIOS (Диспетчер задач → ЦП → «Виртуализация: Включено»). 2) PowerShell **от администратора**: `dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart`, `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart`, `bcdedit /set hypervisorlaunchtype auto` → **перезагрузка**. 3) `wsl --install --no-distribution`; если `wsl.exe` снова падает — установить MSI отсюда: https://github.com/microsoft/WSL/releases → перезагрузка. 4) Проверка: `wsl --version` печатает версию |
+| Docker Desktop не стартует (без явной ошибки WSL) | `wsl --update`; виртуализация выключена в BIOS |
 | «port is already allocated» | Занят один из портов (3000/8000/5433/11434) — освободи или поменяй левую часть маппинга в `docker-compose.yml` |
 | Первый ответ LLM очень медленный | Прогрев модели после загрузки; дальше быстрее. Проверь `docker compose logs -f ollama-init` — модель скачана? |
 | Анализ возвращает 503 | Ollama не готова: `docker compose ps` (healthcheck), `docker compose logs ollama` |
