@@ -126,6 +126,15 @@ curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
 
 Секрет подписи токена задаётся переменной `JWT_SECRET` (см. `.env.example`) — смените его для окружения, отличного от локального.
 
+## Wazuh (§3.5 ВКР)
+
+- **Быстрый старт** — контейнерный Wazuh-менеджер под опциональным профилем:
+  `docker compose --profile wazuh up --build` (обычный `up` его не поднимает).
+  Настройка интеграции — 3 команды из [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
+- **Экспериментальный стенд** (VirtualBox: ВМ менеджера, цели с агентом и атакующего)
+  для Главы 4 — топология, регистрация агента, моделирование атак и что фиксировать:
+  тот же [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
+
 ## Остановка
 
 ```bash

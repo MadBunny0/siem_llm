@@ -54,6 +54,7 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 - **stage-08 (P2):** тесты +27 (test_llm — мок Ollama; test_assets; test_routes — TestClient + sqlite StaticPool); CRUD `/correlation-rules` и `/playbooks` (409 при удалении используемого playbook); `GET /incidents/{id}` (events+analyses); `PATCH /incidents/{id}/status`; `GET /audit-logs`; UI — 6 вкладок, детальная карточка инцидента, смена статуса, confirm-action, CRUD-формы.
 - **stage-09 (авторизация):** JWT Bearer (PyJWT HS256, `JWT_SECRET`), пароли PBKDF2-SHA256 (`app/services/security.py`), `get_current_user`/`require_admin` (`app/services/auth.py`). Открыты `/health`, `/ingest/wazuh`, `/auth/login`. Роли: analyst (чтение, анализ, смена статуса) / admin (CRUD правил/playbooks, confirm-action, register). Демо-учётки: analyst1/analyst123, analyst2/analyst123, soc_lead/soclead123 (admin). UI: AuthGate, логин-экран, 401→re-login, роль-зависимый UI. Тестов всего ~71 (test_auth.py +14; test_routes обходит auth через override).
 - **⚠️ Всё проверено только статически** — Python/Node на рабочем ПК нет. Первый приоритет — проверка запуском на ПК с инструментами: `pytest`, `docker compose up --build`, `npm run build` (frontend), логин демо-учётками.
+- **stage-10 (Wazuh, ветка `stage-10-wazuh-stand`):** сервис `wazuh-manager` (4.7.4) в compose под опциональным профилем `--profile wazuh`; `wazuh/integrator.sh` (JSON-алерт → открытый `/ingest/wazuh`); `wazuh/ossec-integration.xml` (level≥3); `WAZUH_INTEGRATION.md` — настройка интеграции за 3 команды + инструкция VirtualBox-стенда для Главы 4 (топология, агент с именем=активом, атаки hydra/nmap, метрики эксперимента). Этим закрыт последний пункт P2.
 - **Stage-08 (P2) сделан:**
   - Тесты: +27 (test_llm — мок Ollama через фейковый httpx.AsyncClient; test_assets; test_routes — TestClient + sqlite StaticPool, патч `app.api.routes.analyze_incident`). Итого 57. **Не запускались** (Python на ПК нет).
   - Бэкенд: CRUD `/correlation-rules` и `/playbooks` (POST/PUT/DELETE, 409 при удалении playbook с response_actions); `GET /incidents/{id}` (детально: events+analyses); `PATCH /incidents/{id}/status` (new/in_progress/closed, 422 на иное); `GET /audit-logs?limit`. Схемы: EventOut, IncidentDetailOut, IncidentStatusIn, AuditLogOut, CorrelationRuleIn/Out, PlaybookIn/Out.
@@ -78,10 +79,10 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 5. Следующие шаги (roadmap)
 
-1. **Проверка запуском** (на ПК с Python/Docker/Node): `pip install -r requirements.txt && pytest` (~71 тест) → `docker compose up --build` → логин `soc_lead/soclead123` → сборка `cd frontend && npm install && npm run build`. Вывод ошибок — пользователю, правки — мне.
-2. **stage-10 (остаток P2, опционально):** Wazuh в docker-compose через профиль (`--profile wazuh`) + инструкция стенда VirtualBox для экспериментов Главы 4.
-3. **Глава 4 ВКР** — реализация и эксперименты; переход только по явному запросу пользователя.
-4. При частых изменениях схемы — вернуться к вопросу об Alembic (решение от 2026-11-03: не нужен).
+1. **stage-10 (Wazuh) — PR** после ревью пользователем.
+2. **Проверка запуском** (на ПК с Python/Docker/Node): `pytest` (~71) → `docker compose --profile wazuh up --build` → настройка интеграции (WAZUH_INTEGRATION.md, 3 команды) → логин `soc_lead/soclead123` → `npm run build`. Ошибки — мне.
+3. **Глава 4 ВКР** — реализация и эксперименты; переход только по явному запросу пользователя (стенд VirtualBox по WAZUH_INTEGRATION.md).
+4. Alembic не нужен (решение 2026-11-03); возвращаться к вопросу только при частых изменениях схемы.
 
 ## 6. Соглашения по работе
 

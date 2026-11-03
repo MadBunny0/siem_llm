@@ -80,6 +80,26 @@ services:
       api:
         condition: service_healthy
 
+  # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
+  # Обычный `docker compose up` его не поднимает. Настройка интеграции — WAZUH_INTEGRATION.md
+  wazuh-manager:
+    image: wazuh/wazuh-manager:4.7.4
+    profiles: ["wazuh"]
+    environment:
+      HOOK_URL: http://api:8000/api/v1/ingest/wazuh
+    ports:
+      - "1514:1514"       # приём событий от агентов
+      - "1515:1515"       # регистрация агентов (agent enrollment)
+      - "55000:55000"     # Wazuh API
+    volumes:
+      - wazuh_data:/var/ossec/data
+      - ./wazuh/integrator.sh:/var/ossec/integrator_files/custom-integration:ro
+      - ./wazuh/ossec-integration.xml:/wazuh-config/ossec-integration.xml:ro
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   pgdata:
   ollama_data:
+  wazuh_data:
