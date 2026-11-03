@@ -1115,3 +1115,50 @@
   white-space: nowrap;
 }
 
+/* ===================== Stage 11: results по каждому действию, критерии playbooks ===================== */
+
+.result-item {
+  border-left: 3px solid #2b3853;
+  background: #0a111d;
+  border-radius: 0 6px 6px 0;
+  padding: 8px 10px;
+  margin-top: 9px;
+}
+
+.result-head-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.result-action {
+  font-size: 10px;
+  font-weight: 700;
+  color: #dbe2f1;
+}
+
+.result-head-row b {
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.result-reason {
+  display: block;
+  font-size: 8px;
+  color: #66738a;
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+/* Жёлтая палитра плашки .pending-banner — статус «ожидает подтверждения» */
+.badge-pending {
+  color: #ffd98a !important;
+}
+
+.criteria-chip {
+  margin-left: 6px;
+  cursor: help;
+}
+

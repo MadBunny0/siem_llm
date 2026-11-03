@@ -35,16 +35,25 @@ def score_to_severity(score: int) -> str:
     if score >= 40: return "medium"
     return "low"
 
-def calculate_risk(events: list[dict], p_implement: float = 0.5, min_events: int = 1) -> tuple[int, str]:
-    """Расчёт уровня риска инцидента (согласно алгоритму 3.3.3 ВКР).
+def calculate_risk(
+    events: list[dict],
+    p_implement: float = 0.5,
+    correlation_confidence: float = 1.0,
+) -> tuple[int, str]:
+    """Расчёт интегральной оценки риска инцидента (согласно §3.3.3 ВКР, p:69-80).
 
-    Учитывает комплекс показателей:
-    * уровень опасности события (rule.level из Wazuh);
-    * критичность защищаемого актива;
-    * уровень опасности выявленного типа атаки (ATTACK_TYPE_DANGER);
-    * количество взаимосвязанных событий (бонус за серию);
-    * достоверность результатов корреляции (соотношение с порогом min_events);
-    * вероятность реализации угрозы (p_implement, 0.0–1.0).
+    Пять факторов эталона и их реализация:
+    * критичность защищаемого актива — asset_criticality события (critical→100,
+      high→75, medium→60 добавляются к базе);
+    * количество взаимосвязанных событий — бонус за серию +5 за событие, до +20;
+    * уровень опасности выявленного типа атаки — ATTACK_TYPE_DANGER;
+    * достоверность результатов корреляции — correlation_confidence (0–1: средняя
+      доля совпавших признаков IP/учётка/актив между связанными событиями,
+      из correlation.evaluate_correlation);
+    * вероятность реализации угрозы — p_implement (0–1: из данных события,
+      см. routes._p_implement).
+
+    Итог: score = min(100, max(оценок) + бонус_серии × p_implement × достоверность).
     """
     scores = []
     for event in events:
@@ -66,12 +75,9 @@ def calculate_risk(events: list[dict], p_implement: float = 0.5, min_events: int
     base = max(scores, default=0)
     # бонус за серию событий (корреляция)
     bonus = min(20, max(0, len(events) - 1) * 5)
-    # достоверность корреляции: растёт с числом связанных событий относительно порога правила
-    if min_events > 1:
-        correlation_confidence = min(1.0, len(events) / (min_events + 2))
-    else:
-        correlation_confidence = 1.0
-    # вероятность реализации угрозы: масштабирование бонуса на вероятность
-    adjusted_bonus = bonus * p_implement * correlation_confidence
+    # достоверность корреляции и вероятность реализации сужают бонус
+    confidence = max(0.0, min(1.0, correlation_confidence))
+    probability = max(0.0, min(1.0, p_implement))
+    adjusted_bonus = bonus * probability * confidence
     score = int(round(min(100, base + adjusted_bonus)))
     return score, score_to_severity(score)

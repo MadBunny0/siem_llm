@@ -94,3 +94,18 @@ def test_calculate_risk_probability_of_implementation():
     score, severity = calculate_risk(events, p_implement=1.0)
     assert score == 27
     assert severity == "low"
+
+
+def test_calculate_risk_correlation_confidence_factor():
+    from app.services.risk import calculate_risk
+
+    events = [{"raw_data": {"rule": {"level": "1"}}} for _ in range(5)]
+    # полная достоверность: 7 + 20*0.5*1.0 = 17
+    score_full, _ = calculate_risk(events, correlation_confidence=1.0)
+    assert score_full == 17
+    # низкая достоверность корреляции (1/3) ослабляет бонус: 7 + 20*0.5/3 ≈ 10
+    score_low, _ = calculate_risk(events, correlation_confidence=1 / 3)
+    assert score_low == 10
+    # вероятность 0 обнуляет бонус независимо от достоверности
+    score_zero, _ = calculate_risk(events, p_implement=0.0, correlation_confidence=0.33)
+    assert score_zero == 7

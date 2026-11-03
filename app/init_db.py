@@ -13,19 +13,27 @@ def main() -> None:
     _seed_default_assets()
     _seed_default_correlation_rules()
     _seed_default_playbooks()
+    _seed_validation_policy()
 
 
 def _ensure_schema_updates() -> None:
     """Лёгкие миграции для существующих БД (Alembic не используется).
 
     create_all создаёт только новые таблицы, но не добавляет колонки
-    в существующие — добавляем недостающие колонки явно.
+    и индексы в существующие — добавляем явно.
     """
     from sqlalchemy import text
 
     statements = [
         # порог повторений для правил корреляции (§3.3.2 ВКР)
         "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS min_events INTEGER NOT NULL DEFAULT 1",
+        # критерии успешного завершения сценария (§3.4 ВКР, p:105)
+        "ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS success_criteria JSON",
+        # индексы под корреляцию (stage-11: окно + совпадение атрибутов в SQL)
+        "CREATE INDEX IF NOT EXISTS ix_events_timestamp ON events (timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_events_src_ip ON events (src_ip)",
+        "CREATE INDEX IF NOT EXISTS ix_events_user ON events (user)",
+        "CREATE INDEX IF NOT EXISTS ix_events_asset_id ON events (asset_id)",
     ]
     with engine.begin() as conn:
         for stmt in statements:
@@ -128,29 +136,96 @@ def _seed_default_assets() -> None:
 
 
 def _seed_default_correlation_rules() -> None:
+    """Seed-правила корреляции по техникам MITRE ATT&CK (база mitre.ptsecurity.com,
+    ATT&CK v15.1) — покрывают классы атак из §3.3.2 ВКР (p:61)."""
     from sqlalchemy.orm import Session
+
     rules = [
         {
+            # T1110 Метод перебора (§3.3.2: «подбор паролей»)
             "name": "brute_force_attempts",
-            "description": "Множественные неудачные попытки входа с одного IP за короткое время",
+            "description": "T1110 Метод перебора: множественные неудачные попытки входа с одного IP за короткое время",
             "conditions": [
                 {"field": "event_type", "operator": "like", "value": "authentication_failed"},
                 {"field": "user", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 5,
-            "min_events": 3,  # порог повторений (§3.3.2)
+            "min_events": 3,
             "priority": 2,
             "is_active": True,
         },
         {
+            # T1110.003 Распыление паролей (§3.3.2: «перебор учётных записей»):
+            # одна учётка после другой с одного IP — совпадение по src_ip
+            "name": "password_spraying",
+            "description": "T1110.003 Распыление паролей: перебор разных учётных записей с одного IP за окно",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "authentication_failed"},
+                {"field": "src_ip", "operator": "neq", "value": ""},
+            ],
+            "time_window_minutes": 10,
+            "min_events": 4,
+            "priority": 2,
+            "is_active": True,
+        },
+        {
+            # T1046 Изучение сетевых служб (§3.3.2: «сетевое сканирование»)
             "name": "repeated_scan",
-            "description": "Повторяющиеся события с одного IP в течение окна корреляции",
+            "description": "T1046 Изучение сетевых служб: повторяющиеся события с одного IP в течение окна корреляции",
             "conditions": [
                 {"field": "src_ip", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 10,
             "min_events": 2,
             "priority": 1,
+            "is_active": True,
+        },
+        {
+            # T1068 / T1548 Повышение привилегий (§3.3.2: «попытки получения НСД»)
+            "name": "privilege_escalation_attempt",
+            "description": "T1068/T1548 Повышение привилегий: эксплуатация уязвимостей или обход контроля привилегий",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "privilege"},
+            ],
+            "time_window_minutes": 10,
+            "min_events": 1,
+            "priority": 3,
+            "is_active": True,
+        },
+        {
+            # T1190 Недостатки в общедоступном приложении
+            "name": "web_attack",
+            "description": "T1190 Недостатки в общедоступном приложении: попытки эксплуатации веб-ресурсов",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "web"},
+            ],
+            "time_window_minutes": 5,
+            "min_events": 2,
+            "priority": 2,
+            "is_active": True,
+        },
+        {
+            # T1204 Выполнение с участием пользователя (запуск вредоносного ПО)
+            "name": "malware_detection",
+            "description": "T1204 Вредоносное ПО: обнаружение вредоносной активности или выполнения",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "malware"},
+            ],
+            "time_window_minutes": 10,
+            "min_events": 1,
+            "priority": 3,
+            "is_active": True,
+        },
+        {
+            # T1048 Эксфильтрация по альтернативному протоколу
+            "name": "data_exfiltration",
+            "description": "T1048 Эксфильтрация данных: признаки несанкционированной передачи данных",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "exfiltration"},
+            ],
+            "time_window_minutes": 15,
+            "min_events": 1,
+            "priority": 3,
             "is_active": True,
         },
     ]
@@ -181,6 +256,11 @@ def _seed_default_playbooks() -> None:
             "steps": [
                 {"action": "block_ip", "target": "{{src_ip}}", "tool": "firewall"}
             ],
+            "success_criteria": [
+                "Новые соединения с заблокированного IP-адреса отсутствуют",
+                "Правило блокировки подтверждено межсетевым экраном",
+                "Инцидент переведён в статус in_progress",
+            ],
             "priority": 1,
             "is_active": True,
         },
@@ -191,6 +271,10 @@ def _seed_default_playbooks() -> None:
             "allowed_actions": ["disable_account"],
             "steps": [
                 {"action": "disable_account", "target": "{{user}}", "tool": "idm"}
+            ],
+            "success_criteria": [
+                "Учётная запись заблокирована в подсистеме управления пользователями",
+                "Попытки входа под учётной записью отклоняются",
             ],
             "priority": 2,
             "is_active": True,
@@ -203,6 +287,10 @@ def _seed_default_playbooks() -> None:
             "steps": [
                 {"action": "isolate_host", "target": "{{asset}}", "tool": "edr"}
             ],
+            "success_criteria": [
+                "Узел изолирован от корпоративной сети (карантин EDR)",
+                "Доступ к узлу сохранён только для администратора безопасности",
+            ],
             "priority": 3,
             "is_active": True,
         },
@@ -214,6 +302,10 @@ def _seed_default_playbooks() -> None:
             "steps": [
                 {"action": "collect_evidence", "target": "{{incident}}", "tool": "audit"}
             ],
+            "success_criteria": [
+                "Снимки событий и результатов анализа сохранены для расследования",
+                "Материалы инцидента доступны в журнале аудита",
+            ],
             "priority": 1,
             "is_active": True,
         },
@@ -224,6 +316,10 @@ def _seed_default_playbooks() -> None:
             "allowed_actions": ["monitor"],
             "steps": [
                 {"action": "monitor", "target": "{{incident}}", "tool": "none"}
+            ],
+            "success_criteria": [
+                "Инцидент взят под наблюдение",
+                "Повторные события фиксируются в журнале аудита",
             ],
             "priority": 1,
             "is_active": True,
@@ -238,6 +334,30 @@ def _seed_default_playbooks() -> None:
             if not existing:
                 pb = models.Playbook(**pb_data)
                 session.add(pb)
+        session.commit()
+
+
+def _seed_validation_policy() -> None:
+    """Seed формализованной политики DVE в БД (§3.4, p:103, stage-11).
+
+    Источник значений — DEFAULT_ALLOWED_ACTIONS из app/services/validation.py:
+    какие действия разрешены для каждого уровня риска инцидента.
+    """
+    from sqlalchemy.orm import Session
+
+    from app.services.validation import ALLOWED_ACTIONS
+
+    with Session(engine) as session:
+        for severity, allowed in ALLOWED_ACTIONS.items():
+            stmt = select(models.ValidationPolicy).where(models.ValidationPolicy.severity == severity)
+            existing = session.scalar(stmt)
+            if not existing:
+                session.add(
+                    models.ValidationPolicy(
+                        severity=severity,
+                        allowed_actions=sorted(allowed),
+                    )
+                )
         session.commit()
 
 

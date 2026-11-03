@@ -7,8 +7,11 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:3b"
     correlation_window_minutes: int = 5
     auto_response: bool = False
-    # автоматический LLM-анализ критических инцидентов без задержек (§3.3.3 ВКР, p:80)
+    # автоматический LLM-анализ инцидентов без задержек (§3.3.3 ВКР, p:80):
+    # auto_analysis — главный выключатель, auto_analysis_levels — какие уровни
+    # риска анализировать автоматически (плановый режим: перечислить все уровни)
     auto_analysis: bool = True
+    auto_analysis_levels: str = "critical"
     # JWT-авторизация пользователей SOC (stage-09)
     jwt_secret: str = "dev-secret-change-me-in-production"
     jwt_algorithm: str = "HS256"

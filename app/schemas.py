@@ -168,6 +168,7 @@ class PlaybookIn(BaseModel):
     trigger_conditions: dict = Field(default_factory=dict)
     allowed_actions: list[str] = Field(default_factory=list)
     steps: list[dict] = Field(default_factory=list)
+    success_criteria: list[str] | None = None  # критерии успешного завершения (§3.4, p:105)
     priority: int = 1
     is_active: bool = True
 
@@ -183,5 +184,16 @@ class PlaybookOut(BaseModel):
     trigger_conditions: dict | None = None
     allowed_actions: list[str] | None = None
     steps: list[dict] | None = None
+    success_criteria: list[str] | None = None
     priority: int
     is_active: bool
+
+
+class ValidationPolicyOut(BaseModel):
+    """Политика DVE: разрешённые действия для уровня риска (§3.4, p:103)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    severity: str
+    allowed_actions: list[str] | None = None

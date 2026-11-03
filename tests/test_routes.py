@@ -348,3 +348,80 @@ def test_create_rule_validation(client):
         json={"conditions": [{"field": "event_type", "operator": "like", "value": "auth"}]},
     )
     assert resp.status_code == 422
+
+
+def test_analyze_multiple_actions(client, db_session, monkeypatch):
+    """Перечень действий LLM: каждое проходит DVE, ответ — список results (stage-11)."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    async def fake_analyze(context):
+        return {
+            "description": "Подбор пароля",
+            "attack_type": "brute_force",
+            "confidence": 0.8,
+            "explanation": "Серия неудачных входов",
+            "recommended_action": "monitor, collect_evidence",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/incidents/{incident_id}/analyze")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["results"]) == 2
+    assert [r["action"] for r in data["results"]] == ["monitor", "collect_evidence"]
+    assert all(r["validation"]["approved"] for r in data["results"])
+    # перечень сохранён целиком (§3.4, p:15), а не первое действие
+    assert data["recommendation"]["recommended_action"] == "monitor, collect_evidence"
+    analyses = client.get(f"{API}/analyses").json()
+    assert any(a["recommended_action"] == "monitor, collect_evidence" for a in analyses)
+
+
+def test_planned_mode_default_critical_only(client, db_session, monkeypatch):
+    """Плановый режим: по умолчанию автоанализ только critical; high — не анализируется."""
+    seed_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels = "critical"
+
+    resp = client.post(f"{API}/ingest/wazuh", json=make_alert())  # level 10 → severity high
+    assert resp.status_code == 200
+    assert "analysis" not in resp.json()
+
+
+def test_planned_mode_levels_include_high(client, db_session, monkeypatch):
+    """AUTO_ANALYSIS_LEVELS=critical,high: high-инцидент анализируется автоматически."""
+    seed_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)
+    monkeypatch.setattr(settings, "auto_analysis_levels", "critical,high")
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=make_alert())
+    data = resp.json()
+    assert data["severity"] == "high"
+    assert "analysis" in data
+    assert data["analysis"]["results"][0]["action"] == "monitor"
+
+
+def test_validation_policy_endpoint(client, db_session):
+    """GET /validation-policy — политика DVE из БД (§3.4, p:103)."""
+    from app.models import ValidationPolicy
+
+    db_session.add(
+        ValidationPolicy(severity="low", allowed_actions=["monitor", "collect_evidence"])
+    )
+    db_session.commit()
+
+    resp = client.get(f"{API}/validation-policy")
+    assert resp.status_code == 200
+    policies = {p["severity"]: p["allowed_actions"] for p in resp.json()}
+    assert policies["low"] == ["monitor", "collect_evidence"]

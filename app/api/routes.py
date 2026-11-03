@@ -24,6 +24,7 @@ from app.models import (
     Notification,
     Playbook,
     User,
+    ValidationPolicy,
 )
 from app.schemas import (
     AnalysisOut,
@@ -38,6 +39,7 @@ from app.schemas import (
     PlaybookIn,
     PlaybookOut,
     RegisterIn,
+    ValidationPolicyOut,
     WazuhAlert,
 )
 from app.services.auth import get_current_user, require_admin
@@ -142,7 +144,7 @@ async def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
     )
 
     # 3. Корреляция по правилам из БД (§3.3.2)
-    rule, related = evaluate_correlation(db, event)
+    rule, related, correlation_confidence = evaluate_correlation(db, event)
 
     if rule is None:
         # Инцидент не формируется: событие сохраняется в БД до появления
@@ -170,11 +172,12 @@ async def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
         }
         for e in related
     ]
-    confidence = max(
-        ((e.get("raw_data") or {}).get("rule", {}).get("confidence", 0.5) for e in risk_events),
-        default=0.5,
+    # вероятность реализации угрозы — из данных события (§3.3.3, p:74)
+    score, severity = calculate_risk(
+        risk_events,
+        p_implement=_p_implement(risk_events),
+        correlation_confidence=correlation_confidence,
     )
-    score, severity = calculate_risk(risk_events, p_implement=confidence, min_events=rule.min_events or 1)
 
     incident = create_or_update_incident(db, related, risk_score=score)
     incident.severity = severity
@@ -217,12 +220,42 @@ async def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
         "rule": rule.name,
     }
 
-    # 6. Критические инциденты передаются модулю интеллектуального анализа
-    # без задержек (§3.3.3, p:80)
-    if settings.auto_analysis and incident.severity == "critical":
+    # 6. Инциденты из auto_analysis_levels передаются в LLM без задержек (§3.3.3, p:80);
+    # прочие уровни — «плановый режим»: включаются перечнем в AUTO_ANALYSIS_LEVELS
+    if settings.auto_analysis and incident.severity in _auto_analysis_levels():
         result["analysis"] = await _run_incident_analysis(db, incident, raise_on_error=False)
 
     return result
+
+
+def _auto_analysis_levels() -> set[str]:
+    """Уровни риска, анализируемые LLM автоматически (AUTO_ANALYSIS_LEVELS)."""
+    return {
+        level.strip().lower()
+        for level in (settings.auto_analysis_levels or "critical").split(",")
+        if level.strip()
+    }
+
+
+def _p_implement(risk_events: list[dict]) -> float:
+    """Вероятность реализации угрозы (§3.3.3, p:74) из данных события.
+
+    Явный rule.confidence в алерте (кастомные правила Wazuh) приоритетнее;
+    иначе эвристика по уровню правила: level/15, зажатый в [0.05, 0.95]
+    (уровень 3 → 0.2, уровень 10 → 0.67, уровень 15 → 0.95).
+    """
+    confidences = [
+        (e.get("raw_data") or {}).get("rule", {}).get("confidence")
+        for e in risk_events
+    ]
+    confidences = [float(c) for c in confidences if c is not None]
+    if confidences:
+        return max(0.05, min(0.95, max(confidences)))
+    levels = [
+        float((e.get("raw_data") or {}).get("rule", {}).get("level", 3) or 3)
+        for e in risk_events
+    ]
+    return max(0.05, min(0.95, (max(levels, default=3.0)) / 15.0))
 
 
 def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
@@ -305,10 +338,11 @@ def confirm_action(
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin),
 ):
-    """Подтверждение администратором отложенного действия (§3.4, p:17, p:102).
+    """Подтверждение администратором отложенных действий (§3.4, p:17, p:102).
 
-    Выполняет последнее рекомендованное действие по инциденту, если оно
-    разрешено политикой уровня риска и для него зарегистрирован playbook.
+    Выполняет ВСЕ действия из последней рекомендации по инциденту, которые
+    разрешены политикой уровня риска (из БД) и для которых зарегистрирован
+    playbook. Ответ — список результатов по каждому действию.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -322,28 +356,40 @@ def confirm_action(
     if not analysis or not analysis.recommended_action:
         raise HTTPException(status_code=404, detail="No pending recommendation found")
 
-    action = analysis.recommended_action.split(",")[0].strip()
-    playbook = load_playbook_by_action(db, action)
     asset = incident.asset
-    validation = validate_recommendation(
-        incident.severity,
-        {"recommended_action": action},
-        asset_criticality=asset.criticality if asset else None,
-        playbook_found=playbook is not None,
-        admin_confirmed=True,
-    )
-    if not validation["approved"]:
-        raise HTTPException(status_code=422, detail=validation["reason"])
+    action_list = [a.strip() for a in str(analysis.recommended_action).split(",") if a.strip()]
+    results: list[dict] = []
+    for action in action_list:
+        playbook = load_playbook_by_action(db, action)
+        validation = validate_recommendation(
+            incident.severity,
+            {"recommended_action": action},
+            asset_criticality=asset.criticality if asset else None,
+            playbook_found=playbook is not None,
+            admin_confirmed=True,
+            db=db,
+        )
+        execution = (
+            execute_playbook(validation["action"], {"incident_id": incident.id}, db)
+            if validation["approved"]
+            else {"executed": False, "mode": "blocked", "action": action, "reason": validation["reason"]}
+        )
+        audit(
+            "action_confirmed_by_admin",
+            {"action": action, "validation": validation, "execution": execution},
+            db=db,
+            incident_id=incident.id,
+        )
+        results.append({"action": action, "validation": validation, "execution": execution})
 
-    execution = execute_playbook(validation["action"], {"incident_id": incident.id}, db)
-    audit(
-        "action_confirmed_by_admin",
-        {"action": validation["action"], "execution": execution},
-        db=db,
-        incident_id=incident.id,
-    )
     db.commit()
-    return {"incident_id": incident.id, "validation": validation, "execution": execution}
+    return {
+        "incident_id": incident.id,
+        "results": results,
+        # совместимость с прежним форматом ответа: первый результат
+        "validation": results[0]["validation"],
+        "execution": results[0]["execution"],
+    }
 
 
 async def _run_incident_analysis(
@@ -409,30 +455,52 @@ async def _run_incident_analysis(
     if "explanation" in recommendation and "reason" not in recommendation:
         recommendation["reason"] = recommendation["explanation"]
 
-    # LLM может вернуть несколько действий через запятую — берём первое
-    raw_action = str(recommendation.get("recommended_action") or "monitor").split(",")[0].strip()
-    recommendation["recommended_action"] = raw_action
+    # Перечень рекомендуемых действий (§3.4, p:15): LLM может вернуть несколько
+    # через запятую — каждое проходит DVE и исполняется по порядку (stage-11)
+    raw_actions = str(recommendation.get("recommended_action") or "monitor")
+    action_list = [a.strip() for a in raw_actions.split(",") if a.strip()] or ["monitor"]
+    recommendation["recommended_action"] = ", ".join(action_list)
+    recommendation["action"] = action_list[0]
 
-    # Decision Validation Engine (§3.4): политика уровня риска + playbook + актив
-    playbook = load_playbook_by_action(db, raw_action)
-    validation = validate_recommendation(
-        incident.severity,
-        recommendation,
-        asset_criticality=asset.criticality if asset else None,
-        playbook_found=playbook is not None,
-    )
+    # Decision Validation Engine (§3.4) для каждого действия:
+    # политика уровня риска (из БД) + playbook + актив
+    results: list[dict] = []
+    pending_any = False
+    for action in action_list:
+        playbook = load_playbook_by_action(db, action)
+        validation = validate_recommendation(
+            incident.severity,
+            {"recommended_action": action},
+            asset_criticality=asset.criticality if asset else None,
+            playbook_found=playbook is not None,
+            db=db,
+        )
 
-    if validation.get("requires_confirmation"):
-        # Критический актив: действие отложено до подтверждения администратора
-        execution = {
-            "executed": False,
-            "mode": "pending_confirmation",
-            "action": validation["action"],
-            "reason": validation["reason"],
-        }
+        if validation.get("requires_confirmation"):
+            # Критический актив: действие отложено до подтверждения администратора
+            execution = {
+                "executed": False,
+                "mode": "pending_confirmation",
+                "action": validation["action"],
+                "reason": validation["reason"],
+            }
+            pending_any = True
+        else:
+            execution = execute_playbook(validation["action"], context, db)
+
+        audit("validation_result", validation, db=db, incident_id=incident.id)
+        audit(
+            "playbook_selected",
+            {"playbook": playbook.name if playbook else None, "action": action},
+            db=db,
+            incident_id=incident.id,
+        )
+        audit("action_executed", execution, db=db, incident_id=incident.id)
+
+        results.append({"action": action, "validation": validation, "execution": execution})
+
+    if pending_any:
         notify_analyst(db, incident, "action_pending_confirmation")
-    else:
-        execution = execute_playbook(validation["action"], context, db)
 
     # Сохранение результатов интеллектуального анализа (модель Analysis / LLMAnalysis)
     # Поля по Таблице 3.1 (§3.2 ВКР): описание, тип атаки, достоверность, обоснование, рекомендации
@@ -444,12 +512,15 @@ async def _run_incident_analysis(
         attack_type=recommendation.get("attack_type"),
         confidence=recommendation.get("confidence"),
         explanation=recommendation.get("explanation") or recommendation.get("reason"),
-        recommended_action=recommendation.get("recommended_action") or recommendation.get("action"),
+        # полный перечень действий сохраняется целиком (§3.4, p:15)
+        recommended_action=recommendation.get("recommended_action"),
         # полный ответ модели LLM сохраняем в JSON для расследований
         response_raw={
             "recommendation": recommendation,
-            "validation": validation,
-            "execution": execution,
+            "results": results,
+            # совместимость со старым форматом: первый результат
+            "validation": results[0]["validation"],
+            "execution": results[0]["execution"],
         },
     )
     analysis.updated_at = datetime.now(timezone.utc)
@@ -459,15 +530,6 @@ async def _run_incident_analysis(
     incident.status = "in_progress"
     db.commit()
     db.refresh(incident)
-
-    audit("validation_result", validation, db=db, incident_id=incident.id)
-    audit(
-        "playbook_selected",
-        {"playbook": playbook.name if playbook else None},
-        db=db,
-        incident_id=incident.id,
-    )
-    audit("action_executed", execution, db=db, incident_id=incident.id)
     db.commit()
 
     # ITSM-уведомление аналитикам о результатах анализа LLM
@@ -477,8 +539,10 @@ async def _run_incident_analysis(
     return {
         "incident_id": incident.id,
         "recommendation": recommendation,
-        "validation": validation,
-        "execution": execution,
+        "results": results,
+        # совместимость с прежним форматом ответа: первый результат
+        "validation": results[0]["validation"],
+        "execution": results[0]["execution"],
     }
 
 
@@ -610,6 +674,12 @@ def delete_playbook(playbook_id: int, db: Session = Depends(get_db), admin: User
     return {"deleted": True, "id": playbook_id}
 
 
+@router.get("/validation-policy", response_model=list[ValidationPolicyOut])
+def validation_policy(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Политика DVE: разрешённые действия по уровням риска (§3.4, p:103, stage-11)."""
+    return list(db.scalars(select(ValidationPolicy).order_by(ValidationPolicy.id)).all())
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
@@ -619,4 +689,5 @@ def health(db: Session = Depends(get_db)):
         "llm_model": settings.ollama_model,
         "auto_response": settings.auto_response,
         "auto_analysis": settings.auto_analysis,
+        "auto_analysis_levels": sorted(_auto_analysis_levels()),
     }

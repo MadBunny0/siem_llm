@@ -154,6 +154,72 @@ function Status({ value }) {
   return <span className={`badge status-${value || 'new'}`}>{value || 'new'}</span>;
 }
 
+/* ==================== Stage 11: результаты по каждому действию ==================== */
+
+// Нормализованный список результатов: новый формат (analysis.results — по одному
+// на каждое действие из перечня LLM) с fallback на старый одиночный формат
+// (validation/execution верхнего уровня).
+function analysisResults(analysis) {
+  if (!analysis) return [];
+  if (Array.isArray(analysis.results) && analysis.results.length) return analysis.results;
+  if (analysis.validation || analysis.execution) {
+    return [{
+      action: analysis.recommendation?.action ||
+              analysis.recommendation?.recommended_action ||
+              analysis.execution?.action,
+      validation: analysis.validation,
+      execution: analysis.execution,
+    }];
+  }
+  return [];
+}
+
+// Действие требует ручного подтверждения администратора?
+function resultNeedsConfirmation(result) {
+  return result?.validation?.requires_confirmation === true ||
+    result?.execution?.mode === 'pending_confirmation';
+}
+
+function resultsNeedConfirmation(results) {
+  return (results || []).some(resultNeedsConfirmation);
+}
+
+// Причина из первого результата, ожидающего подтверждения (для плашки).
+function pendingReasonText(freshAnalysis, storedAnalysis) {
+  const sources = [freshAnalysis, storedAnalysis?.response_raw, storedAnalysis];
+  for (const source of sources) {
+    const pending = analysisResults(source).find(resultNeedsConfirmation);
+    if (pending) {
+      return pending.validation?.reason || pending.execution?.reason || '';
+    }
+  }
+  return '';
+}
+
+// Бейдж решения DVE по одному результату.
+function resultValidationBadge(result) {
+  if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ' };
+  return result?.validation?.approved
+    ? { cls: 'approved-text', text: 'РАЗРЕШЕНО' }
+    : { cls: 'blocked-text', text: 'ЗАБЛОКИРОВАНО' };
+}
+
+// Бейдж режима исполнения по одному результату.
+function resultExecutionBadge(result) {
+  if (result?.execution?.executed) return { cls: 'executed-text', text: 'ВЫПОЛНЕНО' };
+  if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ' };
+  return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
+}
+
+// «1 критерий» / «3 критерия» / «5 критериев» — счётчик в таблице playbooks.
+function criteriaCountLabel(count) {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return `${count} критерий`;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} критерия`;
+  return `${count} критериев`;
+}
+
 function PipelineStatus({ incident, analysis }) {
   const stages = [
     { id: 'wazuh', label: 'Wazuh' },
@@ -170,13 +236,14 @@ function PipelineStatus({ incident, analysis }) {
     if (incident.risk_score !== undefined) currentStage = 'risk';
     if (incident.analyzed) currentStage = 'qwen';
     if (analysis) {
-      if (analysis.validation) currentStage = 'validate';
-      if (analysis.execution) currentStage = 'playbook';
+      // Stage 11: в новом формате validation/execution лежат внутри results
+      if (analysis.validation || analysis.results?.length) currentStage = 'validate';
+      if (analysis.execution || analysis.results?.length) currentStage = 'playbook';
     }
     if (incident.status === 'closed') currentStage = 'playbook';
   }
 
-  const isCompleted = analysis && analysis.execution;
+  const isCompleted = !!(analysis && (analysis.execution || analysis.results?.length));
 
   return (
     <div className="pipeline-container">
@@ -817,6 +884,7 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
       is_active: true,
       allowed_actions: ['monitor'],
       steps: '',
+      success_criteria: '',
     };
   }
 
@@ -851,6 +919,8 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
         ? rule.allowed_actions.filter(a => PLAYBOOK_ACTIONS.includes(a))
         : [],
       steps: rule.steps === null || rule.steps === undefined ? '' : JSON.stringify(rule.steps, null, 2),
+      // Stage 11: массив критериев сериализуется в строки — по одному на строку
+      success_criteria: Array.isArray(rule.success_criteria) ? rule.success_criteria.join('\n') : '',
     });
     setShowForm(true);
   }
@@ -891,11 +961,17 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
       }
     }
     const priorityNumber = Number(form.priority);
+    // Stage 11: критерии успешного завершения — по одному на строку, пустые отбрасываем
+    const successCriteria = form.success_criteria
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
     const payload = {
       name: form.name.trim(),
       description: form.description.trim(),
       allowed_actions: form.allowed_actions,
       steps,
+      success_criteria: successCriteria.length ? successCriteria : null,
       priority: Number.isFinite(priorityNumber) ? priorityNumber : 1,
       is_active: form.is_active,
     };
@@ -999,7 +1075,17 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
                       ? <div className="stack">{(rule.allowed_actions || []).map(a => <span key={a}>{a}</span>)}</div>
                       : '—'}
                   </td>
-                  <td>{Array.isArray(rule.steps) ? rule.steps.length : '—'}</td>
+                  <td>
+                    {Array.isArray(rule.steps) ? rule.steps.length : '—'}
+                    {Array.isArray(rule.success_criteria) && rule.success_criteria.length > 0 && (
+                      <span
+                        className="chip accent criteria-chip"
+                        title={rule.success_criteria.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+                      >
+                        {criteriaCountLabel(rule.success_criteria.length)}
+                      </span>
+                    )}
+                  </td>
                   <td>{rule.priority ? <span className="chip">{priorityLabel(rule.priority)}</span> : '—'}</td>
                   <td>
                     {isAdmin ? (
@@ -1098,6 +1184,16 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
                 value={form.steps}
                 onChange={e => setForm({ ...form, steps: e.target.value })}
                 placeholder={'[\n  { "order": 1, "action": "isolate_host", "description": "Изолировать скомпрометированный хост" }\n]'}
+              />
+            </div>
+
+            <div className="form-group">
+              <label>Критерии успешного завершения</label>
+              <textarea
+                rows="3"
+                value={form.success_criteria}
+                onChange={e => setForm({ ...form, success_criteria: e.target.value })}
+                placeholder={'Необязательно, по одному критерию на строку, например:\nХост изолирован от корпоративной сети\nВредоносный IP-адрес добавлен в блок-лист'}
               />
             </div>
 
@@ -1349,13 +1445,12 @@ function App({ user, onLogout }) {
 
   const pendingConfirmation = !!(
     !confirmedAction && (
-      (analysis && (analysis.validation?.requires_confirmation === true || analysis.execution?.mode === 'pending_confirmation')) ||
+      // свежий анализ: results по каждому действию (Stage 11) или validation/execution (старый формат)
+      resultsNeedConfirmation(analysisResults(analysis)) ||
+      // последний сохранённый анализ: бэкенд кладёт results в response_raw — плашка работает и после перезагрузки
       (lastDetailAnalysis && (
-        lastDetailAnalysis.validation?.requires_confirmation === true ||
-        lastDetailAnalysis.execution?.mode === 'pending_confirmation' ||
-        // validation/execution хранятся в response_raw — плашка работает и после перезагрузки
-        lastDetailAnalysis.response_raw?.validation?.requires_confirmation === true ||
-        lastDetailAnalysis.response_raw?.execution?.mode === 'pending_confirmation'
+        resultsNeedConfirmation(analysisResults(lastDetailAnalysis.response_raw)) ||
+        resultsNeedConfirmation(analysisResults(lastDetailAnalysis))
       ))
     )
   );
@@ -1396,13 +1491,27 @@ function App({ user, onLogout }) {
     setConfirmBusy(true);
     try {
       const result = await request(`/incidents/${selected.id}/confirm-action`, { method: 'POST' });
+      // Stage 11: новый формат ответа — results по каждому действию;
+      // старый формат — validation/execution верхнего уровня.
+      const confirmResults = analysisResults(result);
       setAnalysis(prev => (prev
-        ? { ...prev, validation: result?.validation ?? prev.validation, execution: result?.execution ?? prev.execution }
+        ? {
+            ...prev,
+            validation: result?.validation ?? prev.validation,
+            execution: result?.execution ?? prev.execution,
+            results: confirmResults.length ? confirmResults : prev.results,
+          }
         : prev));
       setConfirmedAction(true);
-      setToast(result?.execution?.executed
-        ? `Действие выполнено: ${result.execution.action || result.execution.mode || 'готово'}`
-        : 'Действие подтверждено администратором');
+      if (confirmResults.length) {
+        const realCount = confirmResults.filter(r => r.execution?.executed).length;
+        const actions = confirmResults.map(r => r.action || '—').join(', ');
+        setToast(`Подтверждено: ${confirmResults.length} действий исполнено, из них реальных: ${realCount} (${actions})`);
+      } else {
+        setToast(result?.execution?.executed
+          ? `Действие выполнено: ${result.execution.action || result.execution.mode || 'готово'}`
+          : 'Действие подтверждено администратором');
+      }
       setTimeout(() => setToast(''), 3500);
       await loadIncidentDetail(selected.id);
       await load();
@@ -1583,10 +1692,7 @@ function App({ user, onLogout }) {
                   <div>
                     <strong>Требуется подтверждение администратора</strong>
                     <span>
-                      {analysis?.validation?.reason ||
-                       analysis?.execution?.reason ||
-                       lastDetailAnalysis?.validation?.reason ||
-                       lastDetailAnalysis?.execution?.reason ||
+                      {pendingReasonText(analysis, lastDetailAnalysis) ||
                        'Рекомендованное действие превышает уровень автономности и ожидает вашего одобрения.'}
                     </span>
                   </div>
@@ -1635,21 +1741,25 @@ function App({ user, onLogout }) {
                      analysis.recommendation?.explanation ||
                      'Модель не вернула текстовое обоснование.'}
                   </p>
-                  <div className="validation">
-                    <span>Decision Validation Engine</span>
-                    <b className={analysis.validation?.approved ? 'approved-text' : 'blocked-text'}>
-                      {analysis.validation?.approved ? 'РАЗРЕШЕНО' : 'ЗАБЛОКИРОВАНО'}
-                    </b>
-                    <small>{analysis.validation?.reason || ''}</small>
-                  </div>
-                  <div className="execution-result">
-                    <span>Playbook Execution</span>
-                    <b className={analysis.execution?.executed ? 'executed-text' : 'simulated-text'}>
-                      {analysis.execution?.executed ? 'ВЫПОЛНЕНО' : 'СИМУЛЯЦИЯ'}
-                    </b>
-                    <small>Action: {analysis.execution?.action || '—'} · Mode: {analysis.execution?.mode || '—'}</small>
-                  </div>
-                  <pre>{JSON.stringify(analysis.execution, null, 2)}</pre>
+                  {/* Stage 11: по одному результату на каждое действие из перечня LLM
+                      (fallback на старый одиночный формат — см. analysisResults) */}
+                  {analysisResults(analysis).map((r, index) => {
+                    const validationBadge = resultValidationBadge(r);
+                    const executionBadge = resultExecutionBadge(r);
+                    return (
+                      <div className="result-item" key={`${r.action || 'result'}-${index}`}>
+                        <div className="result-head-row">
+                          <span className="result-action">{r.action || 'действие'}</span>
+                          <b className={validationBadge.cls}>{validationBadge.text}</b>
+                          <b className={executionBadge.cls}>{executionBadge.text}</b>
+                        </div>
+                        {(r.validation?.reason || r.execution?.reason) && (
+                          <small className="result-reason">{r.validation?.reason || r.execution?.reason}</small>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <pre>{JSON.stringify(analysis.results ?? analysis.execution, null, 2)}</pre>
                 </div>
               )}
 
