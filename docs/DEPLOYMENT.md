@@ -141,18 +141,29 @@ docker compose --profile wazuh up --build
 Обычный `docker compose up` Wazuh не поднимает. Демо-матрица атак (hydra/nmap/curl) —
 там же.
 
-## 6. Автотесты (78 тестов) — только Docker, локальный Python не нужен
+## 6. Автотесты — только Docker, локальный Python/Node не нужны
 
-Тесты запечены в dev-стадию образа (Dockerfile multi-stage: `base` — прод, `dev` — прод + тесты):
+**Бэкенд (86 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
+`base` — прод, `dev` — прод + тесты):
 
 ```bash
-docker compose --profile tests build tests   # собрать образ с тестами
-docker compose --profile tests run --rm tests  # прогнать pytest (78 тестов)
+docker compose --profile tests build tests      # собрать образ с тестами
+docker compose --profile tests run --rm tests   # прогнать pytest
 ```
 
 Тесты самодостаточны (SQLite in-memory) — БД/Ollama/запущенный стенд не требуются.
 Повторный прогон после правок: та же команда `run` (кэш сборки обновит только слои
 с изменившимися файлами — это секунды).
+
+**Фронтенд (49 тестов, Vitest + React Testing Library):**
+
+```bash
+docker compose --profile tests run --rm frontend-tests
+```
+
+Контейнер Node монтирует `frontend/` (node_modules кэшируется в volume `frontend_node_modules`)
+и гоняет `vitest run`. Покрыты чистые хелперы (`frontend/src/lib/helpers.js`) и логика
+конвейера (`frontend/src/components/PipelineStatus.jsx` — рендер через RTL).
 
 **Вариант A — локально (для разработчиков):**
 
@@ -161,6 +172,8 @@ python -m venv .venv
 .venv\Scripts\activate            # Windows; в bash: source .venv/bin/activate
 pip install -r requirements.txt pytest
 pytest
+
+cd frontend && npm install && npm test
 ```
 
 Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`;
@@ -220,4 +233,4 @@ docker compose run --rm ollama-init  # докачать модель, если �
 - Подключить реальные события Wazuh и атаки — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md)
   (демо-матрица: какие seed-правила чем воспроизводить).
 - Стенд с виртуальными машинами (VirtualBox) для экспериментов — там же, «Способ 2».
-- Описание системы — [README.md](README.md) и [DOCUMENTATION.md](DOCUMENTATION.md).
+- Описание системы — [README.md](../README.md) и [DOCUMENTATION.md](DOCUMENTATION.md).

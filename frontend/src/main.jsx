@@ -2,8 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
+import { analysisResults, confPct, criteriaCountLabel, detailToMessage, formatDate,
+         initiatedByBadge, pendingReasonText, PLAYBOOK_ACTIONS, priorityLabel,
+         PRIORITY_LABELS, resultExecutionBadge, resultNeedsConfirmation,
+         resultValidationBadge, resultsNeedConfirmation, severityOrder, STATUS_LABELS }
+  from './lib/helpers.js';
+import PipelineStatus from './components/PipelineStatus.jsx';
+
 const API = '/api/v1';
-const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
 
 const TABS = [
   { id: 'incidents', icon: '◈', label: 'Инциденты' },
@@ -23,16 +29,8 @@ const TAB_META = {
   playbooks: { eyebrow: 'АВТОМАТИЗАЦИЯ РЕАГИРОВАНИЯ', title: 'Playbooks' },
 };
 
-const STATUS_LABELS = { new: 'Новый', in_progress: 'В работе', closed: 'Закрыт' };
 const CONDITION_OPERATORS = ['eq', 'neq', 'in', 'like'];
 const PRIORITIES = [1, 2, 3, 4];
-const PRIORITY_LABELS = { 1: 'низкий', 2: 'средний', 3: 'высокий', 4: 'критический' };
-
-function priorityLabel(priority) {
-  if (priority === null || priority === undefined || priority === '') return '—';
-  return PRIORITY_LABELS[priority] ? `${priority} · ${PRIORITY_LABELS[priority]}` : String(priority);
-}
-const PLAYBOOK_ACTIONS = ['monitor', 'collect_evidence', 'isolate_host', 'block_ip', 'disable_account'];
 const NOTIFICATION_STATUS_CLASS = {
   sent: 'badge-status-sent',
   pending: 'badge-status-pending',
@@ -82,19 +80,6 @@ function clearSession() {
   setStoredUser(null);
 }
 
-function detailToMessage(detail, fallback) {
-  if (typeof detail === 'string' && detail) return detail;
-  if (detail !== undefined && detail !== null) {
-    try {
-      const text = JSON.stringify(detail);
-      if (text && text !== '{}') return text;
-    } catch (e) {
-      /* fallthrough */
-    }
-  }
-  return fallback;
-}
-
 async function request(path, options = {}) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   if (authToken) headers.Authorization = `Bearer ${authToken}`;
@@ -135,18 +120,6 @@ async function loginRequest(username, password) {
   }
 }
 
-function formatDate(value) {
-  if (!value) return '—';
-  return new Intl.DateTimeFormat('ru-RU', { dateStyle: 'short', timeStyle: 'medium' }).format(new Date(value));
-}
-
-function confPct(value) {
-  if (value === null || value === undefined || value === '') return '—';
-  const num = Number(value);
-  if (Number.isNaN(num)) return '—';
-  return `${Math.round(num <= 1 ? num * 100 : num)}%`;
-}
-
 function Severity({ value }) {
   return <span className={`badge severity-${value || 'low'}`}>{value || 'low'}</span>;
 }
@@ -154,150 +127,6 @@ function Status({ value }) {
   return <span className={`badge status-${value || 'new'}`}>{value || 'new'}</span>;
 }
 
-/* ==================== Stage 11: результаты по каждому действию ==================== */
-
-// Нормализованный список результатов: новый формат (analysis.results — по одному
-// на каждое действие из перечня LLM) с fallback на старый одиночный формат
-// (validation/execution верхнего уровня).
-function analysisResults(analysis) {
-  if (!analysis) return [];
-  if (Array.isArray(analysis.results) && analysis.results.length) return analysis.results;
-  if (analysis.validation || analysis.execution) {
-    return [{
-      action: analysis.recommendation?.action ||
-              analysis.recommendation?.recommended_action ||
-              analysis.execution?.action,
-      validation: analysis.validation,
-      execution: analysis.execution,
-    }];
-  }
-  return [];
-}
-
-// Действие требует ручного подтверждения администратора?
-function resultNeedsConfirmation(result) {
-  return result?.validation?.requires_confirmation === true ||
-    result?.execution?.mode === 'pending_confirmation';
-}
-
-function resultsNeedConfirmation(results) {
-  return (results || []).some(resultNeedsConfirmation);
-}
-
-// Причина из первого результата, ожидающего подтверждения (для плашки).
-function pendingReasonText(freshAnalysis, storedAnalysis) {
-  const sources = [freshAnalysis, storedAnalysis?.response_raw, storedAnalysis];
-  for (const source of sources) {
-    const pending = analysisResults(source).find(resultNeedsConfirmation);
-    if (pending) {
-      return pending.validation?.reason || pending.execution?.reason || '';
-    }
-  }
-  return '';
-}
-
-// Бейдж решения DVE по одному результату.
-function resultValidationBadge(result) {
-  if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ ПОДТВЕРЖДЕНИЯ' };
-  return result?.validation?.approved
-    ? { cls: 'approved-text', text: 'РАЗРЕШЕНО' }
-    : { cls: 'blocked-text', text: 'ЗАБЛОКИРОВАНО' };
-}
-
-// Бейдж режима исполнения по одному результату.
-function resultExecutionBadge(result) {
-  if (result?.execution?.executed) return { cls: 'executed-text', text: 'ВЫПОЛНЕНО' };
-  if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ' };
-  return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
-}
-
-// [6] Бейдж источника анализа: поле initiated_by в Analysis.response_raw
-// («auto_analysis» — автоанализ при создании critical-инцидента, «manual» — запуск вручную).
-const INITIATED_BY_META = {
-  auto_analysis: {
-    cls: 'auto',
-    text: 'авто (critical)',
-    title: 'Автоматический анализ при создании critical-инцидента; LLM недетерминирована — повторный анализ может дать другой результат',
-  },
-  manual: {
-    cls: 'manual',
-    text: 'вручную',
-    title: 'Анализ запущен вручную кнопкой «Запустить интеллектуальный анализ»',
-  },
-};
-
-function initiatedByBadge(analysis) {
-  let raw = analysis?.response_raw ?? analysis;
-  if (typeof raw === 'string') {
-    try {
-      raw = JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
-  }
-  return INITIATED_BY_META[raw?.initiated_by] || null;
-}
-
-// «1 критерий» / «3 критерия» / «5 критериев» — счётчик в таблице playbooks.
-function criteriaCountLabel(count) {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return `${count} критерий`;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return `${count} критерия`;
-  return `${count} критериев`;
-}
-
-function PipelineStatus({ analysis, analysesLength, pendingConfirmation }) {
-  const stages = [
-    { id: 'wazuh', label: 'Wazuh' },
-    { id: 'normalize', label: 'Normalize' },
-    { id: 'correlate', label: 'Correlate' },
-    { id: 'risk', label: 'Risk' },
-    { id: 'qwen', label: 'Qwen' },
-    { id: 'validate', label: 'Validate' },
-    { id: 'playbook', label: 'Playbook' },
-  ];
-
-  // [8]+[9] Конвейер строится только по фактическим данным:
-  //  - инцидент уже создан → Wazuh/Normalize/Correlate/Risk завершены всегда;
-  //  - Qwen/Validate/Playbook завершены, только если есть хотя бы один анализ
-  //    (свежий или в истории детали); иначе — pending независимо от статуса closed;
-  //  - есть ожидающий подтверждения результат → Playbook в состоянии active с подписью;
-  //  - статус closed на конвейер не влияет — он показан бейджем в шапке инцидента.
-  const hasAnalysis = (analysesLength || 0) > 0 || !!analysis;
-
-  return (
-    <div className="pipeline-container">
-      <div className="pipeline-title">КОНВЕЙЕР ОБРАБОТКИ</div>
-      <div className="pipeline-steps">
-        {stages.map((stage, index) => {
-          const isLlmStage = stage.id === 'qwen' || stage.id === 'validate' || stage.id === 'playbook';
-          const playbookAwaiting = stage.id === 'playbook' && pendingConfirmation;
-          let status = 'completed';
-          if (isLlmStage && !hasAnalysis) status = 'pending';
-          if (playbookAwaiting) status = 'active';
-
-          return (
-            <React.Fragment key={stage.id}>
-              <div className={`pipeline-stage ${status}`}>
-                <div className="stage-label">{stage.label}</div>
-                <div className="stage-status">
-                  {status === 'completed' && '✓'}
-                  {status === 'active' && '●'}
-                  {status === 'pending' && '○'}
-                </div>
-                {playbookAwaiting && <div className="stage-note">ожидает подтверждения</div>}
-              </div>
-              {index < stages.length - 1 && (
-                <div className={`pipeline-arrow ${status === 'completed' ? 'completed' : ''}`}>→</div>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 /* ==================== Вкладка «Анализы» ==================== */
 

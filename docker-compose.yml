@@ -96,9 +96,7 @@ services:
       db:
         condition: service_healthy
 
-  # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
-  # Обычный `docker compose up` его не поднимает. Настройка интеграции — WAZUH_INTEGRATION.md
-  # Автотесты (78) внутри контейнера — локальный Python не нужен (stage-11):
+  # Автотесты бэкенда внутри контейнера — локальный Python не нужен (stage-11):
   # docker compose --profile tests build tests
   # docker compose --profile tests run --rm tests
   tests:
@@ -108,6 +106,20 @@ services:
     profiles: ["tests"]
     restart: "no"
 
+  # Автотесты фронтенда (Vitest + RTL) — локальный Node не нужен (stage-13):
+  # docker compose --profile tests run --rm frontend-tests
+  frontend-tests:
+    image: node:20-alpine
+    working_dir: /work
+    profiles: ["tests"]
+    volumes:
+      - ./frontend:/work
+      - frontend_node_modules:/work/node_modules
+    command: sh -c "npm install --no-audit --no-fund --loglevel=error && npx vitest run"
+    restart: "no"
+
+  # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
+  # Обычный `docker compose up` его не поднимает. Настройка интеграции — docs/WAZUH_INTEGRATION.md
   wazuh-manager:
     image: wazuh/wazuh-manager:4.7.4
     profiles: ["wazuh"]
@@ -129,3 +141,4 @@ volumes:
   pgdata:
   ollama_data:
   wazuh_data:
+  frontend_node_modules:

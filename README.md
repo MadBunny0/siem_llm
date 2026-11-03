@@ -33,9 +33,30 @@ Docker Compose специально разделяет подготовку за
 
 При повторном запуске существующие данные PostgreSQL и скачанная модель сохраняются в Docker volumes.
 
+## Структура проекта
+
+```
+siem_llm/
+├── app/                  # Бэкенд: FastAPI (api/, services/, models, init_db)
+├── frontend/             # React-дашборд (src/lib — хелперы, src/components — компоненты)
+├── tests/                # pytest-тесты бэкенда (86, запускаются в контейнере)
+├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION
+├── samples/              # Примеры алертов Wazuh (JSON)
+├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
+├── wazuh/                # Файлы интеграции с Wazuh (integrator, фрагмент ossec.conf)
+├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer)
+├── Dockerfile            # Бэкенд: multi-stage (base — прод, dev — +тесты)
+└── requirements.txt, pytest.ini, .env.example
+```
+
+Тесты: 86 backend (pytest) + 49 frontend (Vitest + RTL) — запускаются в контейнере,
+инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
+
+---
+
 ## Запуск
 
-> **Полная инструкция по развёртыванию «с нуля» (Windows/Linux/macOS): [DEPLOYMENT.md](DEPLOYMENT.md)** —
+> **Полная инструкция по развёртыванию «с нуля» (Windows/Linux/macOS): [DEPLOYMENT.md](docs/DEPLOYMENT.md)** —
 > требования, установка Docker/WSL2, первый запуск, демо-сценарий, тесты, GPU, troubleshooting.
 
 ### Быстрый старт (macOS)
@@ -72,7 +93,7 @@ curl http://localhost:8000/api/v1/health
 ```bash
 curl -X POST http://localhost:8000/api/v1/ingest/wazuh \
   -H 'Content-Type: application/json' \
-  --data @sample_wazuh_alert.json
+  --data @samples/sample_wazuh_alert.json
 ```
 
 Получение инцидентов:
@@ -145,10 +166,10 @@ curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
 
 - **Быстрый старт** — контейнерный Wazuh-менеджер под опциональным профилем:
   `docker compose --profile wazuh up --build` (обычный `up` его не поднимает).
-  Настройка интеграции — 3 команды из [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
+  Настройка интеграции — 3 команды из [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
 - **Экспериментальный стенд** (VirtualBox: ВМ менеджера, цели с агентом и атакующего)
   для Главы 4 — топология, регистрация агента, моделирование атак и что фиксировать:
-  тот же [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
+  тот же [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
 
 ## Остановка
 
