@@ -48,12 +48,12 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-03 (после stage-09)
+## 4. Статус на 2026-11-03 (после вливания stage-08 и stage-09)
 
-- **stage-08 (P2) готов** на ветке `stage-08-p2-tests-ui-crud` (коммиты `3116110`, `06b9d79`, `9d72843`, `6c5ec4f`) — **PR ещё не влит**.
-- **stage-09 (авторизация) готов** на стековой ветке **`stage-09-auth`** (от stage-08): коммиты `555648b` (бэкенд) и `9a2ef5f` (UI). Создавать PR **после вливания stage-08** (base: main), либо менять base на stage-08-ветку.
-- **Авторизация (stage-09):** JWT Bearer (PyJWT, HS256, `JWT_SECRET` в config/.env), пароли PBKDF2-SHA256 (260k итераций, `app/services/security.py`), зависимости `get_current_user`/`require_admin` (`app/services/auth.py`). Открыты: `/health`, `/ingest/wazuh`, `/auth/login`. Роли: analyst (чтение, анализ, смена статуса) / admin (CRUD правил/playbooks, confirm-action, `POST /auth/register`). Демо-учётки (seed, реальные хеши): analyst1/analyst123, analyst2/analyst123, soc_lead/soclead123 (admin); старые seed-заглушки хешей мигрируются при init. UI: AuthGate + логин-экран, токен в localStorage (`siem_token`), 401 → re-login, роль-зависимый UI. Тесты: test_routes обходит auth (override get_current_user), test_auth.py (+14) — реальный флоу. Итого тестов ~71.
-- Stage-08 (детали): тесты +27 (57→с auth ~71), CRUD `/correlation-rules`+`/playbooks` (409 на удаление используемого playbook), `GET /incidents/{id}`, `PATCH /incidents/{id}/status`, `GET /audit-logs`; UI — 6 вкладок, детальная карточка инцидента, смена статуса, confirm-action, CRUD-формы.
+- **stage-08 и stage-09 влиты в `main`** (PR #6 и #7, голова main `2afa48a`). Все ветки вычищены — остался только `main`. Репо вычищен от мусора (.gitignore: ВКР-документы, IDE, .DS_Store, .zcode; check_syntax.py удалён как дубль `python -m compileall`).
+- **stage-08 (P2):** тесты +27 (test_llm — мок Ollama; test_assets; test_routes — TestClient + sqlite StaticPool); CRUD `/correlation-rules` и `/playbooks` (409 при удалении используемого playbook); `GET /incidents/{id}` (events+analyses); `PATCH /incidents/{id}/status`; `GET /audit-logs`; UI — 6 вкладок, детальная карточка инцидента, смена статуса, confirm-action, CRUD-формы.
+- **stage-09 (авторизация):** JWT Bearer (PyJWT HS256, `JWT_SECRET`), пароли PBKDF2-SHA256 (`app/services/security.py`), `get_current_user`/`require_admin` (`app/services/auth.py`). Открыты `/health`, `/ingest/wazuh`, `/auth/login`. Роли: analyst (чтение, анализ, смена статуса) / admin (CRUD правил/playbooks, confirm-action, register). Демо-учётки: analyst1/analyst123, analyst2/analyst123, soc_lead/soclead123 (admin). UI: AuthGate, логин-экран, 401→re-login, роль-зависимый UI. Тестов всего ~71 (test_auth.py +14; test_routes обходит auth через override).
+- **⚠️ Всё проверено только статически** — Python/Node на рабочем ПК нет. Первый приоритет — проверка запуском на ПК с инструментами: `pytest`, `docker compose up --build`, `npm run build` (frontend), логин демо-учётками.
 - **Stage-08 (P2) сделан:**
   - Тесты: +27 (test_llm — мок Ollama через фейковый httpx.AsyncClient; test_assets; test_routes — TestClient + sqlite StaticPool, патч `app.api.routes.analyze_incident`). Итого 57. **Не запускались** (Python на ПК нет).
   - Бэкенд: CRUD `/correlation-rules` и `/playbooks` (POST/PUT/DELETE, 409 при удалении playbook с response_actions); `GET /incidents/{id}` (детально: events+analyses); `PATCH /incidents/{id}/status` (new/in_progress/closed, 422 на иное); `GET /audit-logs?limit`. Схемы: EventOut, IncidentDetailOut, IncidentStatusIn, AuditLogOut, CorrelationRuleIn/Out, PlaybookIn/Out.
@@ -78,10 +78,10 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 5. Следующие шаги (roadmap)
 
-1. Пользователь: влить PR stage-08 → затем PR stage-09 (после вливания stage-08 сменить/проверить base на main); почистить ветки.
-2. Проверить запуском на ПК с инструментами: `pytest` (~71 тест), `docker compose up --build`, сборка фронтенда, логин демо-учётками.
-3. Остаток P2: Wazuh в docker-compose (профиль) / VirtualBox-стенд; Alembic признан необязательным (см. обсуждение 2026-11-03) — только если появятся частые изменения схемы.
-4. После Главы 3 — переход к Главе 4 (реализация и эксперименты; отдельное обсуждение).
+1. **Проверка запуском** (на ПК с Python/Docker/Node): `pip install -r requirements.txt && pytest` (~71 тест) → `docker compose up --build` → логин `soc_lead/soclead123` → сборка `cd frontend && npm install && npm run build`. Вывод ошибок — пользователю, правки — мне.
+2. **stage-10 (остаток P2, опционально):** Wazuh в docker-compose через профиль (`--profile wazuh`) + инструкция стенда VirtualBox для экспериментов Главы 4.
+3. **Глава 4 ВКР** — реализация и эксперименты; переход только по явному запросу пользователя.
+4. При частых изменениях схемы — вернуться к вопросу об Alembic (решение от 2026-11-03: не нужен).
 
 ## 6. Соглашения по работе
 
