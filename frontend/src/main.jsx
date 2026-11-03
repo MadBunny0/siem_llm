@@ -39,14 +39,100 @@ const NOTIFICATION_STATUS_CLASS = {
   failed: 'badge-status-failed',
 };
 
+/* ==================== Авторизация (JWT) ==================== */
+
+const TOKEN_KEY = 'siem_token';
+const USER_KEY = 'siem_user';
+const AUTH_EXPIRED_EVENT = 'siem-auth-expired';
+
+// Зеркало токена на уровне модуля: request() вызывается из всех вкладок без
+// пропсов, поэтому токен хранится здесь, а состояние React (AuthGate)
+// синхронизирует эту переменную при входе, выходе и истечении сессии.
+let authToken = readStoredToken();
+
+function readStoredToken() {
+  try {
+    return window.localStorage.getItem(TOKEN_KEY) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function setStoredToken(token) {
+  authToken = token || '';
+  try {
+    if (authToken) window.localStorage.setItem(TOKEN_KEY, authToken);
+    else window.localStorage.removeItem(TOKEN_KEY);
+  } catch (e) {
+    /* localStorage может быть недоступен — сессия просто не переживёт перезагрузку */
+  }
+}
+
+function setStoredUser(user) {
+  try {
+    if (user) window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+    else window.localStorage.removeItem(USER_KEY);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function clearSession() {
+  setStoredToken('');
+  setStoredUser(null);
+}
+
+function detailToMessage(detail, fallback) {
+  if (typeof detail === 'string' && detail) return detail;
+  if (detail !== undefined && detail !== null) {
+    try {
+      const text = JSON.stringify(detail);
+      if (text && text !== '{}') return text;
+    } catch (e) {
+      /* fallthrough */
+    }
+  }
+  return fallback;
+}
+
 async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const response = await fetch(`${API}${path}`, { ...options, headers });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  if (!response.ok) {
+    // 401 — токен отсутствует/просрочен: сбрасываем сессию, AuthGate покажет экран входа.
+    // 403 (недостаточно прав) пробрасывается дальше как обычная ошибка (alert/тост).
+    if (response.status === 401) {
+      clearSession();
+      try {
+        window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    throw new Error(detailToMessage(data && data.detail, `HTTP ${response.status}`));
+  }
   return data;
+}
+
+async function loginRequest(username, password) {
+  const data = await request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+  if (!data || !data.access_token) {
+    throw new Error('Сервер не вернул токен доступа');
+  }
+  setStoredToken(data.access_token);
+  try {
+    const me = await request('/auth/me');
+    setStoredUser(me);
+    return me;
+  } catch (e) {
+    clearSession();
+    throw e;
+  }
 }
 
 function formatDate(value) {
@@ -363,7 +449,7 @@ function AuditView() {
 
 /* ==================== Вкладка «Правила корреляции» ==================== */
 
-function RulesView({ notify, toastError }) {
+function RulesView({ notify, toastError, isAdmin }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -542,7 +628,7 @@ function RulesView({ notify, toastError }) {
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button className="ghost" onClick={load}>↻ Обновить</button>
-          <button className="primary" onClick={openCreate} disabled={busy}>＋ Новое правило</button>
+          {isAdmin && <button className="primary" onClick={openCreate} disabled={busy}>＋ Новое правило</button>}
         </div>
       </div>
       {error && <div className="alert error">⚠ {error}</div>}
@@ -565,7 +651,7 @@ function RulesView({ notify, toastError }) {
                 <th>События</th>
                 <th>Приоритет</th>
                 <th>Активно</th>
-                <th>Действия</th>
+                {isAdmin && <th>Действия</th>}
               </tr>
             </thead>
             <tbody>
@@ -580,21 +666,27 @@ function RulesView({ notify, toastError }) {
                   <td>{rule.min_events}</td>
                   <td>{rule.priority ? <span className="chip">{priorityLabel(rule.priority)}</span> : '—'}</td>
                   <td>
-                    <button
-                      className={`toggle ${rule.is_active ? 'on' : ''}`}
-                      onClick={() => toggleActive(rule)}
-                      disabled={busyId === rule.id}
-                      title={rule.is_active ? 'Деактивировать' : 'Активировать'}
-                    >
-                      <i></i>
-                    </button>
+                    {isAdmin ? (
+                      <button
+                        className={`toggle ${rule.is_active ? 'on' : ''}`}
+                        onClick={() => toggleActive(rule)}
+                        disabled={busyId === rule.id}
+                        title={rule.is_active ? 'Деактивировать' : 'Активировать'}
+                      >
+                        <i></i>
+                      </button>
+                    ) : (
+                      <span className="active-flag">{rule.is_active ? 'да' : 'нет'}</span>
+                    )}
                   </td>
-                  <td>
-                    <div className="row-actions">
-                      <button className="ghost small" onClick={() => openEdit(rule)} disabled={busyId === rule.id}>Редактировать</button>
-                      <button className="icon-btn" onClick={() => deleteRule(rule)} disabled={busyId === rule.id} title="Удалить правило">✕</button>
-                    </div>
-                  </td>
+                  {isAdmin && (
+                    <td>
+                      <div className="row-actions">
+                        <button className="ghost small" onClick={() => openEdit(rule)} disabled={busyId === rule.id}>Редактировать</button>
+                        <button className="icon-btn" onClick={() => deleteRule(rule)} disabled={busyId === rule.id} title="Удалить правило">✕</button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -602,7 +694,7 @@ function RulesView({ notify, toastError }) {
         </div>
       )}
 
-      {showForm && (
+      {showForm && isAdmin && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>{editing ? `Редактирование правила #${editing.id}` : 'Новое правило корреляции'}</h3>
@@ -707,7 +799,7 @@ function RulesView({ notify, toastError }) {
 
 /* ==================== Вкладка «Playbooks» ==================== */
 
-function PlaybooksView({ notify, toastError }) {
+function PlaybooksView({ notify, toastError, isAdmin }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -870,7 +962,7 @@ function PlaybooksView({ notify, toastError }) {
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           <button className="ghost" onClick={load}>↻ Обновить</button>
-          <button className="primary" onClick={openCreate} disabled={busy}>＋ Новый playbook</button>
+          {isAdmin && <button className="primary" onClick={openCreate} disabled={busy}>＋ Новый playbook</button>}
         </div>
       </div>
       {error && <div className="alert error">⚠ {error}</div>}
@@ -892,7 +984,7 @@ function PlaybooksView({ notify, toastError }) {
                 <th>Шаги</th>
                 <th>Приоритет</th>
                 <th>Активен</th>
-                <th>Действия</th>
+                {isAdmin && <th>Действия</th>}
               </tr>
             </thead>
             <tbody>
@@ -910,21 +1002,27 @@ function PlaybooksView({ notify, toastError }) {
                   <td>{Array.isArray(rule.steps) ? rule.steps.length : '—'}</td>
                   <td>{rule.priority ? <span className="chip">{priorityLabel(rule.priority)}</span> : '—'}</td>
                   <td>
-                    <button
-                      className={`toggle ${rule.is_active ? 'on' : ''}`}
-                      onClick={() => toggleActive(rule)}
-                      disabled={busyId === rule.id}
-                      title={rule.is_active ? 'Деактивировать' : 'Активировать'}
-                    >
-                      <i></i>
-                    </button>
+                    {isAdmin ? (
+                      <button
+                        className={`toggle ${rule.is_active ? 'on' : ''}`}
+                        onClick={() => toggleActive(rule)}
+                        disabled={busyId === rule.id}
+                        title={rule.is_active ? 'Деактивировать' : 'Активировать'}
+                      >
+                        <i></i>
+                      </button>
+                    ) : (
+                      <span className="active-flag">{rule.is_active ? 'да' : 'нет'}</span>
+                    )}
                   </td>
-                  <td>
-                    <div className="row-actions">
-                      <button className="ghost small" onClick={() => openEdit(rule)} disabled={busyId === rule.id}>Редактировать</button>
-                      <button className="icon-btn" onClick={() => deletePlaybook(rule)} disabled={busyId === rule.id} title="Удалить playbook">✕</button>
-                    </div>
-                  </td>
+                  {isAdmin && (
+                    <td>
+                      <div className="row-actions">
+                        <button className="ghost small" onClick={() => openEdit(rule)} disabled={busyId === rule.id}>Редактировать</button>
+                        <button className="icon-btn" onClick={() => deletePlaybook(rule)} disabled={busyId === rule.id} title="Удалить playbook">✕</button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -932,7 +1030,7 @@ function PlaybooksView({ notify, toastError }) {
         </div>
       )}
 
-      {showForm && (
+      {showForm && isAdmin && (
         <div className="modal-overlay" onClick={() => setShowForm(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <h3>{editing ? `Редактирование playbook #${editing.id}` : 'Новый playbook'}</h3>
@@ -1016,9 +1114,144 @@ function PlaybooksView({ notify, toastError }) {
   );
 }
 
+/* ==================== Экран входа ==================== */
+
+function LoginScreen({ onLogin }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (busy) return;
+    if (!username.trim() || !password) {
+      setError('Введите имя пользователя и пароль');
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      await onLogin(username.trim(), password);
+    } catch (err) {
+      setError(err.message || 'Не удалось выполнить вход');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="login-screen">
+      <form className="login-card" onSubmit={submit}>
+        <div className="brand-mark">S</div>
+        <h1 className="login-title">SIEM Intelligence — вход</h1>
+        <p className="login-subtitle">Введите учётные данные центра мониторинга</p>
+
+        <div className="form-group">
+          <label>Логин</label>
+          <input
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            placeholder="analyst1"
+            autoComplete="username"
+            autoFocus
+          />
+        </div>
+
+        <div className="form-group">
+          <label>Пароль</label>
+          <input
+            type="password"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+            autoComplete="current-password"
+          />
+        </div>
+
+        {error && <div className="login-error">⚠ {error}</div>}
+
+        <button className="primary login-submit" type="submit" disabled={busy}>
+          {busy ? '◌ Проверка учётных данных...' : 'Войти'}
+        </button>
+
+        <p className="login-hint">
+          Демо-доступ: <b>analyst1 / analyst123</b> — аналитик · <b>soc_lead / soclead123</b> — администратор
+        </p>
+      </form>
+    </div>
+  );
+}
+
+/* ==================== Авторизация: корневой компонент ==================== */
+
+function AuthGate() {
+  const [user, setUser] = useState(null);
+  const [booting, setBooting] = useState(() => !!readStoredToken());
+
+  // Стартовая проверка сессии: если в localStorage есть siem_token —
+  // запрашиваем GET /auth/me; при 401 request() уже очистил хранилище.
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrap() {
+      if (!authToken) {
+        setBooting(false);
+        return;
+      }
+      try {
+        const me = await request('/auth/me');
+        if (!cancelled) setUser(me);
+      } catch (e) {
+        if (!cancelled) clearSession();
+      } finally {
+        if (!cancelled) setBooting(false);
+      }
+    }
+    bootstrap();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Истечение токена во время работы: request() отправляет событие —
+  // сбрасываем user, интерфейс возвращается на экран входа.
+  useEffect(() => {
+    function handleExpired() { setUser(null); }
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleExpired);
+  }, []);
+
+  async function handleLogin(username, password) {
+    const me = await loginRequest(username, password);
+    setUser(me);
+  }
+
+  function handleLogout() {
+    clearSession();
+    setUser(null);
+  }
+
+  if (booting) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="brand-mark">S</div>
+          <h1 className="login-title">SIEM Intelligence</h1>
+          <p className="login-subtitle">Проверка сохранённой сессии...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginScreen onLogin={handleLogin} />;
+  }
+
+  return <App user={user} onLogout={handleLogout} />;
+}
+
 /* ==================== Приложение ==================== */
 
-function App() {
+function App({ user, onLogout }) {
+  const isAdmin = user?.role === 'admin';
   const [incidents, setIncidents] = useState([]);
   const [health, setHealth] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -1277,6 +1510,15 @@ function App() {
         ))}
         <button className="nav-item" onClick={() => window.open('/docs', '_blank')}>⌘ <span>API / Swagger</span></button>
       </nav>
+      <div className="user-box">
+        <div className="user-meta">
+          <div className="user-name">{user?.username || '—'}</div>
+          <span className={`badge-role ${isAdmin ? 'admin' : ''}`}>
+            {isAdmin ? 'администратор' : 'аналитик'}
+          </span>
+        </div>
+        <button className="btn-logout" onClick={onLogout}>Выйти</button>
+      </div>
     </aside>
     <main className="main">
       <header className="topbar">
@@ -1348,9 +1590,13 @@ function App() {
                        'Рекомендованное действие превышает уровень автономности и ожидает вашего одобрения.'}
                     </span>
                   </div>
-                  <button className="primary" onClick={confirmPendingAction} disabled={confirmBusy}>
-                    {confirmBusy ? '◌ Выполняется...' : '✓ Подтвердить и выполнить'}
-                  </button>
+                  {isAdmin ? (
+                    <button className="primary" onClick={confirmPendingAction} disabled={confirmBusy}>
+                      {confirmBusy ? '◌ Выполняется...' : '✓ Подтвердить и выполнить'}
+                    </button>
+                  ) : (
+                    <span className="pending-waiting">Ожидает подтверждения администратора</span>
+                  )}
                 </div>
               )}
 
@@ -1462,8 +1708,8 @@ function App() {
         {activeTab === 'analyses' && <AnalysesView onOpenIncident={openIncidentFromTab} />}
         {activeTab === 'notifications' && <NotificationsView />}
         {activeTab === 'audit' && <AuditView />}
-        {activeTab === 'rules' && <RulesView notify={showToast} toastError={showErrorToast} />}
-        {activeTab === 'playbooks' && <PlaybooksView notify={showToast} toastError={showErrorToast} />}
+        {activeTab === 'rules' && <RulesView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
+        {activeTab === 'playbooks' && <PlaybooksView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
       </section>}
 
       <footer><span>Intelligent Incident Processing System · Prototype 1.0</span><span>Qwen2.5-3B · Ollama · PostgreSQL</span></footer>
@@ -1586,4 +1832,4 @@ function App() {
   </div>
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(<AuthGate />);
