@@ -23,7 +23,7 @@
 | `vkr.docx` | Текст ВКР. Глава 3 = параграфы p:1–p:142: §3.1 p:2 (архитектура, 8 модулей), §3.2 p:20 (модель данных, таблица 3.1 = t:1), §3.3 p:41 (алгоритмы; 3.3.1 нормализация p:48, 3.3.2 корреляция p:57, 3.3.3 приоритизация p:66, 3.3.4 подготовка данных LLM p:84), §3.4 p:94 (реагирование, DVE, 5 сценариев), §3.5 p:120 (стек, таблица 3.2 = t:2) | эталон |
 | `analysis/GAP_ANALYSIS_CH3.md` | **Главный рабочий документ**: детальная таблица «требование → статус → код → что доработать», список багов, приоритеты P0/P1/P2 | — |
 | `analysis/PROJECT_CONTEXT.md` | Этот файл | — |
-| `DOCUMENTATION.md` | Самоописание проекта (этапы, таблицы БД, пайплайн) — местами устарело | — |
+| `docs/DOCUMENTATION.md` | Самоописание проекта (этапы, таблицы БД, пайплайн) — местами устарело | — |
 | `app/api/routes.py` | Все эндпоинты: `POST /api/v1/ingest/wazuh`, `GET /incidents`, `POST /incidents/{id}/analyze`, `GET /notifications`, `GET /analyses`, `GET /health` | модули 1,5,6,7 (§3.1) |
 | `app/services/normalization.py` | `normalize_wazuh()` — единый шаблон Wazuh | §3.3.1 |
 | `app/services/correlation.py` | правила из БД, `find_related_events`, `create_or_update_incident` | §3.3.2 |
@@ -41,7 +41,7 @@
 | `frontend/src/main.jsx` | Весь UI одним файлом: статистика, лента инцидентов, фильтры, формы создания события, ручной анализ, визуализация конвейера | §3.5 (веб-интерфейс) |
 | `docker-compose.yml` | db → db-init → ollama(+ollama-init) → api → frontend | §3.5 (Docker) |
 | `tests/` | 30 тестов: risk(7), correlation(9), normalization(2), validation(7), playbook(2), audit(3). Нет test_llm и тестов routes | — |
-| `sample_wazuh_alert.json`, `test_incident_{low,high,critical}.json` | тестовые данные | — |
+| `samples/sample_wazuh_alert.json`, `samples/test_incident_{low,high,critical}.json` | тестовые данные | — |
 
 ## 3. Стек (совпадает с таблицей 3.2 ВКР)
 
@@ -84,7 +84,7 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 ## 5. Следующие шаги (roadmap)
 
 1. **Wazuh на стенде** (по запросу): `docker compose --profile wazuh up -d` + 3 команды настройки из WAZUH_INTEGRATION.md → живые события в корреляцию.
-2. **Глава 4 ВКР** — реализация и эксперименты; переход по явному запросу пользователя (демо-матрица атак в WAZUH_INTEGRATION.md; VirtualBox-стенд позже).
+2. **Глава 4 ВКР** — реализация и эксперименты; переход по явному запросу пользователя (демо-матрица атак в docs/WAZUH_INTEGRATION.md; VirtualBox-стенд позже).
 3. UI посмотреть в браузере: http://localhost:3000 (soc_lead/soclead123) — вкладки, карточка инцидента, подтверждение действий.
 4. При каждом новом этапе — актуализировать `analysis/DEVIATIONS.md` (реестр отклонений).
 
