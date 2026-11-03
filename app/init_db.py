@@ -239,8 +239,13 @@ def _seed_default_correlation_rules() -> None:
             if not existing:
                 rule = models.CorrelationRule(**rule_data)
                 session.add(rule)
-            elif existing.min_events != rule_data.get("min_events", 1):
-                existing.min_events = rule_data.get("min_events", 1)  # обновление порога
+            elif (
+                existing.min_events != rule_data.get("min_events", 1)
+                or existing.priority != rule_data.get("priority", 1)
+            ):
+                # обновление порога и приоритета (stage-12: priority тоже актуализируется)
+                existing.min_events = rule_data.get("min_events", 1)
+                existing.priority = rule_data.get("priority", 1)
                 session.add(existing)
         session.commit()
 

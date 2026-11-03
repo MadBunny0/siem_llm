@@ -211,6 +211,33 @@ function resultExecutionBadge(result) {
   return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
 }
 
+// [6] Бейдж источника анализа: поле initiated_by в Analysis.response_raw
+// («auto_analysis» — автоанализ при создании critical-инцидента, «manual» — запуск вручную).
+const INITIATED_BY_META = {
+  auto_analysis: {
+    cls: 'auto',
+    text: 'авто (critical)',
+    title: 'Автоматический анализ при создании critical-инцидента; LLM недетерминирована — повторный анализ может дать другой результат',
+  },
+  manual: {
+    cls: 'manual',
+    text: 'вручную',
+    title: 'Анализ запущен вручную кнопкой «Запустить интеллектуальный анализ»',
+  },
+};
+
+function initiatedByBadge(analysis) {
+  let raw = analysis?.response_raw ?? analysis;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+  return INITIATED_BY_META[raw?.initiated_by] || null;
+}
+
 // «1 критерий» / «3 критерия» / «5 критериев» — счётчик в таблице playbooks.
 function criteriaCountLabel(count) {
   const mod10 = count % 10;
@@ -220,7 +247,7 @@ function criteriaCountLabel(count) {
   return `${count} критериев`;
 }
 
-function PipelineStatus({ incident, analysis }) {
+function PipelineStatus({ analysis, analysesLength, pendingConfirmation }) {
   const stages = [
     { id: 'wazuh', label: 'Wazuh' },
     { id: 'normalize', label: 'Normalize' },
@@ -231,43 +258,24 @@ function PipelineStatus({ incident, analysis }) {
     { id: 'playbook', label: 'Playbook' },
   ];
 
-  let currentStage = 'wazuh';
-  if (incident) {
-    if (incident.risk_score !== undefined) currentStage = 'risk';
-    if (incident.analyzed) currentStage = 'qwen';
-    if (analysis) {
-      // Stage 11: в новом формате validation/execution лежат внутри results
-      if (analysis.validation || analysis.results?.length) currentStage = 'validate';
-      if (analysis.execution || analysis.results?.length) currentStage = 'playbook';
-    }
-    if (incident.status === 'closed') currentStage = 'playbook';
-  }
-
-  const isCompleted = !!(analysis && (analysis.execution || analysis.results?.length));
+  // [8]+[9] Конвейер строится только по фактическим данным:
+  //  - инцидент уже создан → Wazuh/Normalize/Correlate/Risk завершены всегда;
+  //  - Qwen/Validate/Playbook завершены, только если есть хотя бы один анализ
+  //    (свежий или в истории детали); иначе — pending независимо от статуса closed;
+  //  - есть ожидающий подтверждения результат → Playbook в состоянии active с подписью;
+  //  - статус closed на конвейер не влияет — он показан бейджем в шапке инцидента.
+  const hasAnalysis = (analysesLength || 0) > 0 || !!analysis;
 
   return (
     <div className="pipeline-container">
       <div className="pipeline-title">КОНВЕЙЕР ОБРАБОТКИ</div>
       <div className="pipeline-steps">
         {stages.map((stage, index) => {
-          let status = 'pending';
-          let isCurrent = false;
-
-          if (isCompleted) {
-            status = 'completed';
-          } else if (incident) {
-            const stageIndex = stages.findIndex(s => s.id === stage.id);
-            const currentIndex = stages.findIndex(s => s.id === currentStage);
-
-            if (stageIndex < currentIndex) {
-              status = 'completed';
-            } else if (stageIndex === currentIndex) {
-              status = 'active';
-              isCurrent = true;
-            } else {
-              status = 'pending';
-            }
-          }
+          const isLlmStage = stage.id === 'qwen' || stage.id === 'validate' || stage.id === 'playbook';
+          const playbookAwaiting = stage.id === 'playbook' && pendingConfirmation;
+          let status = 'completed';
+          if (isLlmStage && !hasAnalysis) status = 'pending';
+          if (playbookAwaiting) status = 'active';
 
           return (
             <React.Fragment key={stage.id}>
@@ -278,6 +286,7 @@ function PipelineStatus({ incident, analysis }) {
                   {status === 'active' && '●'}
                   {status === 'pending' && '○'}
                 </div>
+                {playbookAwaiting && <div className="stage-note">ожидает подтверждения</div>}
               </div>
               {index < stages.length - 1 && (
                 <div className={`pipeline-arrow ${status === 'completed' ? 'completed' : ''}`}>→</div>
@@ -318,7 +327,7 @@ function AnalysesView({ onOpenIncident }) {
           <h2>История LLM-анализов</h2>
           <p>Результаты работы модели по всем инцидентам</p>
         </div>
-        <button className="ghost" onClick={load}>↻ Обновить</button>
+        <button className="ghost" onClick={load} disabled={loading}>{loading ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}</button>
       </div>
       {error && <div className="alert error">⚠ {error}</div>}
       {loading ? (
@@ -395,7 +404,7 @@ function NotificationsView() {
           <h2>Уведомления</h2>
           <p>Сообщения, отправленные по инцидентам через каналы оповещения</p>
         </div>
-        <button className="ghost" onClick={load}>↻ Обновить</button>
+        <button className="ghost" onClick={load} disabled={loading}>{loading ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}</button>
       </div>
       {error && <div className="alert error">⚠ {error}</div>}
       {loading ? (
@@ -468,7 +477,7 @@ function AuditView() {
           <h2>Журнал аудита</h2>
           <p>Действия системы: корреляция, анализ, подтверждения и выполнение playbooks</p>
         </div>
-        <button className="ghost" onClick={load}>↻ Обновить</button>
+        <button className="ghost" onClick={load} disabled={loading}>{loading ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}</button>
       </div>
       {error && <div className="alert error">⚠ {error}</div>}
       {loading ? (
@@ -694,7 +703,7 @@ function RulesView({ notify, toastError, isAdmin }) {
           <p>Правила объединения сырых событий в инциденты</p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="ghost" onClick={load}>↻ Обновить</button>
+          <button className="ghost" onClick={load} disabled={loading}>{loading ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}</button>
           {isAdmin && <button className="primary" onClick={openCreate} disabled={busy}>＋ Новое правило</button>}
         </div>
       </div>
@@ -1037,7 +1046,7 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
           <p>Сценарии автоматических действий по инцидентам</p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <button className="ghost" onClick={load}>↻ Обновить</button>
+          <button className="ghost" onClick={load} disabled={loading}>{loading ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}</button>
           {isAdmin && <button className="primary" onClick={openCreate} disabled={busy}>＋ Новый playbook</button>}
         </div>
       </div>
@@ -1353,7 +1362,14 @@ function App({ user, onLogout }) {
   const [selected, setSelected] = useState(null);
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  // [5] Отдельные busy-флаги: спиннер показывается только на «своей» кнопке,
+  // остальные на время любого запроса просто блокируются (anyBusy).
+  const [analyzing, setAnalyzing] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [formBusy, setFormBusy] = useState(false);
+  const [populateBusy, setPopulateBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [executeBusy, setExecuteBusy] = useState(null);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -1381,6 +1397,9 @@ function App({ user, onLogout }) {
     full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2'
   });
 
+  // Хотя бы один запрос в полёте — блокируем связанные кнопки, чтобы не плодить дубли.
+  const anyBusy = analyzing || demoBusy || formBusy || populateBusy;
+
   function showToast(message) {
     setToast(message);
     setTimeout(() => setToast(''), 3500);
@@ -1392,11 +1411,15 @@ function App({ user, onLogout }) {
   }
 
   async function loadIncidentDetail(id) {
+    // [5г] спиннер загрузки detail в карточке инцидента
+    setDetailLoading(true);
     try {
       const detail = await request(`/incidents/${id}`);
       setIncidentDetail(detail);
     } catch (e) {
       setError(e.message);
+    } finally {
+      setDetailLoading(false);
     }
   }
 
@@ -1422,6 +1445,18 @@ function App({ user, onLogout }) {
   }
 
   useEffect(() => { load(); const timer = setInterval(load, 10000); return () => clearInterval(timer); }, []);
+
+  // [5в] Ручное обновление — спиннер на кнопке «Обновить».
+  // Автообновление раз в 10с идёт через load() без индикатора, чтобы кнопка не мигала.
+  async function refreshAll() {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await load();
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   const filtered = useMemo(() => incidents
     .filter(i => filter === 'all' || i.severity === filter)
@@ -1456,10 +1491,14 @@ function App({ user, onLogout }) {
   );
 
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
+  // [6] бейдж источника для свежего результата анализа
+  const freshBadge = initiatedByBadge(analysis);
 
   async function runAnalysis() {
     if (!selected) return;
-    setBusy(true); setAnalysis(null); setError(''); setConfirmedAction(false);
+    // [5а] Предыдущий результат не сбрасываем: на время запроса он остаётся виден
+    // затемнённым (.busy-dim), чтобы панель результата не «моргала».
+    setAnalyzing(true); setError(''); setConfirmedAction(false);
     try {
       const result = await request(`/incidents/${selected.id}/analyze`, { method: 'POST' });
       setAnalysis(result);
@@ -1467,7 +1506,7 @@ function App({ user, onLogout }) {
       await load();
       await loadIncidentDetail(selected.id);
     } catch (e) { setError(e.message); }
-    finally { setBusy(false); setTimeout(() => setToast(''), 3500); }
+    finally { setAnalyzing(false); setTimeout(() => setToast(''), 3500); }
   }
 
   async function changeStatus(status) {
@@ -1519,6 +1558,75 @@ function App({ user, onLogout }) {
     finally { setConfirmBusy(false); }
   }
 
+  // Ручной запуск playbook-действия администратором: POST /incidents/{id}/execute-action.
+  // DVE повторно проверяет действие; при AUTO_RESPONSE=false — режим симуляции.
+  async function executeAction(action) {
+    if (!selected || !action || executeBusy) return;
+    setExecuteBusy(action);
+    setError('');
+    try {
+      const result = await request(`/incidents/${selected.id}/execute-action`, {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+      if (result?.execution?.executed) {
+        showToast(`Действие ${action} выполнено (режим: ${result.execution.mode || '—'})`);
+      } else {
+        const reason = result?.execution?.reason || result?.validation?.reason || 'действие не выполнено';
+        showErrorToast(`Заблокировано: ${reason}`);
+      }
+      // Обновляем бейджи у соответствующего результата (validation/execution из ответа).
+      setAnalysis(prev => {
+        if (!prev) return prev;
+        const patch = r => (r.action === action
+          ? { ...r, validation: result?.validation ?? r.validation, execution: result?.execution ?? r.execution }
+          : r);
+        if (Array.isArray(prev.results) && prev.results.length) {
+          return { ...prev, results: prev.results.map(patch) };
+        }
+        return {
+          ...prev,
+          validation: result?.validation ?? prev.validation,
+          execution: result?.execution ?? prev.execution,
+        };
+      });
+      await loadIncidentDetail(selected.id);
+      await load();
+    } catch (e) {
+      showErrorToast(`Не удалось выполнить действие: ${e.message}`);
+    } finally {
+      setExecuteBusy(null);
+    }
+  }
+
+  // [12б] Мок-сценарии: POST /demo/populate (только admin) —
+  // генерирует 18 событий → ~7 инцидентов всех уровней.
+  async function populateDemo() {
+    if (populateBusy) return;
+    setPopulateBusy(true);
+    setError('');
+    try {
+      const result = await request('/demo/populate', { method: 'POST' });
+      const created = Array.isArray(result?.incidents) ? result.incidents : [];
+      const counts = {};
+      for (const inc of created) {
+        const sev = inc?.severity || 'unknown';
+        counts[sev] = (counts[sev] || 0) + 1;
+      }
+      const order = ['critical', 'high', 'medium', 'low'];
+      const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
+      if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
+      showToast(created.length
+        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}`
+        : 'События созданы, корреляция не сформировала инцидентов');
+      await load();
+    } catch (e) {
+      showErrorToast(e.message);
+    } finally {
+      setPopulateBusy(false);
+    }
+  }
+
   async function openIncidentFromTab(incidentId) {
     if (incidentId === null || incidentId === undefined) return;
     setActiveTab('incidents');
@@ -1531,11 +1639,13 @@ function App({ user, onLogout }) {
   }
 
   async function createDemo() {
-    setBusy(true); setError('');
+    if (demoBusy) return;
+    setDemoBusy(true); setError('');
     const demo = {
       timestamp: new Date().toISOString(),
       rule: { id: '5710', level: 10, description: 'sshd: Multiple authentication failures' },
-      agent: { id: '001', name: 'demo-linux' },
+      // [11а] seed-актив: по имени агента проставляются Актив и Критичность
+      agent: { id: '001', name: 'mail-prod-01' },
       data: { srcip: '192.0.2.10', dstuser: 'root', ssh: { auth: { failure: true } } },
       full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2'
     };
@@ -1546,11 +1656,11 @@ function App({ user, onLogout }) {
         ? `Событие принято: инцидент #${result.incident_id}`
         : 'Событие сохранено: правила корреляции не сработали');
     } catch (e) { setError(e.message); }
-    finally { setBusy(false); setTimeout(() => setToast(''), 3500); }
+    finally { setDemoBusy(false); setTimeout(() => setToast(''), 3500); }
   }
 
   async function createCustomEvent() {
-    setBusy(true);
+    setFormBusy(true);
     setError('');
 
     const event = {
@@ -1594,7 +1704,7 @@ function App({ user, onLogout }) {
     } catch (e) {
       setError(e.message);
     } finally {
-      setBusy(false);
+      setFormBusy(false);
       setTimeout(() => setToast(''), 3500);
     }
   }
@@ -1634,7 +1744,9 @@ function App({ user, onLogout }) {
         <div><div className="eyebrow">{tabMeta.eyebrow}</div><h1>{tabMeta.title}</h1></div>
         <div className="top-actions">
           <div className={`system-status ${health?.status === 'ok' ? 'online' : ''}`}><i></i>{health?.status === 'ok' ? 'Система работает' : 'Проверка...'}</div>
-          <button className="ghost" onClick={load}>↻ Обновить</button>
+          <button className="ghost" onClick={refreshAll} disabled={refreshing}>
+            {refreshing ? <><span className="spinner spinner-dark"></span> Обновление...</> : '↻ Обновить'}
+          </button>
         </div>
       </header>
       {error && <div className="alert error">⚠ {error}</div>}
@@ -1652,9 +1764,21 @@ function App({ user, onLogout }) {
           <div className="panel incidents-panel">
             <div className="panel-head">
               <div><h2>Лента инцидентов</h2><p>События, нормализованные и объединённые корреляцией</p></div>
-              <div style={{display: 'flex', gap: '8px'}}>
-                <button className="primary" onClick={() => setShowForm(true)} disabled={busy}>＋ Добавить событие</button>
-                <button className="primary" onClick={createDemo} disabled={busy}>＋ Тестовое событие</button>
+              <div className="panel-head-actions">
+                <button className="primary" onClick={() => setShowForm(true)} disabled={anyBusy}>＋ Добавить событие</button>
+                <button className="primary" onClick={createDemo} disabled={anyBusy}>
+                  {demoBusy ? <><span className="spinner"></span> Отправка...</> : '＋ Тестовое событие'}
+                </button>
+                {isAdmin && (
+                  <button
+                    className="primary"
+                    onClick={populateDemo}
+                    disabled={anyBusy}
+                    title="Сгенерировать мок-сценарии: 18 событий → ~7 инцидентов всех уровней (только администратор)"
+                  >
+                    {populateBusy ? <><span className="spinner"></span> Генерация...</> : '🎬 Мок-сценарии'}
+                  </button>
+                )}
               </div>
             </div>
             <div className="filters"><div className="search">⌕<input placeholder="Поиск по инцидентам..." value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filter-tabs">{['all','critical','high','medium','low'].map(x => <button key={x} className={filter === x ? 'selected' : ''} onClick={() => setFilter(x)}>{x === 'all' ? 'Все' : x}</button>)}</div></div>
@@ -1663,6 +1787,18 @@ function App({ user, onLogout }) {
           <div className="panel detail-panel">
             {!selected ? <div className="detail-empty"><div className="radar">◉</div><h2>Выберите инцидент</h2><p>Здесь появятся контекст события, результат оценки риска и интеллектуальная рекомендация Qwen2.5-3B.</p></div> : <>
               <div className="detail-head"><div><span className="muted">ИНЦИДЕНТ #{selected.id}</span><h2>{selected.title}</h2></div><Severity value={selected.severity}/></div>
+
+              {/* [7] Краткая памятка по роли аналитика — сворачиваемая */}
+              <details className="role-hint">
+                <summary>Роль аналитика — как работать с инцидентом</summary>
+                <ol>
+                  <li>Запустите интеллектуальный анализ (кнопка ниже) — одобренные DVE действия система выполняет автоматически (сейчас — симуляция).</li>
+                  <li>При критическом активе DVE откладывает опасное действие — его подтверждает АДМИНИСТРАТОР кнопкой «Подтвердить и выполнить».</li>
+                  <li>Админ может вручную запустить действие кнопкой ▶ на строке результата.</li>
+                  <li>Меняйте статус инцидента кнопками блока «Изменить статус».</li>
+                </ol>
+              </details>
+
               <div className="detail-grid"><div><label>Статус</label><Status value={selected.status}/></div><div><label>Создан</label><span>{formatDate(selected.created_at)}</span></div><div><label>Уровень риска</label><span>{selected.risk_score} / 100</span></div><div><label>Тип атаки</label><span>{selected.attack_type || '-'}</span></div><div><label>Актив</label><span>{selected.asset?.name || '-'}</span></div><div><label>Критичность актива</label><span>{selected.asset?.criticality || '-'}</span></div></div>
 
               <div className="status-controls">
@@ -1683,9 +1819,13 @@ function App({ user, onLogout }) {
 
               <div className="section"><label>Описание</label><div className="description">{selected.description || 'Описание отсутствует.'}</div></div>
 
-              {detailLoading && <div className="detail-loading">◌ Загрузка событий и истории анализов...</div>}
+              {detailLoading && <div className="detail-loading"><span className="spinner spinner-dark"></span> Загрузка событий и истории анализов...</div>}
 
-              <PipelineStatus incident={selected} analysis={analysis} />
+              <PipelineStatus
+                analysis={analysis}
+                analysesLength={(incidentDetail?.analyses || []).length}
+                pendingConfirmation={pendingConfirmation}
+              />
 
               {pendingConfirmation && (
                 <div className="pending-banner">
@@ -1706,17 +1846,22 @@ function App({ user, onLogout }) {
                 </div>
               )}
 
-              <button className="analyze" onClick={runAnalysis} disabled={busy || analysis}>
-                {busy ? '◌ Выполняется анализ...' :
+              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || analysis}>
+                {analyzing ? <><span className="spinner"></span> Выполняется анализ...</> :
                  analysis ? '✓ Анализ выполнен' :
                  '✦ Запустить интеллектуальный анализ'}
               </button>
 
               {analysis && (
-                <div className="analysis-result">
+                <div className={`analysis-result${analyzing ? ' busy-dim' : ''}`}>
                   <div className="result-head">
                     <h3>Результат анализа</h3>
-                    <span className="approved">✓ Проверено</span>
+                    <span className="result-head-right">
+                      {freshBadge && (
+                        <span className={`initiated-badge ${freshBadge.cls}`} title={freshBadge.title}>{freshBadge.text}</span>
+                      )}
+                      <span className="approved">✓ Проверено</span>
+                    </span>
                   </div>
                   <div className="recommendation">
                     <div>
@@ -1752,6 +1897,19 @@ function App({ user, onLogout }) {
                           <span className="result-action">{r.action || 'действие'}</span>
                           <b className={validationBadge.cls}>{validationBadge.text}</b>
                           <b className={executionBadge.cls}>{executionBadge.text}</b>
+                          {/* Ручной запуск одобренного DVE действия — только администратор */}
+                          {isAdmin && r.action && r.validation?.approved === true && (
+                            <button
+                              className="exec-btn"
+                              onClick={() => executeAction(r.action)}
+                              disabled={!!executeBusy}
+                              title="Запустить действие playbook вручную (только администратор)"
+                            >
+                              {executeBusy === r.action
+                                ? <><span className="spinner spinner-sm"></span> Выполняется...</>
+                                : '▶ Выполнить'}
+                            </button>
+                          )}
                         </div>
                         {(r.validation?.reason || r.execution?.reason) && (
                           <small className="result-reason">{r.validation?.reason || r.execution?.reason}</small>
@@ -1797,17 +1955,22 @@ function App({ user, onLogout }) {
                 <label>История анализов {(incidentDetail?.analyses || []).length}</label>
                 {(incidentDetail?.analyses || []).length ? (
                   <div className="history-list">
-                    {incidentDetail.analyses.map(a => (
-                      <div className="history-item" key={a.id}>
-                        <div className="history-head"><strong>{a.model || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
-                        <div className="history-meta">
-                          {a.attack_type && <span className="chip accent">{a.attack_type}</span>}
-                          {a.confidence != null && <span className="chip">Уверенность: {confPct(a.confidence)}</span>}
+                    {incidentDetail.analyses.map(a => {
+                      // [6] бейдж источника анализа: initiated_by из response_raw
+                      const badge = initiatedByBadge(a);
+                      return (
+                        <div className="history-item" key={a.id}>
+                          <div className="history-head"><strong>{a.model || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
+                          <div className="history-meta">
+                            {badge && <span className={`initiated-badge ${badge.cls}`} title={badge.title}>{badge.text}</span>}
+                            {a.attack_type && <span className="chip accent">{a.attack_type}</span>}
+                            {a.confidence != null && <span className="chip">Уверенность: {confPct(a.confidence)}</span>}
+                          </div>
+                          {a.recommended_action && <div className="history-action">Действие: {a.recommended_action}</div>}
+                          {a.explanation && <p>{a.explanation}</p>}
                         </div>
-                        {a.recommended_action && <div className="history-action">Действие: {a.recommended_action}</div>}
-                        {a.explanation && <p>{a.explanation}</p>}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : !detailLoading ? <div className="detail-hint">Анализов ещё не было — запустите интеллектуальный анализ.</div> : null}
               </div>
@@ -1829,7 +1992,7 @@ function App({ user, onLogout }) {
       <div className="modal-overlay" onClick={() => setShowForm(false)}>
         <div className="modal" onClick={e => e.stopPropagation()}>
           <h3>Добавить событие Wazuh</h3>
-          <p style={{color: '#68758b', fontSize: '11px', marginBottom: '20px'}}>
+          <p className="modal-subtitle">
             Заполните поля для создания нового инцидента
           </p>
 
@@ -1932,8 +2095,8 @@ function App({ user, onLogout }) {
 
           <div className="form-actions">
             <button className="ghost" onClick={() => setShowForm(false)}>Отмена</button>
-            <button className="primary" onClick={createCustomEvent} disabled={busy}>
-              {busy ? 'Отправка...' : 'Создать инцидент'}
+            <button className="primary" onClick={createCustomEvent} disabled={formBusy}>
+              {formBusy ? <><span className="spinner"></span> Отправка...</> : 'Создать инцидент'}
             </button>
           </div>
         </div>

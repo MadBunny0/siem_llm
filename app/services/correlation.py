@@ -8,9 +8,15 @@ from app.models import CorrelationRule, Event, Incident
 
 
 def load_correlation_rules(db: Session) -> list[CorrelationRule]:
-    """Загрузка активных правил корреляции из БД (согласно Главе 3.2 — CorrelationRule)."""
+    """Загрузка активных правил корреляции из БД (согласно Главе 3.2 — CorrelationRule).
+
+    Порядок детерминирован (приоритет ↓, затем id) — выбор правила при
+    срабатывании нескольких не зависит от произвольного порядка строк БД.
+    """
     return list(db.scalars(
-        select(CorrelationRule).where(CorrelationRule.is_active.is_(True))
+        select(CorrelationRule)
+        .where(CorrelationRule.is_active.is_(True))
+        .order_by(CorrelationRule.priority.desc(), CorrelationRule.id)
     ).all())
 
 
