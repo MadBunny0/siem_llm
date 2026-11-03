@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, DateTime, ForeignKey, JSON, Table, Column, Integer, Boolean
+from sqlalchemy import String, Text, DateTime, ForeignKey, JSON, Table, Column, Integer, Boolean, Float
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
@@ -63,17 +63,30 @@ class Incident(Base):
         back_populates="incident", cascade="all, delete-orphan"
     )
 
+# ---------------------------------------------------------------------------
+# Сущность Analysis (LLMAnalysis) — результаты интеллектуального анализа LLM
+# ---------------------------------------------------------------------------
 class Analysis(Base):
     __tablename__ = "analyses"
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=False)
     model: Mapped[str] = mapped_column(String(100))
     prompt: Mapped[str] = mapped_column(Text)
-    response: Mapped[dict] = mapped_column(JSON)
+    # поля по Таблице 3.1 (глава 3.2 ВКР) — отдельные колонки для статистики качества
+    description: Mapped[str] = mapped_column(Text)  # сформированное описание инцидента
+    attack_type: Mapped[str | None] = mapped_column(String(100))  # предполагаемый тип атаки
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)  # уровень достоверности (0.0–1.0)
+    explanation: Mapped[str | None] = mapped_column(Text)  # текстовое обоснование
+    recommended_action: Mapped[str | None] = mapped_column(Text)  # перечень рекомендуемых действий
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
     incident: Mapped[Incident] = relationship(back_populates="analyses")
+    # сохраняем полный ответ LLM в JSON для расследований
+    response_raw: Mapped[dict | None] = mapped_column(JSON)
 
 
 # ---------------------------------------------------------------------------

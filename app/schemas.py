@@ -27,6 +27,22 @@ class NotificationOut(BaseModel):
     created_at: datetime
 
 
+class AnalysisOut(BaseModel):
+    """Результаты интеллектуального анализа LLM (для статистики качества)."""
+
+    id: int
+    incident_id: int
+    model: str
+    prompt: str
+    description: str
+    attack_type: str | None
+    confidence: float | None
+    explanation: str | None
+    recommended_action: str | None
+    response_raw: dict | None = None
+    created_at: datetime
+
+
 class WazuhAlert(BaseModel):
     timestamp: str | None = None
     rule: dict = Field(default_factory=dict)

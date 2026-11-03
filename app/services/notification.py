@@ -54,6 +54,7 @@ def build_incident_notification(
     payload = {
         "incident_id": incident.id,
         "title": incident.title,
+        "description": incident.description,
         "severity": incident.severity,
         "risk_score": incident.risk_score,
         "attack_type": incident.attack_type,

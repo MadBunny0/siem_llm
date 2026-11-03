@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -5,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Analysis, Asset, Event, Incident, Notification
-from app.schemas import AssetOut, IncidentOut, NotificationOut, WazuhAlert
+from app.schemas import AnalysisOut, AssetOut, IncidentOut, NotificationOut, WazuhAlert
 from app.services.audit import audit
 from app.services.correlation import create_or_update_incident, find_related_events
 from app.services.llm import analyze_incident
@@ -142,16 +143,25 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
     validation = validate_recommendation(incident.severity, recommendation)
     execution = execute_playbook(validation["action"], context, db)
 
+    # Сохранение результатов интеллектуального анализа в модель Analysis (LLMAnalysis)
+    # Поля по Таблице 3.1 (глава 3.2 ВКР): описание, тип атаки, достоверность, обоснование, рекомендации
     analysis = Analysis(
         incident_id=incident.id,
         model=settings.ollama_model,
         prompt="SOC incident analysis",
-        response={
+        description=recommendation.get("description") or incident.description,
+        attack_type=recommendation.get("attack_type"),
+        confidence=recommendation.get("confidence"),
+        explanation=recommendation.get("explanation") or recommendation.get("reason"),
+        recommended_action=recommendation.get("recommended_action") or recommendation.get("action"),
+        # полный ответ модели LLM сохраняем в JSON для расследований
+        response_raw={
             "recommendation": recommendation,
             "validation": validation,
             "execution": execution,
         },
     )
+    analysis.updated_at = datetime.now(timezone.utc)
     db.add(analysis)
     incident.status = "in_progress"
     db.commit()
@@ -184,6 +194,14 @@ async def analyze(incident_id: int, db: Session = Depends(get_db)):
 def notifications(db: Session = Depends(get_db)):
     return list(db.scalars(
         select(Notification).order_by(Notification.created_at.desc())
+    ).all())
+
+
+@router.get("/analyses", response_model=list[AnalysisOut])
+def analyses(db: Session = Depends(get_db)):
+    """Статистика качества работы LLM-модуля (Таблица 3.1, глава 3.2 ВКР)."""
+    return list(db.scalars(
+        select(Analysis).order_by(Analysis.created_at.desc())
     ).all())
 
 
