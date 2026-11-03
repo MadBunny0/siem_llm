@@ -9,12 +9,34 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import Analysis, Asset, Event, Incident, Notification
-from app.schemas import AnalysisOut, IncidentOut, NotificationOut, WazuhAlert
+from app.models import (
+    Analysis,
+    Asset,
+    AuditLog,
+    CorrelationRule,
+    Event,
+    Incident,
+    Notification,
+    Playbook,
+)
+from app.schemas import (
+    AnalysisOut,
+    AuditLogOut,
+    CorrelationRuleIn,
+    CorrelationRuleOut,
+    IncidentDetailOut,
+    IncidentOut,
+    IncidentStatusIn,
+    NotificationOut,
+    PlaybookIn,
+    PlaybookOut,
+    WazuhAlert,
+)
 from app.services.audit import audit
 from app.services.assets import resolve_asset_id
 from app.services.correlation import create_or_update_incident, evaluate_correlation
@@ -174,6 +196,42 @@ def incidents(db: Session = Depends(get_db)):
     ).all())
     # from_attributes в схемах — валидация напрямую из ORM-объектов
     return [IncidentOut.model_validate(incident) for incident in items]
+
+
+@router.get("/incidents/{incident_id}", response_model=IncidentDetailOut)
+def incident_detail(incident_id: int, db: Session = Depends(get_db)):
+    """Детальная карточка инцидента: события, история анализов, актив (§3.2)."""
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return IncidentDetailOut.model_validate(incident)
+
+
+ALLOWED_INCIDENT_STATUSES = ("new", "in_progress", "closed")
+
+
+@router.patch("/incidents/{incident_id}/status", response_model=IncidentOut)
+def update_incident_status(incident_id: int, payload: IncidentStatusIn, db: Session = Depends(get_db)):
+    """Смена статуса инцидента оператором (журналируется в аудит)."""
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if payload.status not in ALLOWED_INCIDENT_STATUSES:
+        raise HTTPException(status_code=422, detail=f"Недопустимый статус: {payload.status}")
+
+    previous = incident.status
+    incident.status = payload.status
+    db.commit()
+    db.refresh(incident)
+
+    audit(
+        "incident_status_changed",
+        {"incident_id": incident.id, "from": previous, "to": payload.status},
+        db=db,
+        incident_id=incident.id,
+    )
+    db.commit()
+    return IncidentOut.model_validate(incident)
 
 
 @router.post("/incidents/{incident_id}/analyze")
@@ -377,6 +435,119 @@ def analyses(db: Session = Depends(get_db)):
     return list(db.scalars(
         select(Analysis).order_by(Analysis.created_at.desc())
     ).all())
+
+
+@router.get("/audit-logs", response_model=list[AuditLogOut])
+def audit_logs(limit: int = 100, db: Session = Depends(get_db)):
+    """Журнал аудита всех этапов обработки инцидентов (§3.1, модуль 8; §3.4, p:117)."""
+    limit = max(1, min(limit, 500))
+    return list(db.scalars(
+        select(AuditLog).order_by(AuditLog.timestamp.desc()).limit(limit)
+    ).all())
+
+
+# ---------------------------------------------------------------------------
+# CRUD правил корреляции — §3.2, p:32 («изменять алгоритмы обработки без
+# внесения изменений в программный код»)
+# ---------------------------------------------------------------------------
+@router.get("/correlation-rules", response_model=list[CorrelationRuleOut])
+def correlation_rules(db: Session = Depends(get_db)):
+    return list(db.scalars(
+        select(CorrelationRule).order_by(CorrelationRule.priority.desc(), CorrelationRule.id)
+    ).all())
+
+
+@router.post("/correlation-rules", response_model=CorrelationRuleOut)
+def create_correlation_rule(payload: CorrelationRuleIn, db: Session = Depends(get_db)):
+    rule = CorrelationRule(**payload.model_dump())
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    audit("correlation_rule_created", {"rule_id": rule.id, "name": rule.name}, db=db)
+    db.commit()
+    return CorrelationRuleOut.model_validate(rule)
+
+
+@router.put("/correlation-rules/{rule_id}", response_model=CorrelationRuleOut)
+def update_correlation_rule(rule_id: int, payload: CorrelationRuleIn, db: Session = Depends(get_db)):
+    rule = db.get(CorrelationRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    for field, value in payload.model_dump().items():
+        setattr(rule, field, value)
+    db.commit()
+    db.refresh(rule)
+    audit("correlation_rule_updated", {"rule_id": rule.id, "name": rule.name}, db=db)
+    db.commit()
+    return CorrelationRuleOut.model_validate(rule)
+
+
+@router.delete("/correlation-rules/{rule_id}")
+def delete_correlation_rule(rule_id: int, db: Session = Depends(get_db)):
+    rule = db.get(CorrelationRule, rule_id)
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    db.delete(rule)
+    db.commit()
+    audit("correlation_rule_deleted", {"rule_id": rule_id}, db=db)
+    db.commit()
+    return {"deleted": True, "id": rule_id}
+
+
+# ---------------------------------------------------------------------------
+# CRUD сценариев реагирования — §3.4, p:112 («изменять логику выполнения
+# действий без модификации программного кода»)
+# ---------------------------------------------------------------------------
+@router.get("/playbooks", response_model=list[PlaybookOut])
+def playbooks(db: Session = Depends(get_db)):
+    return list(db.scalars(
+        select(Playbook).order_by(Playbook.priority.desc(), Playbook.id)
+    ).all())
+
+
+@router.post("/playbooks", response_model=PlaybookOut)
+def create_playbook(payload: PlaybookIn, db: Session = Depends(get_db)):
+    playbook = Playbook(**payload.model_dump())
+    db.add(playbook)
+    db.commit()
+    db.refresh(playbook)
+    audit("playbook_created", {"playbook_id": playbook.id, "name": playbook.name}, db=db)
+    db.commit()
+    return PlaybookOut.model_validate(playbook)
+
+
+@router.put("/playbooks/{playbook_id}", response_model=PlaybookOut)
+def update_playbook(playbook_id: int, payload: PlaybookIn, db: Session = Depends(get_db)):
+    playbook = db.get(Playbook, playbook_id)
+    if not playbook:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    for field, value in payload.model_dump().items():
+        setattr(playbook, field, value)
+    db.commit()
+    db.refresh(playbook)
+    audit("playbook_updated", {"playbook_id": playbook.id, "name": playbook.name}, db=db)
+    db.commit()
+    return PlaybookOut.model_validate(playbook)
+
+
+@router.delete("/playbooks/{playbook_id}")
+def delete_playbook(playbook_id: int, db: Session = Depends(get_db)):
+    playbook = db.get(Playbook, playbook_id)
+    if not playbook:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    try:
+        db.delete(playbook)
+        db.commit()
+    except IntegrityError as exc:
+        # playbook уже использовался в response_actions — ссылочная целостность (§3.2)
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Playbook используется в выполненных действиях (response_actions) — удаление запрещено",
+        ) from exc
+    audit("playbook_deleted", {"playbook_id": playbook_id}, db=db)
+    db.commit()
+    return {"deleted": True, "id": playbook_id}
 
 
 @router.get("/health")
