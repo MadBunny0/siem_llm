@@ -33,7 +33,12 @@ Docker Compose специально разделяет подготовку за
 
 При повторном запуске существующие данные PostgreSQL и скачанная модель сохраняются в Docker volumes.
 
-## Запуск на macOS
+## Запуск
+
+> **Полная инструкция по развёртыванию «с нуля» (Windows/Linux/macOS): [DEPLOYMENT.md](DEPLOYMENT.md)** —
+> требования, установка Docker/WSL2, первый запуск, демо-сценарий, тесты, GPU, troubleshooting.
+
+### Быстрый старт (macOS)
 
 Требуется Docker Desktop.
 
