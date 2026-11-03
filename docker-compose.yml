@@ -17,7 +17,9 @@ services:
       start_period: 5s
 
   db-init:
-    build: .
+    build:
+      context: .
+      target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
     depends_on:
@@ -50,7 +52,9 @@ services:
     restart: "no"
 
   api:
-    build: .
+    build:
+      context: .
+      target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
       OLLAMA_URL: http://ollama:11434
@@ -82,6 +86,16 @@ services:
 
   # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
   # Обычный `docker compose up` его не поднимает. Настройка интеграции — WAZUH_INTEGRATION.md
+  # Автотесты (78) внутри контейнера — локальный Python не нужен (stage-11):
+  # docker compose --profile tests build tests
+  # docker compose --profile tests run --rm tests
+  tests:
+    build:
+      context: .
+      target: dev
+    profiles: ["tests"]
+    restart: "no"
+
   wazuh-manager:
     image: wazuh/wazuh-manager:4.7.4
     profiles: ["wazuh"]

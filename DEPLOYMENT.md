@@ -133,9 +133,20 @@ docker compose --profile wazuh up --build
 Обычный `docker compose up` Wazuh не поднимает. Демо-матрица атак (hydra/nmap/curl) —
 там же.
 
-## 6. Автотесты (78 тестов)
+## 6. Автотесты (78 тестов) — только Docker, локальный Python не нужен
 
-**Вариант A — локально (рекомендуется):**
+Тесты запечены в dev-стадию образа (Dockerfile multi-stage: `base` — прод, `dev` — прод + тесты):
+
+```bash
+docker compose --profile tests build tests   # собрать образ с тестами
+docker compose --profile tests run --rm tests  # прогнать pytest (78 тестов)
+```
+
+Тесты самодостаточны (SQLite in-memory) — БД/Ollama/запущенный стенд не требуются.
+Повторный прогон после правок: та же команда `run` (кэш сборки обновит только слои
+с изменившимися файлами — это секунды).
+
+**Вариант A — локально (для разработчиков):**
 
 ```powershell
 python -m venv .venv
@@ -144,13 +155,8 @@ pip install -r requirements.txt pytest
 pytest
 ```
 
-**Вариант B — в контейнере (без локального Python):**
-
-```bash
-docker compose run --rm -v "$(pwd)/tests:/app/tests" api sh -c "pip install --no-cache-dir pytest && pytest"
-```
-
-Сборка фронтенда (проверка UI): `cd frontend && npm install && npm run build`.
+Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`;
+вручную: `cd frontend && npm install && npm run build`.
 
 ## 7. GPU для LLM (опционально)
 
