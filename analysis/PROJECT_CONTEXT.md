@@ -48,7 +48,9 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (после stage-12)
+## 4. Статус на 2026-11-04 (после stage-13)
+
+- **stage-13 (`stage-13-frontend-tests-restructure`, стековая от stage-12): фронтенд-тесты + реорганизация.** Из main.jsx вынесены хелперы → `frontend/src/lib/helpers.js` и PipelineStatus → `frontend/src/components/PipelineStatus.jsx` (pipelineStageStatuses + data-stage); Vitest + RTL: 49 тестов (`docker compose --profile tests run --rm frontend-tests`, node:20-alpine + volume node_modules); реорганизация: docs/ (3 дока), samples/ (JSON-алерты), ссылки обновлены, analysis/ остался в корне; package-lock.json в репо. Урок: дубль STATUS_LABELS (import vs const) поймал только производственный `vite build` на стенде.
 
 - **stage-08/09/10/11 влиты** (PR #6–#9); **stage-12 (правки бизнес-логики, ветка `stage-12-business-logic-fixes`) — на ревью пользователя**. 
 - **Деплой выполнен и живой:** 86 тестов зелёных в контейнере; стенд 6 сервисов (добавлен Adminer :8080 — веб-UI PG, логин siem/siem); демо-данные на стенде пересозданы через `POST /demo/populate` (7 инцидентов: 4 critical / 2 high / 1 low, правила распределены верно); фоновый автоанализ проверен живьём (critical → scheduled → Analysis с initiated_by=auto_analysis).
