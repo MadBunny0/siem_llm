@@ -3,10 +3,48 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.config import settings
-from app.models import Playbook, ResponseAction
+from app.models import Incident, Playbook, ResponseAction
 from app.services.notification import notify_analyst
 
 logger = logging.getLogger("playbook")
+
+
+# ---------------------------------------------------------------------------
+# ITSM — интеграция с системой учёта заявок (ServiceNow/Jira)
+# ---------------------------------------------------------------------------
+class ITSMClient:
+    """Заглушка клиента ITSM (ServiceNow / Jira / Zammad).
+
+    В реальном проекте здесь будут вызовы REST API системы учёта заявок.
+    """
+
+    def __init__(self, service_now_url: str | None = None, jira_url: str | None = None):
+        self.service_now_url = service_now_url
+        self.jira_url = jira_url
+
+    def create_ticket(self, incident: "Incident") -> dict:
+        """Создание инцидента в системе учёта заявок (Глава 3.4 ВКР)."""
+        if settings.auto_response:
+            logger.info(
+                "ITSM ticket created: incident_id=%s title=%s severity=%s",
+                incident.id, incident.title, incident.severity,
+            )
+            return {
+                "created": True,
+                "ticket_id": f"INC-{incident.id:06d}",
+                "url": f"https://demo.itsm.example.com/incident/{incident.id}",
+            }
+        logger.warning(
+            "ITSM ticket NOT sent (simulation mode): incident_id=%s", incident.id
+        )
+        return {
+            "created": False,
+            "mode": "simulation",
+            "ticket_id": None,
+        }
+
+
+itsm = ITSMClient()
 
 
 def load_playbook_by_action(db: Session, action: str) -> Playbook | None:
@@ -29,6 +67,8 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
     Если db передан — сценарий загружается из БД (Playbook),
     результаты записываются в ResponseAction.
     """
+    incident_id = context.get("incident_id")
+
     # Безопасный режим демонстрации. Реальное изменение инфраструктуры выключено.
     if not settings.auto_response:
         logger.warning("SIMULATION: action=%s context=%s", action, context)
@@ -42,7 +82,7 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
             result["playbook"] = playbook.name
             # запись выполненного действия в ResponseAction
             resp_action = ResponseAction(
-                incident_id=context.get("incident_id"),
+                incident_id=incident_id,
                 playbook_id=playbook.id,
                 action_type=action,
                 executed_at=datetime.now(timezone.utc),
@@ -53,8 +93,15 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
             db.add(resp_action)
             db.flush()
             result["response_action_id"] = resp_action.id
+            # ITSM-регистрация инцидента в системе учёта заявок (сценарий 3.4 ВКР)
+            try:
+                itsm_result = itsm.create_ticket(db.get(Incident, incident_id)) if incident_id else None
+                result["itsm_ticket"] = itsm_result
+            except Exception as exc:
+                logger.error("ITSM ticket creation failed: %s", exc)
+                result["itsm_ticket"] = {"created": False, "error": str(exc)}
             # ITSM-уведомление аналитикам о выполненном ответном действии
-            notify_analyst(db, None, "action_executed")
+            notify_analyst(db, db.get(Incident, incident_id), "action_executed") if incident_id else None
         return result
 
     logger.warning("CONTROLLED RESPONSE: action=%s context=%s", action, context)

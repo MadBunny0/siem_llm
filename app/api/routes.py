@@ -46,7 +46,9 @@ def ingest_wazuh(alert: WazuhAlert, db: Session = Depends(get_db)):
         }
         for e in related
     ]
-    score, severity = calculate_risk(risk_events)
+    # вероятность реализации угрозы берётся из достоверности последнего события / по умолчанию 0.5
+    confidence = max((e.get("raw_data") or {}).get("rule", {}).get("confidence", 0.5) for e in related)
+    score, severity = calculate_risk(risk_events, p_implement=confidence)
     incident = create_or_update_incident(db, related, risk_score=score)
     incident.severity = severity
     db.commit()

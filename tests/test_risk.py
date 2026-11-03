@@ -72,3 +72,24 @@ def test_calculate_risk_medium_asset():
     score, severity = calculate_risk(events)
     assert score == 60
     assert severity == "medium"
+
+
+def test_calculate_risk_probability_of_implementation():
+    from app.services.risk import calculate_risk
+
+    # бонус за серию (5 событий = +20) при вероятности 0.5 → +10 → 1+10=11 → low
+    events = [
+        {"raw_data": {"rule": {"level": "1"}}},
+        {"raw_data": {"rule": {"level": "1"}}},
+        {"raw_data": {"rule": {"level": "1"}}},
+        {"raw_data": {"rule": {"level": "1"}}},
+        {"raw_data": {"rule": {"level": "1"}}},
+    ]
+    # при вероятности 0.0 bonus должен быть обнулён
+    score, severity = calculate_risk(events, p_implement=0.0)
+    assert score == 7
+    assert severity == "low"
+    # при вероятности 1.0 bonus +20 → 27 → low
+    score, severity = calculate_risk(events, p_implement=1.0)
+    assert score == 27
+    assert severity == "low"

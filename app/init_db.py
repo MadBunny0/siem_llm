@@ -8,9 +8,40 @@ from app import models  # noqa: F401 - registers all SQLAlchemy models
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     print("Database schema initialized successfully.", flush=True)
+    _seed_default_users()
     _seed_default_assets()
     _seed_default_correlation_rules()
     _seed_default_playbooks()
+
+
+def _seed_default_users() -> None:
+    """Создание базовых пользователей системы (аналитики SOC)."""
+    from sqlalchemy.orm import Session
+    users = [
+        {
+            "username": "analyst1",
+            "password_hash": "pbkdf2:sha256:260000$...",
+            "role": "analyst",
+        },
+        {
+            "username": "analyst2",
+            "password_hash": "pbkdf2:sha256:260000$...",
+            "role": "analyst",
+        },
+        {
+            "username": "soc_lead",
+            "password_hash": "pbkdf2:sha256:260000$...",
+            "role": "analyst",
+        },
+    ]
+    with Session(engine) as session:
+        for user_data in users:
+            stmt = select(models.User).where(models.User.username == user_data["username"])
+            existing = session.scalar(stmt)
+            if not existing:
+                user = models.User(**user_data)
+                session.add(user)
+        session.commit()
 
 
 def _seed_default_assets() -> None:
