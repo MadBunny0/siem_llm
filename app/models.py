@@ -128,8 +128,8 @@ class Notification(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-    # связь с инцидентами
-    incidents: Mapped[list["Incident"]] = relationship(back_populates="asset")
+    # связь с инцидентом (many-to-one по incident_id)
+    incident: Mapped["Incident | None"] = relationship()
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,7 @@ class CorrelationRule(Base):
     description: Mapped[str] = mapped_column(Text)
     conditions: Mapped[dict] = mapped_column(JSON)  # список условий срабатывания
     time_window_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    min_events: Mapped[int] = mapped_column(Integer, default=1)  # порог повторений (§3.3.2 ВКР)
     priority: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(

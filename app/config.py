@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:3b"
     correlation_window_minutes: int = 5
     auto_response: bool = False
+    # автоматический LLM-анализ критических инцидентов без задержек (§3.3.3 ВКР, p:80)
+    auto_analysis: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

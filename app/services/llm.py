@@ -22,6 +22,18 @@ confidence — число от 0 до 1.
 """.strip()
 
 
+def render_full_prompt(context: dict) -> str:
+    """Полный текст запроса к модели: системный промпт + контекст инцидента.
+
+    Сохраняется в Analysis.prompt для аудита и анализа качества работы
+    интеллектуального модуля (§3.2, §3.3.4 ВКР).
+    """
+    return (
+        f"[SYSTEM]\n{SYSTEM_PROMPT}\n\n"
+        f"[USER]\n{json.dumps(context, ensure_ascii=False, default=str)}"
+    )
+
+
 async def analyze_incident(incident: dict) -> dict:
     payload = {
         "model": settings.ollama_model,

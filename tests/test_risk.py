@@ -56,7 +56,8 @@ def test_calculate_risk_correlation_bonus():
         {"raw_data": {"rule": {"level": "1"}}},
     ]
     score, severity = calculate_risk(events)
-    assert score == 20
+    # base = LEVEL_TO_SCORE["1"] = 7, бонус за серию +20 * p_implement (0.5) = +10
+    assert score == 17
     assert severity == "low"
 
 

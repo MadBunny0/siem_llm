@@ -7,11 +7,29 @@ from app import models  # noqa: F401 - registers all SQLAlchemy models
 
 def main() -> None:
     Base.metadata.create_all(bind=engine)
+    _ensure_schema_updates()
     print("Database schema initialized successfully.", flush=True)
     _seed_default_users()
     _seed_default_assets()
     _seed_default_correlation_rules()
     _seed_default_playbooks()
+
+
+def _ensure_schema_updates() -> None:
+    """Лёгкие миграции для существующих БД (Alembic не используется).
+
+    create_all создаёт только новые таблицы, но не добавляет колонки
+    в существующие — добавляем недостающие колонки явно.
+    """
+    from sqlalchemy import text
+
+    statements = [
+        # порог повторений для правил корреляции (§3.3.2 ВКР)
+        "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS min_events INTEGER NOT NULL DEFAULT 1",
+    ]
+    with engine.begin() as conn:
+        for stmt in statements:
+            conn.execute(text(stmt))
 
 
 def _seed_default_users() -> None:
@@ -111,6 +129,7 @@ def _seed_default_correlation_rules() -> None:
                 {"field": "user", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 5,
+            "min_events": 3,  # порог повторений (§3.3.2)
             "priority": 2,
             "is_active": True,
         },
@@ -121,6 +140,7 @@ def _seed_default_correlation_rules() -> None:
                 {"field": "src_ip", "operator": "neq", "value": ""},
             ],
             "time_window_minutes": 10,
+            "min_events": 2,
             "priority": 1,
             "is_active": True,
         },
@@ -134,6 +154,9 @@ def _seed_default_correlation_rules() -> None:
             if not existing:
                 rule = models.CorrelationRule(**rule_data)
                 session.add(rule)
+            elif existing.min_events != rule_data.get("min_events", 1):
+                existing.min_events = rule_data.get("min_events", 1)  # обновление порога
+                session.add(existing)
         session.commit()
 
 
@@ -161,6 +184,39 @@ def _seed_default_playbooks() -> None:
                 {"action": "disable_account", "target": "{{user}}", "tool": "idm"}
             ],
             "priority": 2,
+            "is_active": True,
+        },
+        {
+            "name": "isolate_host",
+            "description": "Изоляция скомпрометированного узла от корпоративной сети",
+            "trigger_conditions": {"attack_type": ["malware", "privilege_escalation"]},
+            "allowed_actions": ["isolate_host"],
+            "steps": [
+                {"action": "isolate_host", "target": "{{asset}}", "tool": "edr"}
+            ],
+            "priority": 3,
+            "is_active": True,
+        },
+        {
+            "name": "collect_evidence",
+            "description": "Сбор и сохранение доказательств по инциденту",
+            "trigger_conditions": {"attack_type": ["monitor", "collect_evidence"]},
+            "allowed_actions": ["collect_evidence"],
+            "steps": [
+                {"action": "collect_evidence", "target": "{{incident}}", "tool": "audit"}
+            ],
+            "priority": 1,
+            "is_active": True,
+        },
+        {
+            "name": "monitor",
+            "description": "Наблюдение за инцидентом без активного вмешательства",
+            "trigger_conditions": {"attack_type": ["monitor"]},
+            "allowed_actions": ["monitor"],
+            "steps": [
+                {"action": "monitor", "target": "{{incident}}", "tool": "none"}
+            ],
+            "priority": 1,
             "is_active": True,
         },
     ]

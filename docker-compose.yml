@@ -57,6 +57,7 @@ services:
       OLLAMA_MODEL: qwen2.5:3b
       CORRELATION_WINDOW_MINUTES: 5
       AUTO_RESPONSE: "false"
+      AUTO_ANALYSIS: "true"
     ports:
       - "8000:8000"
     depends_on:
