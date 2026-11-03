@@ -48,9 +48,12 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-03 (после stage-08)
+## 4. Статус на 2026-11-03 (после stage-09)
 
-- **stage-07 влит в `main`** (PR #5, `506229a`), ветки вычищены. Текущая рабочая ветка: **`stage-08-p2-tests-ui-crud`** (от main), коммиты: `3116110` бэкенд-CRUD, `06b9d79` тесты, `9d72843` UI. PR ещё не создавался.
+- **stage-08 (P2) готов** на ветке `stage-08-p2-tests-ui-crud` (коммиты `3116110`, `06b9d79`, `9d72843`, `6c5ec4f`) — **PR ещё не влит**.
+- **stage-09 (авторизация) готов** на стековой ветке **`stage-09-auth`** (от stage-08): коммиты `555648b` (бэкенд) и `9a2ef5f` (UI). Создавать PR **после вливания stage-08** (base: main), либо менять base на stage-08-ветку.
+- **Авторизация (stage-09):** JWT Bearer (PyJWT, HS256, `JWT_SECRET` в config/.env), пароли PBKDF2-SHA256 (260k итераций, `app/services/security.py`), зависимости `get_current_user`/`require_admin` (`app/services/auth.py`). Открыты: `/health`, `/ingest/wazuh`, `/auth/login`. Роли: analyst (чтение, анализ, смена статуса) / admin (CRUD правил/playbooks, confirm-action, `POST /auth/register`). Демо-учётки (seed, реальные хеши): analyst1/analyst123, analyst2/analyst123, soc_lead/soclead123 (admin); старые seed-заглушки хешей мигрируются при init. UI: AuthGate + логин-экран, токен в localStorage (`siem_token`), 401 → re-login, роль-зависимый UI. Тесты: test_routes обходит auth (override get_current_user), test_auth.py (+14) — реальный флоу. Итого тестов ~71.
+- Stage-08 (детали): тесты +27 (57→с auth ~71), CRUD `/correlation-rules`+`/playbooks` (409 на удаление используемого playbook), `GET /incidents/{id}`, `PATCH /incidents/{id}/status`, `GET /audit-logs`; UI — 6 вкладок, детальная карточка инцидента, смена статуса, confirm-action, CRUD-формы.
 - **Stage-08 (P2) сделан:**
   - Тесты: +27 (test_llm — мок Ollama через фейковый httpx.AsyncClient; test_assets; test_routes — TestClient + sqlite StaticPool, патч `app.api.routes.analyze_incident`). Итого 57. **Не запускались** (Python на ПК нет).
   - Бэкенд: CRUD `/correlation-rules` и `/playbooks` (POST/PUT/DELETE, 409 при удалении playbook с response_actions); `GET /incidents/{id}` (детально: events+analyses); `PATCH /incidents/{id}/status` (new/in_progress/closed, 422 на иное); `GET /audit-logs?limit`. Схемы: EventOut, IncidentDetailOut, IncidentStatusIn, AuditLogOut, CorrelationRuleIn/Out, PlaybookIn/Out.
@@ -75,9 +78,9 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 5. Следующие шаги (roadmap)
 
-1. Пользователь: PR из `stage-08-p2-tests-ui-crud` → main; после вливания почистить ветку.
-2. Проверить запуском на ПК с инструментами: `pytest` (57 тестов), `docker compose up --build`, сборка фронтенда.
-3. Остаток P2: Wazuh в docker-compose (профиль) / стенд VirtualBox; опционально Alembic + авторизация.
+1. Пользователь: влить PR stage-08 → затем PR stage-09 (после вливания stage-08 сменить/проверить base на main); почистить ветки.
+2. Проверить запуском на ПК с инструментами: `pytest` (~71 тест), `docker compose up --build`, сборка фронтенда, логин демо-учётками.
+3. Остаток P2: Wazuh в docker-compose (профиль) / VirtualBox-стенд; Alembic признан необязательным (см. обсуждение 2026-11-03) — только если появятся частые изменения схемы.
 4. После Главы 3 — переход к Главе 4 (реализация и эксперименты; отдельное обсуждение).
 
 ## 6. Соглашения по работе

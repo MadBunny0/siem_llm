@@ -957,3 +957,161 @@
   color: #ff9eaa;
 }
 
+/* ===================== Stage 09: авторизация (JWT) ===================== */
+
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 75% -10%, #17233f 0, #0b1020 32%, #070b14 70%);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  background: #0b121f;
+  border: 1px solid #1c273b;
+  border-radius: 16px;
+  padding: 32px 30px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  animation: slideUp 0.3s ease;
+}
+
+.login-card .brand-mark {
+  margin-bottom: 18px;
+}
+
+.login-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  letter-spacing: -0.3px;
+  color: #e8ecf4;
+}
+
+.login-subtitle {
+  margin: 0 0 22px;
+  font-size: 11px;
+  color: #68758b;
+  line-height: 1.5;
+}
+
+.login-card .form-group input {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.login-card .form-group input:focus {
+  outline: none;
+  border-color: #4f5fff;
+  box-shadow: 0 0 0 2px rgba(79, 95, 255, 0.2);
+}
+
+.login-error {
+  background: #341722;
+  border: 1px solid #5a2634;
+  color: #ff9eaa;
+  font-size: 11px;
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin: 0 0 14px;
+}
+
+.login-submit {
+  width: 100%;
+  padding: 11px !important;
+  font-size: 13px !important;
+  margin-top: 4px;
+}
+
+.login-hint {
+  margin: 18px 0 0;
+  font-size: 9.5px;
+  color: #5f6c83;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.login-hint b {
+  color: #8a96ad;
+  font-weight: 600;
+}
+
+.user-box {
+  margin-top: auto;
+  border-top: 1px solid #1c2538;
+  padding: 14px 9px 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.user-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #dce4f6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge-role {
+  display: inline-block;
+  width: fit-content;
+  font-size: 8px;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  background: #172c49;
+  color: #80b2ff;
+}
+
+.badge-role.admin {
+  background: #382714;
+  color: #ffbd67;
+}
+
+.btn-logout {
+  flex: none;
+  border: 1px solid #263149;
+  background: #111827;
+  color: #aab4c7;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.btn-logout:hover {
+  background: #1a2438;
+  border-color: #35466a;
+  color: #dbe1ec;
+}
+
+.active-flag {
+  font-size: 9px;
+  color: #8290a8;
+}
+
+.pending-waiting {
+  flex: none;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #a8946a;
+  white-space: nowrap;
+}
+

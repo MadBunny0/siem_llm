@@ -1,0 +1,31 @@
+# --- Документы ВКР и локальные материалы (не часть кода проекта) ---
+vkr.docx
+vkr.txt
+
+# --- Служебные файлы ZCode ---
+.zcode/
+
+# --- IDE / редакторы ---
+.idea/
+.vscode/
+*.iml
+
+# --- Системные файлы ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+
+# --- Node / фронтенд ---
+node_modules/
+frontend/dist/
+
+# --- Логи и локальные артефакты ---
+*.log

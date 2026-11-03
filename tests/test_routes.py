@@ -5,7 +5,9 @@
 одну и ту же базу. Внешние зависимости изолируются:
 - settings.auto_analysis=False — ингест не запускает LLM-анализ;
 - settings.auto_response=False — реагирование выполняется в режиме simulation;
-- app.api.routes.analyze_incident подменяется фейковой async-функцией.
+- app.api.routes.analyze_incident подменяется фейковой async-функцией;
+- get_current_user подменяется фейковым админом (механика JWT тестируется
+  отдельно в test_auth.py).
 """
 
 import pytest
@@ -17,7 +19,8 @@ from sqlalchemy.pool import StaticPool
 from app.config import settings
 from app.db import get_db
 from app.main import app
-from app.models import Base
+from app.models import Base, User
+from app.services.auth import get_current_user
 
 API = "/api/v1"
 
@@ -70,6 +73,11 @@ def client(engine, monkeypatch):
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    # авторизация в этих тестах обходится: фейковый пользователь с ролью admin
+    # (реальный флоу JWT тестируется в test_auth.py)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, username="tester", role="admin"
+    )
     yield TestClient(app)
     app.dependency_overrides.clear()
 

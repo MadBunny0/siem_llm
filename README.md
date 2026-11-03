@@ -104,6 +104,28 @@ AUTO_RESPONSE=false
 
 Поэтому playbook работает в безопасном демонстрационном режиме и не выполняет реальные блокировки IP, отключение учётных записей или изоляцию узлов.
 
+## Авторизация (stage-09)
+
+API защищено JWT (Bearer). Открыты только `GET /health` (мониторинг) и `POST /ingest/wazuh` (интеграция с Wazuh). Демо-учётки создаются при инициализации БД:
+
+| Пользователь | Пароль | Роль | Права |
+|---|---|---|---|
+| `analyst1` | `analyst123` | аналитик | чтение, LLM-анализ, смена статуса инцидента |
+| `analyst2` | `analyst123` | аналитик | как у analyst1 |
+| `soc_lead` | `soclead123` | администратор | + CRUD правил/playbooks, подтверждение действий на критических активах, создание пользователей |
+
+Вход в веб-интерфейсе — через экран логина; в Swagger (`/docs`) — кнопка Authorize, вставьте `access_token` из `POST /api/v1/auth/login`.
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"soc_lead","password":"soclead123"}' | python -c "import sys,json;print(json.load(sys.stdin)['access_token'])")
+
+curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
+```
+
+Секрет подписи токена задаётся переменной `JWT_SECRET` (см. `.env.example`) — смените его для окружения, отличного от локального.
+
 ## Остановка
 
 ```bash

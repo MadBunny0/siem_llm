@@ -33,32 +33,41 @@ def _ensure_schema_updates() -> None:
 
 
 def _seed_default_users() -> None:
-    """Создание базовых пользователей системы (аналитики SOC)."""
+    """Создание базовых пользователей SOC (stage-09: реальные PBKDF2-хеши).
+
+    Демо-учётки: analyst1/analyst123, analyst2/analyst123 (аналитики),
+    soc_lead/soclead123 (администратор — подтверждение действий на
+    критических активах, §3.4 ВКР, p:17).
+    """
     from sqlalchemy.orm import Session
+
+    from app.services.security import hash_password
+
     users = [
-        {
-            "username": "analyst1",
-            "password_hash": "pbkdf2:sha256:260000$...",
-            "role": "analyst",
-        },
-        {
-            "username": "analyst2",
-            "password_hash": "pbkdf2:sha256:260000$...",
-            "role": "analyst",
-        },
-        {
-            "username": "soc_lead",
-            "password_hash": "pbkdf2:sha256:260000$...",
-            "role": "analyst",
-        },
+        {"username": "analyst1", "password": "analyst123", "role": "analyst"},
+        {"username": "analyst2", "password": "analyst123", "role": "analyst"},
+        {"username": "soc_lead", "password": "soclead123", "role": "admin"},
     ]
     with Session(engine) as session:
         for user_data in users:
             stmt = select(models.User).where(models.User.username == user_data["username"])
             existing = session.scalar(stmt)
             if not existing:
-                user = models.User(**user_data)
+                user = models.User(
+                    username=user_data["username"],
+                    password_hash=hash_password(user_data["password"]),
+                    role=user_data["role"],
+                )
                 session.add(user)
+            else:
+                # миграция старых seed-заглушек ("pbkdf2:sha256:260000$...") —
+                # они не проходят проверку verify_password; заодно роли
+                if existing.password_hash.startswith("pbkdf2:"):
+                    existing.password_hash = hash_password(user_data["password"])
+                    session.add(existing)
+                if existing.role != user_data["role"]:
+                    existing.role = user_data["role"]
+                    session.add(existing)
         session.commit()
 
 
