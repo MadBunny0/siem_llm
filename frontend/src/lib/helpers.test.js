@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  actionRuDescription,
+  analysisFromHistory,
   analysisResults,
   confPct,
   criteriaCountLabel,
@@ -8,6 +10,7 @@ import {
   initiatedByBadge,
   pendingReasonText,
   priorityLabel,
+  recommendedActionCodes,
   resultExecutionBadge,
   resultNeedsConfirmation,
   resultValidationBadge,
@@ -203,5 +206,98 @@ describe('detailToMessage — detail из ответов FastAPI', () => {
 
   it('undefined → fallback', () => {
     expect(detailToMessage(undefined, 'Неизвестная ошибка')).toBe('Неизвестная ошибка');
+  });
+});
+
+describe('stage-14: actionRuDescription — русские расшифровки действий', () => {
+  it('известные действия → русское описание', () => {
+    expect(actionRuDescription('block_ip')).toBe('Блокировка IP-адреса источника атаки на межсетевом экране');
+    expect(actionRuDescription('disable_account')).toBe('Временная блокировка учётной записи в IdM');
+    expect(actionRuDescription('isolate_host')).toBe('Изоляция узла от сети — карантин EDR');
+    expect(actionRuDescription('collect_evidence')).toBe('Сбор и сохранение доказательств по инциденту');
+    expect(actionRuDescription('monitor')).toBe('Наблюдение за инцидентом без активного вмешательства');
+  });
+
+  it('неизвестное действие → общий текст-заглушка', () => {
+    expect(actionRuDescription('unknown_action')).toBe('Действие по сценарию реагирования');
+    expect(actionRuDescription(undefined)).toBe('Действие по сценарию реагирования');
+  });
+});
+
+describe('stage-14: recommendedActionCodes — разбор перечня действий', () => {
+  it('строка через запятую → массив кодов (trim + фильтр пустых)', () => {
+    expect(recommendedActionCodes('block_ip, isolate_host')).toEqual(['block_ip', 'isolate_host']);
+    expect(recommendedActionCodes('monitor')).toEqual(['monitor']);
+  });
+
+  it('лишние запятые/пробелы отбрасываются', () => {
+    expect(recommendedActionCodes('monitor, , collect_evidence,')).toEqual(['monitor', 'collect_evidence']);
+  });
+
+  it('не-строка/пусто → пустой массив', () => {
+    expect(recommendedActionCodes(null)).toEqual([]);
+    expect(recommendedActionCodes('')).toEqual([]);
+    expect(recommendedActionCodes(42)).toEqual([]);
+  });
+});
+
+describe('stage-14: analysisFromHistory — восстановление панели из истории', () => {
+  const stored = {
+    id: 7,
+    created_at: '2026-11-04T12:00:00Z',
+    model: 'qwen2.5:3b',
+    description: 'Описание из БД',
+    attack_type: 'credential_attack',
+    confidence: 0.9,
+    explanation: 'Обоснование',
+    recommended_action: 'block_ip',
+    response_raw: {
+      initiated_by: 'auto_analysis',
+      results: [
+        {
+          action: 'block_ip',
+          validation: { approved: false, action: 'block_ip', requires_confirmation: true, reason: 'критический актив' },
+          execution: { executed: false, mode: 'pending_confirmation', action: 'block_ip' },
+        },
+      ],
+      validation: { approved: false },
+      execution: { mode: 'pending_confirmation' },
+    },
+  };
+
+  it('собирает панель из последней записи: результаты из response_raw', () => {
+    const panel = analysisFromHistory(stored);
+    expect(panel.fromHistory).toBe(true);
+    expect(panel.results).toHaveLength(1);
+    expect(panel.results[0].action).toBe('block_ip');
+    expect(resultNeedsConfirmation(panel.results[0])).toBe(true);
+  });
+
+  it('рекомендация — из полей записи БД', () => {
+    const panel = analysisFromHistory(stored);
+    expect(panel.recommendation.attack_type).toBe('credential_attack');
+    expect(panel.recommendation.confidence).toBe(0.9);
+    expect(panel.recommendation.recommended_action).toBe('block_ip');
+  });
+
+  it('response_raw сохраняется — бейдж авто/вручную продолжает работать', () => {
+    const panel = analysisFromHistory(stored);
+    expect(initiatedByBadge(panel).text).toBe('авто (critical)');
+  });
+
+  it('строка response_raw из API парсится', () => {
+    const panel = analysisFromHistory({ ...stored, response_raw: JSON.stringify(stored.response_raw) });
+    expect(panel.results).toHaveLength(1);
+  });
+
+  it('fallback на саму запись, если в response_raw нет results', () => {
+    const legacy = { ...stored, response_raw: { initiated_by: 'manual' }, validation: { approved: true }, execution: { mode: 'simulation', action: 'monitor' } };
+    const panel = analysisFromHistory(legacy);
+    expect(panel.results).toHaveLength(1);
+    expect(panel.results[0].action).toBe('block_ip');
+  });
+
+  it('null → null (нечего показывать)', () => {
+    expect(analysisFromHistory(null)).toBeNull();
   });
 });
