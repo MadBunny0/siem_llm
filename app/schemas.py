@@ -1,11 +1,14 @@
 """Pydantic-схемы для REST API."""
 
 from datetime import datetime
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AssetOut(BaseModel):
     """Ответ о защищаемом активе (для инцидентов)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str
@@ -15,6 +18,8 @@ class AssetOut(BaseModel):
 
 class NotificationOut(BaseModel):
     """Ответ об ITSM-уведомлении (лог отправки)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     event_type: str
@@ -29,6 +34,8 @@ class NotificationOut(BaseModel):
 
 class AnalysisOut(BaseModel):
     """Результаты интеллектуального анализа LLM (для статистики качества)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     incident_id: int
@@ -50,11 +57,11 @@ class WazuhAlert(BaseModel):
     data: dict = Field(default_factory=dict)
     full_log: str | None = None
 
-from app.models import Asset  # noqa: F401
-
 
 class IncidentOut(BaseModel):
     """Ответ о инциденте (включая риск, тип атаки, актив)."""
+
+    model_config = ConfigDict(from_attributes=True)
 
     id: int
     title: str
@@ -66,5 +73,3 @@ class IncidentOut(BaseModel):
     asset_id: int | None
     asset: AssetOut | None = None
     created_at: datetime
-    class Config:
-        from_attributes = True

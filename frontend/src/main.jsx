@@ -174,7 +174,9 @@ function App() {
     try {
       const result = await request('/ingest/wazuh', { method: 'POST', body: JSON.stringify(demo) });
       await load();
-      setToast(`Событие принято: инцидент #${result.incident_id}`);
+      setToast(result.incident_id
+        ? `Событие принято: инцидент #${result.incident_id}`
+        : 'Событие сохранено: правила корреляции не сработали');
     } catch (e) { setError(e.message); }
     finally { setBusy(false); setTimeout(() => setToast(''), 3500); }
   }
@@ -205,7 +207,9 @@ function App() {
     try {
       const result = await request('/ingest/wazuh', { method: 'POST', body: JSON.stringify(event) });
       await load();
-      setToast(`Событие создано: инцидент #${result.incident_id}`);
+      setToast(result.incident_id
+        ? `Событие создано: инцидент #${result.incident_id}`
+        : 'Событие сохранено: правила корреляции не сработали');
       setShowForm(false);
       setFormData({
         timestamp: new Date().toISOString().replace('Z', ''),
