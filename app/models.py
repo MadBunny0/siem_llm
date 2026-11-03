@@ -59,6 +59,9 @@ class Incident(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     analyst_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # владение инцидентом (stage-14): аналитик, взявший инцидент в работу;
+    # другой аналитик работать с ним не может (админ — исключение)
+    analyst: Mapped["User | None"] = relationship("User")
     events: Mapped[list[Event]] = relationship(
         secondary=incident_events, back_populates="incidents"
     )

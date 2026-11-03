@@ -338,10 +338,15 @@ def update_incident_status(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Смена статуса инцидента оператором (журналируется в аудит)."""
+    """Смена статуса инцидента оператором (журналируется в аудит).
+
+    Закрепляет инцидент за пользователем, если он свободен; чужой инцидент
+    аналитику недоступен (stage-14).
+    """
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    _ensure_incident_access(incident, user, assign=True)
     if payload.status not in ALLOWED_INCIDENT_STATUSES:
         raise HTTPException(status_code=422, detail=f"Недопустимый статус: {payload.status}")
 
@@ -360,16 +365,44 @@ def update_incident_status(
     return IncidentOut.model_validate(incident)
 
 
+def _ensure_incident_access(incident: Incident, user: User, assign: bool = False) -> None:
+    """Право на операцию с инцидентом (stage-14): владелец или администратор.
+
+    assign=True — незакреплённый инцидент закрепляется за текущим пользователем
+    (первым, кто взял его в работу). Чужой незакреплённый/чужой закреплённый для
+    аналитика → 403; админ работает с любым.
+    """
+    if user.role == "admin":
+        return
+    if incident.analyst_id is None:
+        if assign:
+            incident.analyst_id = user.id
+        return
+    if incident.analyst_id != user.id:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Инцидент закреплён за другим аналитиком — задачи нельзя "
+                "перехватывать (обратитесь к администратору)"
+            ),
+        )
+
+
 @router.post("/incidents/{incident_id}/analyze")
 async def analyze(
     incident_id: int,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Ручной запуск интеллектуального анализа инцидента (§3.3.4, §3.4)."""
+    """Ручной запуск интеллектуального анализа инцидента (§3.3.4, §3.4).
+
+    Закрепляет инцидент за аналитиком (если свободен); чужой инцидент
+    аналитику недоступен (stage-14).
+    """
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    _ensure_incident_access(incident, user, assign=True)
     return await _run_incident_analysis(db, incident, initiated_by="manual")
 
 
@@ -526,6 +559,9 @@ async def _run_incident_analysis(
                 "mode": "pending_confirmation",
                 "action": validation["action"],
                 "reason": validation["reason"],
+                # описание сценария — чтобы действие было понятно оператору (stage-14)
+                "playbook": playbook.name if playbook else None,
+                "playbook_description": playbook.description if playbook else None,
             }
             pending_any = True
         else:
