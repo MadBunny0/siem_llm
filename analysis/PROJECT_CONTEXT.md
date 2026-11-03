@@ -50,8 +50,9 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 4. Статус на 2026-11-03 (после stage-07)
 
-- Ветка **`stage-07-ch3-gap-fixes`** (переименована из `hotfixes/itsm-notification-assets`), запушена в `siem_llm` (GitHub MadBunny0/siem_llm). Коммиты: `52238b0` (stage-07: код) и `1a9224e` (docs: analysis/) поверх `7ffb77c` (stage-06 = main). PR готовит пользователь.
-- Старая удалённая ветка `hotfixes/itsm-notification-assets` осталась на GitHub (можно удалить после PR).
+- **stage-07 влит в `main`** (PR #5, merge-коммит `506229a`). Ветка `stage-07-ch3-gap-fixes` удалена (локально и на GitHub).
+- Git вычищен: все служебные ветки (stage-02…stage-07, hotfixes/*) удалены как полностью слитые; остались только `main` (локально и на GitHub). Remote — `siem_llm` (GitHub MadBunny0/siem_llm).
+- Новые доработки ведутся от `main`; следующий этап — stage-08 (P2: тесты → UI → CRUD → Wazuh-стенд).
 - **Запуск и тесты на этом ПК запрещены** (нет инструментов; Python отсутствует — синтаксическая проверка инструментами не проводилась, только вычитка). Проверка — только чтение кода.
 - **Stage-07 реализован:** все P0-баги закрыты, основная часть P1 выполнена (детали — `GAP_ANALYSIS_CH3.md`, раздел 9).
 
