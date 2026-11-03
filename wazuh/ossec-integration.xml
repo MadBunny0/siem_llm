@@ -1,0 +1,9 @@
+<!-- Фрагмент /var/ossec/etc/ossec.conf Wazuh-менеджера (stage-10).
+     Добавляется к конфигурации одной командой — см. WAZUH_INTEGRATION.md.
+     level>=3 — все события с уровнем 3 и выше (Wazuh по умолчанию пишет в alerts.json с level>=3). -->
+<integration>
+  <name>custom-integration</name>
+  <hook_url>http://api:8000/api/v1/ingest/wazuh</hook_url>
+  <level>3</level>
+  <alert_format>json</alert_format>
+</integration>

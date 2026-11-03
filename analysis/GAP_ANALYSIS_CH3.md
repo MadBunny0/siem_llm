@@ -157,3 +157,10 @@
 ### Осталось (не тронуто в stage-07):
 - P2: CRUD API/UI для правил и playbook; UI-просмотры (аудит, анализы, уведомления, детальная страница инцидента); `test_llm.py`, тесты routes.py; Wazuh/VirtualBox; Alembic; авторизация.
 - Проверка запуском (docker compose up — на другом ПК).
+
+### stage-10 (2026-11-03, ветка `stage-10-wazuh-stand`):
+- **Закрыт P2-п.13** («Wazuh в docker-compose / стенд VirtualBox»): сервис `wazuh-manager` (образ `wazuh/wazuh-manager:4.7.4`) в `docker-compose.yml` под **опциональным профилем** `--profile wazuh` (обычный `up` его не поднимает); том `wazuh_data`; порты 1514/1515/55000.
+- `wazuh/integrator.sh` — скрипт кастомной интеграции (монтируется в `/var/ossec/integrator_files/custom-integration`): JSON-алерт → `POST /api/v1/ingest/wazuh` через встроенный python менеджера (endpoint открыт для машинной интеграции).
+- `wazuh/ossec-integration.xml` — фрагмент `<integration>` (level≥3, alert_format=json), добавляется в ossec.conf одной командой из документации.
+- `WAZUH_INTEGRATION.md` — быстрый старт контейнерного менеджера (3 команды настройки) **и** полная инструкция VirtualBox-стенда для Главы 4: топология (менеджер/цель/атакующий), регистрация агента с именем = именем актива (чтобы работала привязка актива в риске), моделирование атак (hydra/nmap), метрики для эксперимента (audit-logs, analyses).
+- Оставшееся из P2: только проверка запуском (pytest/docker/npm — на ПК с инструментами). Alembic решено не делать (2026-11-03).
