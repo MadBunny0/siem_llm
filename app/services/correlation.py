@@ -1,6 +1,8 @@
 from datetime import timedelta
-from sqlalchemy import select
+
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+
 from app.config import settings
 from app.models import CorrelationRule, Event, Incident
 
@@ -12,18 +14,46 @@ def load_correlation_rules(db: Session) -> list[CorrelationRule]:
     ).all())
 
 
+def _event_type_values(event: Event) -> list[str]:
+    """Все значения типа события: event_type + группы правила Wazuh.
+
+    Реальные алерты Wazuh аккумулируют группы служебными тегами вперёд
+    (например ["syslog", "sshd", "authentication_failed"]), таксономическая
+    группа оказывается последней, а event_type у нас = groups[0] (§3.3.1).
+    Поэтому условия правил сопоставляются со всем набором групп (stage-11) —
+    иначе seed-правила не срабатывали бы на настоящем стенде.
+    """
+    values = []
+    if event.event_type:
+        values.append(str(event.event_type))
+    groups = (event.raw_data or {}).get("rule", {}).get("groups") or []
+    values.extend(str(g) for g in groups if g)
+    return values
+
+
 def match_condition(event: Event, condition: dict) -> bool:
     """Проверка одного условия правила корреляции."""
     field = condition.get("field")
     operator = condition.get("operator", "eq")
     expected = condition.get("value")
 
+    if field == "event_type":
+        values = _event_type_values(event)
+        if operator == "like":
+            return any(str(expected) in v for v in values)
+        if operator == "eq":
+            return any(v == str(expected) for v in values)
+        if operator == "in":
+            expected_list = [str(v) for v in expected]
+            return any(v in expected_list for v in values)
+        if operator == "neq":
+            return all(v != str(expected) for v in values)
+        return False
+
     if field == "src_ip":
         actual = event.src_ip
     elif field == "user":
         actual = event.user
-    elif field == "event_type":
-        actual = event.event_type
     elif field == "criticality":
         actual = event.criticality_level
     else:
@@ -77,53 +107,96 @@ def find_related_events(db: Session, event: Event) -> list[Event]:
 def match_attribute(event_a: Event, event_b: Event) -> bool:
     """Сопоставление двух событий по признакам (§3.3.2):
     IP-адрес источника, учётная запись пользователя, защищаемый актив."""
+    return match_factor_count(event_a, event_b) > 0
+
+
+def match_factor_count(event_a: Event, event_b: Event) -> int:
+    """Сколько признаков совпало у двух событий (0–3): IP, учётная запись, актив.
+
+    Используется как мера «достоверности результатов корреляции» (§3.3.3, p:74):
+    чем больше совпавших признаков, тем выше уверенность, что события связаны.
+    """
+    factors = 0
     if event_a.src_ip and event_a.src_ip == event_b.src_ip:
-        return True
+        factors += 1
     if event_a.user and event_a.user == event_b.user:
-        return True
+        factors += 1
     if event_a.asset_id is not None and event_a.asset_id == event_b.asset_id:
-        return True
-    return False
+        factors += 1
+    return factors
 
 
-def evaluate_correlation(db: Session, event: Event) -> tuple[CorrelationRule | None, list[Event]]:
+def _candidate_conditions(event: Event) -> list:
+    """SQL-условия совпадения атрибутов события (только по непустым полям)."""
+    conditions = []
+    if event.src_ip:
+        conditions.append(Event.src_ip == event.src_ip)
+    if event.user:
+        conditions.append(Event.user == event.user)
+    if event.asset_id is not None:
+        conditions.append(Event.asset_id == event.asset_id)
+    return conditions
+
+
+def evaluate_correlation(db: Session, event: Event) -> tuple[CorrelationRule | None, list[Event], float]:
     """Оценка активных правил корреляции для события (§3.3.2 ВКР).
 
     Связанными считаются события того же временного окна, совпадающие
     с текущим по IP-адресу источника, учётной записи или защищаемому активу
-    (p:59). Правило срабатывает, если накоплено не меньше rule.min_events
-    событий — порог повторений («количество повторений аналогичных записей»).
+    (p:59) — совпадение проверяется в SQL, а не перебором всех событий окна.
+    Правило срабатывает, если накоплено не меньше rule.min_events событий —
+    порог повторений («количество повторений аналогичных записей»).
     При срабатывании нескольких правил выбирается правило с наибольшим
     приоритетом.
 
-    Возвращает (сработавшее правило, связанные события) либо (None, []),
-    если ни одно правило не сработало — тогда инцидент не формируется,
-    а событие сохраняется в БД до появления дополнительных событий (p:60).
+    Возвращает (сработавшее правило, связанные события, достоверность
+    корреляции 1/3…1.0 — средняя доля совпавших признаков) либо
+    (None, [], 0.0), если ни одно правило не сработало — тогда инцидент
+    не формируется, а событие сохраняется в БД до появления
+    дополнительных событий (p:60).
     """
     best_rule: CorrelationRule | None = None
     best_related: list[Event] = []
+    best_confidence = 0.0
 
     for rule in load_correlation_rules(db):
         if not check_rule_conditions(rule, event):
             continue
+        conditions = _candidate_conditions(event)
+        if not conditions:
+            continue  # не с чем сопоставлять — событие без IP/учётки/актива
         window = rule.time_window_minutes if rule.time_window_minutes else settings.correlation_window_minutes
         start = event.timestamp - timedelta(minutes=window)
         end = event.timestamp + timedelta(minutes=window)
+        # совпадение атрибутов отфильтровывается в SQL (stage-11, производительность)
         candidates = list(db.scalars(
-            select(Event).where(Event.timestamp.between(start, end))
+            select(Event).where(
+                Event.timestamp.between(start, end),
+                or_(*conditions),
+            )
         ).all())
-        # сопоставление события-к-событию, а не «все события окна»
-        related = [e for e in candidates if e.id != event.id and match_attribute(event, e)]
+        related = [e for e in candidates if e.id != event.id]
         min_events = rule.min_events or 1
         if len(related) + 1 < min_events:
             continue
-        if best_rule is None or rule.priority >= best_rule.priority:
+        # достоверность корреляции: средняя доля совпавших признаков (1..3)/3
+        if related:
+            confidence = sum(match_factor_count(event, e) for e in related) / (3 * len(related))
+        else:
+            confidence = 1.0  # одиночное событие — корреляция не разбавляет оценку
+        # выбор правила: наивысший приоритет; при равном приоритете — то,
+        # что дало больше связанных событий (детерминированный выбор для демо)
+        if (
+            best_rule is None
+            or (rule.priority, len(related)) > (best_rule.priority, len(best_related))
+        ):
             best_rule = rule
             best_related = related
+            best_confidence = confidence
 
     if best_rule is None:
-        return None, []
-    return best_rule, best_related + [event]
+        return None, [], 0.0
+    return best_rule, best_related + [event], best_confidence
 
 
 def create_or_update_incident(db: Session, events, risk_score: int = 0) -> Incident:

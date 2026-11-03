@@ -116,6 +116,16 @@ API защищено JWT (Bearer). Открыты только `GET /health` (м
 
 Вход в веб-интерфейсе — через экран логина; в Swagger (`/docs`) — кнопка Authorize, вставьте `access_token` из `POST /api/v1/auth/login`.
 
+### Плановый режим LLM-анализа (§3.3.3, p:80)
+
+`AUTO_ANALYSIS_LEVELS` — уровни риска, анализируемые LLM **автоматически** при поступлении
+события (по умолчанию `critical` — «передаются без задержек»). Для имитации планового режима
+по всем уровням укажите все: `AUTO_ANALYSIS_LEVELS=low,medium,high,critical`.
+
+Политика Decision Validation Engine (какие действия разрешены для каждого уровня риска)
+хранится в БД (`validation_policy`, seed при инициализации) и доступна через
+`GET /api/v1/validation-policy` (§3.4, p:103).
+
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
   -H 'Content-Type: application/json' \

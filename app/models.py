@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import String, Text, DateTime, ForeignKey, JSON, Table, Column, Integer, Boolean, Float
+from sqlalchemy import String, Text, DateTime, ForeignKey, JSON, Table, Column, Integer, Boolean, Float, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
@@ -21,6 +21,13 @@ class User(Base):
 
 class Event(Base):
     __tablename__ = "events"
+    # индексы под корреляцию (stage-11): окно по времени + совпадение атрибутов в SQL
+    __table_args__ = (
+        Index("ix_events_timestamp", "timestamp"),
+        Index("ix_events_src_ip", "src_ip"),
+        Index("ix_events_user", "user"),
+        Index("ix_events_asset_id", "asset_id"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source: Mapped[str] = mapped_column(String(255))
@@ -164,6 +171,7 @@ class Playbook(Base):
     trigger_conditions: Mapped[dict] = mapped_column(JSON)  # условия применения
     allowed_actions: Mapped[list[str]] = mapped_column(JSON)  # допустимые действия
     steps: Mapped[list[dict]] = mapped_column(JSON)  # порядок выполнения операций
+    success_criteria: Mapped[list | None] = mapped_column(JSON, default=None)  # критерии успешного завершения (§3.4, p:105)
     priority: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -190,6 +198,17 @@ class ResponseAction(Base):
     initiated_by: Mapped[str] = mapped_column(String(100))  # playbook, validation, manual
     metadata: Mapped[dict | None] = mapped_column(JSON)
     incident: Mapped["Incident"] = relationship(back_populates="response_actions")
+
+
+# ---------------------------------------------------------------------------
+# Сущность ValidationPolicy — формализованная политика DVE в БД (§3.4, p:103):
+# какие действия разрешены для каждого уровня риска инцидента
+# ---------------------------------------------------------------------------
+class ValidationPolicy(Base):
+    __tablename__ = "validation_policy"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    severity: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)  # low/medium/high/critical
+    allowed_actions: Mapped[list[str]] = mapped_column(JSON)
 
 
 # ---------------------------------------------------------------------------
