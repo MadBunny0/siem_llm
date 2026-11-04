@@ -89,12 +89,12 @@ export function resultExecutionBadge(result) {
 
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
 // («auto_analysis» — автоанализ при создании инцидента уровней из
-// AUTO_ANALYSIS_LEVELS (critical, low), «manual» — запуск вручную).
+// AUTO_ANALYSIS_LEVELS (теперь только low), «manual» — запуск вручную).
 export const INITIATED_BY_META = {
   auto_analysis: {
     cls: 'auto',
     text: 'авто (LLM)',
-    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (critical, low); LLM недетерминирована — повторный анализ может дать другой результат',
+    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (по умолчанию low); LLM недетерминирована — повторный анализ может дать другой результат',
   },
   manual: {
     cls: 'manual',

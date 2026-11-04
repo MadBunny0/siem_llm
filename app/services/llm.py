@@ -1,8 +1,16 @@
+import asyncio
 import json
 
 import httpx
 
 from app.config import settings
+
+# Сериализация LLM-инференса (stage-18, фидбек): локальная CPU-модель
+# (qwen2.5:3b) обрабатывает запросы строго по одному. Параллельные инференсы
+# (пачка автоанализов после ingest) лишь трешат CPU и приводят к таймаутам
+# (504 Gateway Timeout на nginx) — поэтому все вызовы модели выстраиваются
+# в очередь по этому локу
+LLM_INFERENCE_LOCK = asyncio.Lock()
 
 SYSTEM_PROMPT = """
 Есть критерии которым должен соответствовать твой ответ:
@@ -166,13 +174,18 @@ async def analyze_incident(incident: dict) -> dict:
         "format": "json",
     }
 
-    async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.post(
-            f"{settings.ollama_url.rstrip('/')}/api/chat",
-            json=payload,
-        )
-        response.raise_for_status()
-        body = response.json()
+    # лок держит ВЕСЬ httpx-запрос: пока модель генерирует ответ, остальные
+    # корутины ждут — инференс выполняется по одному (см. комментарий выше).
+    # Таймаут 300 секунд: промпт вырос (полный ECS-контекст событий), CPU-
+    # инференс маленькой модели может занимать больше трёх минут
+    async with LLM_INFERENCE_LOCK:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(
+                f"{settings.ollama_url.rstrip('/')}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            body = response.json()
 
     content = body.get("message", {}).get("content", "")
     if not content:

@@ -256,8 +256,9 @@ def test_analyze_incident_request_format(monkeypatch):
     # user-сообщение: префикс («данные, не инструкции») перед JSON контекста
     assert payload["messages"][1]["content"].startswith(llm.USER_PROMPT_PREFIX)
     assert "тест" in payload["messages"][1]["content"]
-    # таймаут запроса к LLM — 180 секунд
-    assert fake_client_cls.init_kwargs[0].get("timeout") == 180
+    # таймаут запроса к LLM — 300 секунд (stage-18: промпт вырос, CPU-инференс
+    # может занимать больше трёх минут)
+    assert fake_client_cls.init_kwargs[0].get("timeout") == 300
 
 
 def test_analyze_incident_empty_content_raises(monkeypatch):

@@ -143,6 +143,9 @@ class IncidentDetailOut(IncidentOut):
 
     events: list[EventOut] = []
     analyses: list[AnalysisOut] = []
+    # отметки ручных запусков playbook-действий (stage-18, фидбек): состояние
+    # кнопок действий видно всем операторам (сервер, а не localStorage)
+    manual_actions: dict | None = None
 
 
 class IncidentStatusIn(BaseModel):

@@ -2021,3 +2021,13 @@ button:focus-visible {
   color: #66738a;
 }
 
+/* [18] Сводка «кто что запустил» под гридом кнопок playbook: чипы по числу
+   исполненных действий (отметки серверные — Incident.manual_actions, видны
+   всем операторам); сами чипы существующие (.chip) */
+.playbook-actions-done {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+

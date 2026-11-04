@@ -434,8 +434,13 @@ def test_admin_works_with_assigned_incident_without_takeover(client, db_session)
     assert detail["analyst"]["username"] == "analyst1"
 
 
-def test_playbook_description_in_results(client, db_session, monkeypatch):
+def test_playbook_description_in_results(client, db_session, engine, monkeypatch):
     """Результаты анализа содержат русское описание сценария (stage-14)."""
+    from sqlalchemy.orm import sessionmaker
+
+    # фоновый анализ (stage-18) пишет через app.db.SessionLocal — направляем
+    # его в тестовую БД, иначе результат не попадёт в изолированную SQLite
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
     from app.models import CorrelationRule, Playbook
 
     seed_users(db_session)
@@ -469,9 +474,13 @@ def test_playbook_description_in_results(client, db_session, monkeypatch):
         "full_log": "Failed password",
     })
     # инцидент не critical (level 10, активов нет) → block_ip без подтверждения
+    # stage-18: анализ выполняется в фоне (TestClient исполняет background task
+    # в том же запросе) — результат читаем из истории анализов инцидента
     resp = client.post(f"{API}/incidents/1/analyze", headers=auth_header(admin_token))
     assert resp.status_code == 200
-    result = resp.json()["results"][0]
+    assert resp.json()["analysis"]["scheduled"] is True
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    result = detail["analyses"][0]["response_raw"]["results"][0]
     assert result["validation"]["approved"] is True
     assert result["execution"].get("playbook_description") == \
         "Блокировка IP-адреса источника подозрительной активности"

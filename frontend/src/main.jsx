@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-import { clearIncidentRuns, getIncidentRuns, isActionRun, markActionRun } from './lib/actionRuns.js';
 import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, criteriaCountLabel, detailToMessage,
          executionModeRu, formatDate, formatPlaybookSteps, initiatedByBadge, MITRE_TACTIC_RU,
@@ -1347,6 +1346,11 @@ function App({ user, onLogout }) {
   const [confirmedAction, setConfirmedAction] = useState(false);
   // Защита от гонки при быстрой смене инцидентов: устаревшие ответы detail игнорируются.
   const detailReqRef = useRef(0);
+  // [18] Актуальный id выбранного инцидента в ref: поллинг фонового анализа
+  // сверяется с ним на каждой итерации и прерывается при смене инцидента
+  // (значение из замыкания устарело бы — ref всегда синхронен с selected).
+  const selectedIdRef = useRef(null);
+  useEffect(() => { selectedIdRef.current = selected?.id ?? null; }, [selected?.id]);
 
   const [formData, setFormData] = useState(() => emptyEventForm());
 
@@ -1506,10 +1510,11 @@ function App({ user, onLogout }) {
   // [18] Результаты анализа по каждому действию — для бокса «Предложенные действия»
   const resultItems = analysisResults(analysis);
 
-  // [18] Отметки «действие запускали вручную» для текущего инцидента — читаются из
-  // localStorage на каждый рендер (ставятся/сбрасываются вне React-состояния),
-  // поэтому кнопки «выполнено» переживают смену инцидента и перезагрузку страницы.
-  const incidentRuns = selected ? getIncidentRuns(selected.id) : {};
+  // [18] Отметки «действие запускали вручную» — теперь СЕРВЕРНЫЕ: приходят в
+  // Incident.manual_actions (GET /incidents/{id}) как
+  // { [action]: { mode, at, by } } и видны всем операторам, а не только
+  // в localStorage того, кто запускал.
+  const manualRuns = incidentDetail?.manual_actions || {};
 
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
   // [6] бейдж источника для свежего результата анализа
@@ -1517,19 +1522,51 @@ function App({ user, onLogout }) {
   // [2] панель, восстановленная из истории, не блокирует повторный запуск анализа
   const hasFreshAnalysis = !!analysis && !analysis.fromHistory;
 
+  // [18] Фоновый анализ (фидбек: синхронный POST /analyze падал 504 на долгом
+  // инференсе Ollama): POST мгновенно возвращает { analysis: { scheduled: true } },
+  // сам инференс выполняется на бэкенде, а результат добираем опросом истории
+  // анализов инцидента.
   async function runAnalysis() {
     if (!selected) return;
     // [5а] Предыдущий результат не сбрасываем: на время запроса он остаётся виден
     // затемнённым (.busy-dim), чтобы панель результата не «моргала».
     setAnalyzing(true); setError(''); setConfirmedAction(false);
+    const polledId = selected.id;
+    // [18] Отметка времени ДО POST: «свежим» считаем только анализ, созданный
+    // после запуска, — прошлые записи и автоанализы не подхватываются.
+    const startedAt = new Date();
     try {
-      const result = await request(`/incidents/${selected.id}/analyze`, { method: 'POST' });
-      setAnalysis(result);
-      setToast('LLM-анализ завершён и рекомендация проверена');
-      await load();
-      await loadIncidentDetail(selected.id);
+      const result = await request(`/incidents/${polledId}/analyze`, { method: 'POST' });
+      if (result?.analysis?.scheduled) {
+        showToast('Анализ запущен — выполняется в фоне');
+        // [18] Поллинг: до 120 итераций с паузой 2500мс (~5 минут). Разовый сбой
+        // GET не рвёт ожидание; при смене инцидента (selectedIdRef) — выход,
+        // analyzing сбрасывается в finally.
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise(resolve => setTimeout(resolve, 2500));
+          if (selectedIdRef.current !== polledId) return;
+          let detail = null;
+          try {
+            detail = await request(`/incidents/${polledId}`);
+          } catch (pollError) {
+            continue; // разовый сбой сети/бэкенда — пробуем на следующей итерации
+          }
+          const found = latestAnalysis(
+            (detail?.analyses || []).filter(a => new Date(a.created_at) > startedAt)
+          );
+          if (found) {
+            // Панель из записи истории, но fromHistory: false — кнопка анализа
+            // показывает «✓ Анализ выполнен», бейдж «вручную» придёт из response_raw.
+            setAnalysis({ ...analysisFromHistory(found), fromHistory: false });
+            await load();
+            await loadIncidentDetail(polledId);
+            return;
+          }
+        }
+        showErrorToast('Анализ не завершился за отведённое время — проверьте историю анализов позже');
+      }
     } catch (e) { setError(e.message); }
-    finally { setAnalyzing(false); setTimeout(() => setToast(''), 3500); }
+    finally { setAnalyzing(false); }
   }
 
   async function changeStatus(status) {
@@ -1605,12 +1642,10 @@ function App({ user, onLogout }) {
       }
       // Обновляем бейджи у соответствующего результата (validation/execution из ответа).
       // [16] При успехе помечаем совпавший результат run_manually: кнопка «Выполнить»
-      // сменяется отметкой «Выполнено». Метка живёт в React-состоянии (переживает
-      // обновление detail, сбрасывается при смене инцидента) — сухой run повторяем.
-      // [18] Дубль отметки в localStorage: состояние кнопок закреплено на таске,
-      // переживает смену инцидента и перезагрузку страницы. Только при успехе —
-      // при pending_confirmation/blocked отметка не ставится.
-      if (success) markActionRun(selected.id, action, result?.execution?.mode);
+      // сменяется отметкой «Выполнено». Только при успехе — при
+      // pending_confirmation/blocked отметка не ставится.
+      // [18] Дубль отметки ведёт сервер (Incident.manual_actions): она попадает
+      // в состояние через loadIncidentDetail(selected.id) ниже и видна всем операторам.
       const executionPatch = success
         ? { ...result.execution, run_manually: true }
         : (result?.execution ?? null);
@@ -1637,6 +1672,20 @@ function App({ user, onLogout }) {
     }
   }
 
+  // [18] Сброс серверных отметок «действие запускали вручную»: POST /reset-actions
+  // очищает Incident.manual_actions (владелец/админ; чужой аналитик → 403,
+  // закрытый инцидент → 409). Деталь перезагружаем — кнопки снова активны.
+  async function resetActionMarks() {
+    if (!selected) return;
+    try {
+      await request(`/incidents/${selected.id}/reset-actions`, { method: 'POST' });
+      await loadIncidentDetail(selected.id);
+      showToast('Отметки выполненных действий сброшены');
+    } catch (e) {
+      showErrorToast(e.message);
+    }
+  }
+
   // [12б] Мок-сценарии: POST /demo/populate (только admin) —
   // генерирует 18 событий → ~7 инцидентов всех уровней.
   async function populateDemo() {
@@ -1655,7 +1704,8 @@ function App({ user, onLogout }) {
       const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
       if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
       // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
-      // low закроется сам, у critical рекомендации ждут ручного запуска
+      // low пройдёт автоконвейер (анализ → исполнение → закрытие); остальные
+      // уровни анализирует и запускает оператор
       const scheduled = Number(result?.auto_analysis_scheduled) || 0;
       showToast(created.length
         ? `Создано ${created.length} инцидентов: ${parts.join(', ')}${scheduled ? ` · автоанализ запущен: ${scheduled}` : ''}`
@@ -1836,7 +1886,7 @@ function App({ user, onLogout }) {
               <details className="role-hint">
                 <summary>Роль аналитика — как работать с инцидентом</summary>
                 <ol>
-                  <li>Запустите интеллектуальный анализ (кнопка ниже) — одобренные DVE действия система выполняет автоматически (сейчас — симуляция).</li>
+                  <li>Запустите интеллектуальный анализ (кнопка ниже) — анализ выполняется в фоне, результат появится в панели сам. Одобренные DVE действия low-инцидентов выполняются автоматически (сейчас — симуляция).</li>
                   <li>При критическом активе DVE откладывает опасное действие — его подтверждает АДМИНИСТРАТОР кнопкой «Подтвердить и выполнить».</li>
                   <li>Админ может вручную запустить действие кнопкой ▶ на строке результата.</li>
                   <li>Меняйте статус инцидента кнопками блока «Изменить статус».</li>
@@ -2003,10 +2053,9 @@ function App({ user, onLogout }) {
                       ownerUsername: incidentDetail?.analyst?.username || null,
                       incidentClosed,
                     });
-                    // [18] «Выполнено» учитывает и отметку в localStorage (actionRuns):
-                    // она переживает смену инцидента и перезагрузку страницы,
-                    // run_manually живёт только в React-состоянии
-                    const isDone = r.execution?.run_manually === true || isActionRun(selected.id, r.action);
+                    // [18] «Выполнено»: run_manually из React-состояния или серверная
+                    // отметка manual_actions (видна всем операторам)
+                    const isDone = r.execution?.run_manually === true || !!manualRuns[r.action];
                     return (
                       <div className="result-item" key={`${r.action || 'result'}-${index}`}>
                         <div className="result-head-row">
@@ -2033,7 +2082,7 @@ function App({ user, onLogout }) {
                               disabled
                               title="Действие уже запускали вручную; повторный запуск — после нового анализа (сухой run повторяем)"
                             >
-                              ✓ Выполнено{(r.execution?.mode ?? incidentRuns[r.action]?.mode) === 'simulation' ? ' (dry run)' : ''}
+                              ✓ Выполнено{((r.execution?.mode ?? manualRuns[r.action]?.mode) === 'simulation') ? ' (dry run)' : ''}
                             </button>
                           ) : canExecute && (
                             /* Ручной запуск одобренного DVE действия — владелец инцидента или администратор;
@@ -2086,15 +2135,15 @@ function App({ user, onLogout }) {
                   </div>
                   {/* [18] Все действия playbook — отдельный бокс рядом с предложенными
                       действиями: пользователю доступны все кнопки плейбука; отметки
-                      «Выполнено» закреплены за инцидентом (actionRuns, localStorage) */}
+                      «Выполнено» серверные (Incident.manual_actions) — видны всем операторам */}
                   <div className="playbook-actions-box">
                     <div className="box-label-row">
                       <span className="box-label">Все действия playbook</span>
-                      {Object.keys(incidentRuns).length > 0 && (
+                      {Object.keys(manualRuns).length > 0 && (
                         <button
                           className="link-btn"
-                          onClick={() => { clearIncidentRuns(selected.id); showToast('Отметки выполненных действий сброшены'); }}
-                          title="Убрать отметки «Выполнено» у кнопок playbook этого инцидента"
+                          onClick={resetActionMarks}
+                          title="Сбросить серверные отметки «Выполнено» у кнопок playbook этого инцидента"
                         >
                           Сбросить отметки
                         </button>
@@ -2102,7 +2151,8 @@ function App({ user, onLogout }) {
                     </div>
                     <div className="playbook-actions-grid">
                       {PLAYBOOK_ACTIONS.map(a => {
-                        const runDone = isActionRun(selected.id, a);
+                        const runDone = !!manualRuns[a];
+                        const mode = manualRuns[a]?.mode;
                         return (
                           <button
                             key={a}
@@ -2110,7 +2160,7 @@ function App({ user, onLogout }) {
                             onClick={() => executeAction(a)}
                             disabled={runDone || !!executeBusy || incidentClosed || foreignOwner}
                             title={runDone
-                              ? 'Действие уже запускали вручную на этом инциденте'
+                              ? `Действие выполнил: ${manualRuns[a].by || '—'} · ${formatDate(manualRuns[a].at)}${mode === 'simulation' ? ' · dry run' : ''}`
                               : actionRuDescription(a)}
                           >
                             {runDone ? '✓ Выполнено' : actionShortLabel(a)}
@@ -2118,6 +2168,17 @@ function App({ user, onLogout }) {
                         );
                       })}
                     </div>
+                    {/* [18] Сводка «кто что запустил» прямо в карточке — серверные
+                        отметки, видны всем операторам */}
+                    {Object.keys(manualRuns).length > 0 && (
+                      <div className="playbook-actions-done">
+                        {Object.entries(manualRuns).map(([action, info]) => (
+                          <span key={action} className="chip">
+                            {actionShortLabel(action)} — {info?.by || '—'}{info?.mode === 'simulation' ? ' (dry run)' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                     <small className="playbook-actions-hint">
                       Запуск проверяется DVE; при выключенном AUTO_RESPONSE — симуляция (dry run). Свободный инцидент закрепляется за вами.
                     </small>

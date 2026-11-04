@@ -62,6 +62,10 @@ class Incident(Base):
     # владение инцидентом (stage-14): аналитик, взявший инцидент в работу;
     # другой аналитик работать с ним не может (админ — исключение)
     analyst: Mapped["User | None"] = relationship("User")
+    # Карта ручных запусков playbook-действий по инциденту (stage-18, фидбек):
+    # {action: {"mode", "at", "by"}} — отметки хранятся на сервере, состояние
+    # кнопок действий видно всем операторам, а не только в localStorage
+    manual_actions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     events: Mapped[list[Event]] = relationship(
         secondary=incident_events, back_populates="incidents"
     )
