@@ -34,8 +34,9 @@ class Settings(BaseSettings):
 
     # Реальное исполнение ответных действий (stage-20): реестр целей —
     # агентов на виртуальных машинах наблюдаемых пользователей (docs/REAL_EXECUTION.md).
-    # Формат EXECUTION_TARGETS: "name=url:token[,name=url:token…]" — имя цели
-    # должно совпадать с именем актива (Asset.name), тогда инцидент по активу
+    # Формат EXECUTION_TARGETS: "name=url|token[,name=url|token…]" (разделитель
+    # url/токена — «|», т.к. URL содержит «://» и порт) — имя цели должно
+    # совпадать с именем актива (Asset.name), тогда инцидент по активу
     # автоматически находит цель исполнения. Пусто — реестр пуст, действия в
     # режиме real возвращают reason=no_target.
     execution_targets: str = ""

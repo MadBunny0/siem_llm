@@ -401,8 +401,9 @@ def _seed_validation_policy() -> None:
 def _parse_execution_targets(raw: str) -> list[dict]:
     """Разбор реестра целей исполнения из env EXECUTION_TARGETS (stage-20).
 
-    Формат: "name=url:token,name=url:token" (токен опционален). Имя цели
-    совпадает с именем актива — инцидент по активу находит цель.
+    Формат: "name=url|token,name=url|token" (разделитель url/токена — «|»,
+    т.к. URL содержит «://» и порт; токен опционален). Имя цели совпадает
+    с именем актива — инцидент по активу находит цель.
     """
     targets = []
     for chunk in (raw or "").split(","):
@@ -410,7 +411,7 @@ def _parse_execution_targets(raw: str) -> list[dict]:
         if not chunk or "=" not in chunk:
             continue
         name, rest = chunk.split("=", 1)
-        url, _, token = rest.partition(":")
+        url, sep, token = rest.partition("|")
         if name.strip() and url.strip():
             targets.append(
                 {"name": name.strip(), "base_url": url.strip().rstrip("/"), "auth_token": token.strip() or None}
