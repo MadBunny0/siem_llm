@@ -14,6 +14,7 @@ import {
   formatPlaybookStep,
   formatPlaybookSteps,
   initiatedByBadge,
+  MITRE_TACTIC_RU,
   pendingReasonText,
   priorityLabel,
   recommendedActionCodes,
@@ -127,9 +128,9 @@ describe('бейджи DVE и исполнения', () => {
 });
 
 describe('initiatedByBadge — источник анализа', () => {
-  it('auto_analysis → бейдж «авто (critical)»', () => {
+  it('auto_analysis → бейдж «авто (LLM)»', () => {
     const badge = initiatedByBadge({ response_raw: { initiated_by: 'auto_analysis' } });
-    expect(badge.text).toBe('авто (critical)');
+    expect(badge.text).toBe('авто (LLM)');
     expect(badge.cls).toBe('auto');
   });
 
@@ -289,7 +290,7 @@ describe('stage-14: analysisFromHistory — восстановление пан�
 
   it('response_raw сохраняется — бейдж авто/вручную продолжает работать', () => {
     const panel = analysisFromHistory(stored);
-    expect(initiatedByBadge(panel).text).toBe('авто (critical)');
+    expect(initiatedByBadge(panel).text).toBe('авто (LLM)');
   });
 
   it('строка response_raw из API парсится', () => {
@@ -503,5 +504,24 @@ describe('ruleTemplateLabel — подпись шаблона правила и�
   it('пустое правило → пустая строка', () => {
     expect(ruleTemplateLabel(null)).toBe('');
     expect(ruleTemplateLabel(undefined)).toBe('');
+  });
+});
+
+/* ==================== Stage 17: тактики MITRE ATT&CK (матрица критичности) ==================== */
+
+describe('MITRE_TACTIC_RU — справочник тактик для формы и таблицы правил', () => {
+  it('14 тактик ATT&CK (матрица критичности)', () => {
+    expect(Object.keys(MITRE_TACTIC_RU)).toHaveLength(14);
+  });
+
+  it('подпись credential_access содержит «Credential Access»', () => {
+    expect(MITRE_TACTIC_RU.credential_access).toContain('Credential Access');
+  });
+
+  it('значения — «английское название — русский перевод»', () => {
+    for (const label of Object.values(MITRE_TACTIC_RU)) {
+      expect(label).toContain(' — ');
+      expect(label.trim()).toBe(label);
+    }
   });
 });

@@ -1819,3 +1819,21 @@ button:focus-visible {
   background: #0d1626;
 }
 
+/* ---------- [17] MITRE ATT&CK в таблице правил корреляции ---------- */
+
+/* Чип тактики переносится по строкам, чтобы колонка MITRE не растягивалась:
+   подписи длинные («Resource Development — подготовка ресурсов»), полный текст в title */
+.rule-mitre .chip {
+  white-space: normal;
+  max-width: 150px;
+  line-height: 1.4;
+}
+
+/* Код техники (T1110) под чипом тактики — мелко, моноширинно */
+.rule-mitre-code {
+  font-size: 9px;
+  color: #66738a;
+  margin-top: 3px;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+

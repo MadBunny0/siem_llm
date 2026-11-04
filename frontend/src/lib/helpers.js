@@ -84,12 +84,13 @@ export function resultExecutionBadge(result) {
 }
 
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
-// («auto_analysis» — автоанализ при создании critical-инцидента, «manual» — запуск вручную).
+// («auto_analysis» — автоанализ при создании инцидента уровней из
+// AUTO_ANALYSIS_LEVELS (critical, low), «manual» — запуск вручную).
 export const INITIATED_BY_META = {
   auto_analysis: {
     cls: 'auto',
-    text: 'авто (critical)',
-    title: 'Автоматический анализ при создании critical-инцидента; LLM недетерминирована — повторный анализ может дать другой результат',
+    text: 'авто (LLM)',
+    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (critical, low); LLM недетерминирована — повторный анализ может дать другой результат',
   },
   manual: {
     cls: 'manual',
@@ -297,3 +298,24 @@ export function ruleTemplateLabel(rule) {
   if (!rule) return '';
   return `${rule.id} — ${rule.description}`;
 }
+
+/* ==================== Stage 17: тактики MITRE ATT&CK (матрица критичности) ==================== */
+
+// [17] Тактики MITRE ATT&CK (матрица критичности, docs/CRITICALITY_MATRIX.md) —
+// русские подписи для формы и таблицы правил корреляции.
+export const MITRE_TACTIC_RU = {
+  reconnaissance: 'Reconnaissance — разведка',
+  resource_development: 'Resource Development — подготовка ресурсов',
+  initial_access: 'Initial Access — начальный доступ',
+  discovery: 'Discovery — изучение среды',
+  privilege_escalation: 'Privilege Escalation — повышение привилегий',
+  credential_access: 'Credential Access — доступ к учётным данным',
+  execution: 'Execution — выполнение',
+  persistence: 'Persistence — закрепление',
+  defense_evasion: 'Defense Evasion — обход защиты',
+  lateral_movement: 'Lateral Movement — боковое перемещение',
+  collection: 'Collection — сбор данных',
+  command_and_control: 'Command and Control — управление (C2)',
+  exfiltration: 'Exfiltration — кража данных',
+  impact: 'Impact — воздействие',
+};
