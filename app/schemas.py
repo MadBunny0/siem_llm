@@ -195,6 +195,17 @@ class ExecutionJournalEntry(BaseModel):
     detail: str | None = None
 
 
+class ExecutionSimulateIn(BaseModel):
+    """Сценарий активности ВМ (stage-20): normal_activity — наблюдаемые
+    пользователи; brute_force / password_spraying / repeated_scan / web_attack /
+    malware / privilege_escalation / data_exfiltration — активность атакующего
+    (сценарии подобраны под seed-правила корреляции, docs/REAL_EXECUTION.md)."""
+
+    scenario: str = Field(min_length=1)
+    count: int | None = Field(default=None, ge=1, le=50)
+    detail: str | None = None
+
+
 class AuditLogOut(BaseModel):
     """Запись журнала аудита (§3.1, модуль 8)."""
 

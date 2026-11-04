@@ -23,9 +23,21 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger("agent.state")
 
-# учётные записи наблюдаемых пользователей (учебный стенд): два человека
-# и сервисная учётка; root есть на любой Linux-системе
-DEFAULT_USERS = ["alice", "bob", "svc_backup"]
+# учётные записи наблюдаемых пользователей: СВОЙ набор на каждый тип узла —
+# пользователи не пересекаются между ВМ, и корреляция SIEM (совпадение по
+# учётной записи) не склеивает инциденты разных узлов стенда
+HOST_USERS = {
+    "wks": ["alice", "bob", "svc_backup"],      # АРМ: два человека + сервисная
+    "app": ["svc_web", "deployer", "svc_backup"],  # веб-сервер: сервисные учётки
+    "mail": ["svc_mail", "postmaster", "svc_backup"],  # почтовый сервер
+}
+FALLBACK_USERS = ["alice", "bob", "svc_backup"]
+
+
+def default_users(hostname: str) -> list[str]:
+    prefix = hostname.split("-")[0].split(".")[0].lower()
+    return HOST_USERS.get(prefix, FALLBACK_USERS)
+
 
 DEFAULT_PROCESSES = [
     {"pid": 1, "name": "systemd", "user": "root"},
@@ -34,8 +46,8 @@ DEFAULT_PROCESSES = [
 ]
 
 DEFAULT_FILES = [
-    {"path": "/home/alice/report_q4.xlsx", "status": "present"},
-    {"path": "/home/bob/deploy.sh", "status": "present"},
+    {"path": "/home/user/report_q4.xlsx", "status": "present"},
+    {"path": "/opt/scripts/deploy.sh", "status": "present"},
 ]
 
 
@@ -71,7 +83,7 @@ class EmulatedHost:
             "firewall_rules": [],  # [{"ip", "added_at", "reason"}]
             "accounts": {
                 name: {"status": "active", "last_change": self.started_at}
-                for name in DEFAULT_USERS
+                for name in default_users(self.hostname)
             },
             "processes": [dict(p) for p in DEFAULT_PROCESSES],
             "files": [dict(f) for f in DEFAULT_FILES],

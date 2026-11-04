@@ -18,6 +18,8 @@ import NotificationsView from './components/NotificationsView.jsx';
 import AuditView from './components/AuditView.jsx';
 import RulesView from './components/RulesView.jsx';
 import PlaybooksView from './components/PlaybooksView.jsx';
+// stage-20 (реальное исполнение на ВМ): вкладка агентов + режимы исполнения
+import TargetsView, { EXECUTION_MODES } from './components/TargetsView.jsx';
 import { request } from './api.js';
 import { ANALYSIS_BLOCK_LABELS, TABS, TAB_META, applyRuleTemplate, emptyEventForm, latestAnalysis } from './constants.js';
 
@@ -38,6 +40,9 @@ export default function App({ user, onLogout }) {
   const [populateBusy, setPopulateBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [executeBusy, setExecuteBusy] = useState(null);
+  // stage-20: режим исполнения playbook-действий — simulation (dry run, по
+  // умолчанию как в §3.4) | real (реальное исполнение на ВМ через агента)
+  const [executionMode, setExecutionMode] = useState('simulation');
   const [error, setError] = useState('');
   // [15] Мультиселект-фильтры ленты: пустой массив = показывать все значения
   // группы (семантика «Все» без отдельной кнопки); группы сочетаются через AND.
@@ -341,17 +346,22 @@ export default function App({ user, onLogout }) {
     try {
       const result = await request(`/incidents/${selected.id}/execute-action`, {
         method: 'POST',
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, mode: executionMode }),
       });
       // [16] Успех = симуляция (dry run при AUTO_RESPONSE=false) или реальное
       // исполнение; reason при симуляции — текст одобрения DVE, а не ошибка.
       const success = result?.execution?.mode === 'simulation' || result?.execution?.executed === true;
       if (success) {
-        showToast(`Действие выполнено (${executionModeRu(result.execution.mode) || 'готово'}): ${actionRuDescription(action)}`);
+        // [20] real: агент возвращает человекочитаемый результат («выполнено
+        // на: wks-finance-12» / причина) — показываем его вместо dry-run фразы
+        const detail = result.execution?.result || actionRuDescription(action);
+        showToast(`Действие выполнено (${executionModeRu(result.execution.mode) || 'готово'}): ${detail}`);
       } else if (result?.execution?.mode === 'pending_confirmation') {
         showErrorToast(`Действие отложено: ${result?.execution?.reason || 'требуется подтверждение администратора'}`);
       } else {
-        const reason = result?.execution?.reason || result?.validation?.reason || 'действие не выполнено';
+        // [20] у real-режима result — человекочитаемая причина («Реальное
+        // исполнение недоступно: …»); reason может быть машинным кодом
+        const reason = result?.execution?.result || result?.execution?.reason || result?.validation?.reason || 'действие не выполнено';
         showErrorToast(`Не выполнено: ${reason}`);
       }
       // Обновляем бейджи у соответствующего результата (validation/execution из ответа).
@@ -878,6 +888,24 @@ export default function App({ user, onLogout }) {
                         </button>
                       )}
                     </div>
+                    {/* [20] Режим исполнения: симуляция (dry run, §3.4) или
+                        реальное исполнение на ВМ наблюдаемого пользователя.
+                        DVE одинаков для обоих режимов */}
+                    <div className="execution-mode-row" role="radiogroup" aria-label="Режим исполнения">
+                      <span className="execution-mode-label">Режим исполнения:</span>
+                      {EXECUTION_MODES.map(m => (
+                        <button
+                          key={m.id}
+                          role="radio"
+                          aria-checked={executionMode === m.id}
+                          className={`mode-btn${executionMode === m.id ? ' active' : ''}`}
+                          onClick={() => setExecutionMode(m.id)}
+                          title={m.hint}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
                     <div className="playbook-actions-grid">
                       {PLAYBOOK_ACTIONS.map(a => {
                         const runDone = !!manualRuns[a];
@@ -999,6 +1027,8 @@ export default function App({ user, onLogout }) {
         {activeTab === 'audit' && <AuditView />}
         {activeTab === 'rules' && <RulesView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
         {activeTab === 'playbooks' && <PlaybooksView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
+        {/* [20] Агенты на ВМ наблюдаемых пользователей — реальное исполнение */}
+        {activeTab === 'targets' && <TargetsView request={request} />}
       </section>}
 
       <footer><span>Intelligent Incident Processing System · Prototype 1.0</span><span>Qwen2.5-3B · Ollama · PostgreSQL</span></footer>

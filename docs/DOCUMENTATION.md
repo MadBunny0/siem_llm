@@ -207,7 +207,7 @@ siem_llm/
 > (`JWT_SECRET` и др. из `.env`), `npm ci` по lock, таймауты nginx 300s; **stage-20** — реальное
 > исполнение playbook на ВМ: реестр `execution_targets`, диспетчер `services/execution.py`
 > (`mode=real`), endpoint-агенты (`agent/`, 3 контейнера в compose, порты 8101–8103); тесты
-> **178 backend (включая tests_agent) + 111 frontend**, все зелёные в контейнере.
+> **178 backend (включая tests_agent) + 114 frontend**, все зелёные в контейнере.
 
 ### ✅ Что уже реализовано (коммиты `stage-01-db-models`, `stage-02-services-update`, `stage-03-tests`)
 

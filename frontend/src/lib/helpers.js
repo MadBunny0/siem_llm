@@ -199,6 +199,8 @@ export function criteriaCountLabel(count) {
 const EXECUTION_MODE_RU = {
   simulation: 'dry run — симуляция, инфраструктура не изменялась',
   controlled: 'реальное выполнение',
+  // [20] реальное исполнение на ВМ наблюдаемого пользователя (агент)
+  real: 'реально на ВМ наблюдаемого пользователя',
   pending_confirmation: 'ожидает подтверждения администратора',
   blocked: 'заблокировано политикой DVE',
   // [17] ручной режим: medium/high/critical — playbook запускает оператор

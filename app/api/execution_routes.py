@@ -1,14 +1,15 @@
 """Цели реального исполнения (stage-20): реестр агентов на ВМ наблюдаемых
-пользователей — вынесено в отдельный роутер (stage-19 разрезал монолит по
-доменам; домен «исполнение» добавлен stage-20).
+пользователей — отдельный роутер (домен «исполнение»; подключается в routes.py).
 
 GET  /execution-targets                — список целей со статусами (UI, вкладка «Агенты»)
 POST /execution-targets/{id}/check     — проверка доступности агента (heartbeat)
 GET  /execution-targets/{id}/journal   — журнал исполненных действий агента (прокси)
+GET  /execution-targets/{id}/activity  — журнал активности пользователя/атакующего (прокси)
 POST /execution-targets/{id}/reset     — сброс состояния эмулируемой ВМ (демо-повторяемость)
+POST /execution-targets/{id}/simulate  — проиграть активность (алерты Wazuh → SIEM, прокси)
 
-Токен агента не покидает бэкенд: журнал и сброс идут через прокси — браузеру
-URL/токены агентов недоступны.
+Токен агента не покидает бэкенд: журналы/сброс/симуляция идут через прокси —
+браузеру URL/токены агентов недоступны.
 """
 
 import httpx
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import ExecutionTarget, User
-from app.schemas import ExecutionJournalEntry, ExecutionTargetOut
+from app.schemas import ExecutionJournalEntry, ExecutionSimulateIn, ExecutionTargetOut
 from app.services.audit import audit
 from app.services.auth import get_current_user
 
@@ -117,6 +118,58 @@ def execution_target_journal(
     target.status = "online"
     db.commit()
     return [ExecutionJournalEntry.model_validate(item) for item in data.get("journal", [])]
+
+
+@router.get("/execution-targets/{target_id}/activity")
+def execution_target_activity(
+    target_id: int,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Журнал активности наблюдаемого пользователя/атакующего на ВМ (прокси):
+    чем жила машина — входы, почта, атаки; видно, какие события породил SIEM."""
+    target = _get_target(db, target_id)
+    data = _agent_get(target, f"/agent/activity?limit={max(1, min(limit, 200))}")
+    target.status = "online"
+    db.commit()
+    return data.get("activity", [])
+
+
+@router.post("/execution-targets/{target_id}/simulate")
+def simulate_execution_target(
+    target_id: int,
+    payload: ExecutionSimulateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Проиграть активность на ВМ (прокси к агенту): агент генерирует события
+    (нормальная активность пользователей или атака) и отправляет их в SIEM
+    как алерты Wazuh — ответ содержит результаты /ingest/wazuh (созданные
+    инциденты). Демонстрация полного цикла из вкладки «Агенты»."""
+    target = _get_target(db, target_id)
+    try:
+        with httpx.Client(timeout=60) as client:
+            response = client.post(
+                f"{target.base_url.rstrip('/')}/agent/simulate",
+                json={"scenario": payload.scenario, "count": payload.count},
+                headers=_agent_headers(target),
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        target.status = "offline"
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Агент {target.name} недоступен: {exc}")
+    target.status = "online"
+    audit(
+        "execution_target_simulated",
+        {"target": target.name, "scenario": payload.scenario, "count": payload.count, "by": user.username},
+        db=db,
+        user_id=user.id,
+    )
+    db.commit()
+    return data
 
 
 @router.post("/execution-targets/{target_id}/reset", response_model=ExecutionTargetOut)

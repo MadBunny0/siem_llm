@@ -39,23 +39,26 @@ Docker Compose специально разделяет подготовку за
 siem_llm/
 ├── app/                  # Бэкенд: FastAPI
 │   ├── api/              # HTTP-маршруты: routes.py — агрегатор; под-роутеры по доменам
-│   │                     # (auth/ingest/incident/catalog/demo/system_routes.py) + common.py
+│   │                     # (auth/ingest/incident/execution/catalog/demo/system_routes.py) + common.py
 │   ├── services/         # Логика конвейера (normalization, correlation, risk, llm, ...)
-│   │                     # + ingest.py (приём события) и auto_analysis.py (оркестрация анализа)
+│   │                     # + ingest.py (приём события), auto_analysis.py (оркестрация анализа)
+│   │                     # и execution.py (stage-20: реальное исполнение playbook на ВМ)
 │   └── models.py, schemas.py, config.py, db.py, init_db.py, main.py
+├── agent/                # stage-20: endpoint-агент ВМ наблюдаемого пользователя (standalone)
 ├── frontend/             # React-дашборд: src/App.jsx (логика UI), src/api.js, src/constants.js,
 │                         # src/components/* (вкладки, логин), src/lib — хелперы
-├── tests/                # pytest-тесты бэкенда (138, запускаются в контейнере; общие фикстуры — conftest.py)
-├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX
+├── tests/                # pytest-тесты бэкенда (178, запускаются в контейнере; общие фикстуры — conftest.py)
+├── tests_agent/          # stage-20: pytest-тесты endpoint-агента
+├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, REAL_EXECUTION
 ├── samples/              # Примеры алертов Wazuh (JSON)
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
 ├── wazuh/                # Файлы интеграции с Wazuh (integrator, фрагмент ossec.conf)
-├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer)
+├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer, агенты-ВМ)
 ├── Dockerfile            # Бэкенд: multi-stage (base — прод, dev — +тесты)
 └── requirements.txt, pytest.ini, .env.example
 ```
 
-Тесты: 138 backend (pytest) + 111 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 178 backend (pytest, включая tests_agent) + 114 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---

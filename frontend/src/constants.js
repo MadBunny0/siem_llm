@@ -8,6 +8,8 @@ export const TABS = [
   { id: 'audit', icon: '☰', label: 'Аудит' },
   { id: 'rules', icon: '⚡', label: 'Правила корреляции' },
   { id: 'playbooks', icon: '▶', label: 'Playbooks' },
+  // [20] реальное исполнение playbook: агенты на ВМ наблюдаемых пользователей
+  { id: 'targets', icon: '⬡', label: 'Агенты (ВМ)' },
 ];
 
 export const TAB_META = {
@@ -17,6 +19,7 @@ export const TAB_META = {
   audit: { eyebrow: 'ЖУРНАЛ ДЕЙСТВИЙ', title: 'Аудит' },
   rules: { eyebrow: 'КОРРЕЛЯЦИЯ СОБЫТИЙ', title: 'Правила корреляции' },
   playbooks: { eyebrow: 'АВТОМАТИЗАЦИЯ РЕАГИРОВАНИЯ', title: 'Playbooks' },
+  targets: { eyebrow: 'РЕАЛЬНОЕ ИСПОЛНЕНИЕ (STAGE-20)', title: 'Агенты на ВМ наблюдаемых пользователей' },
 };
 
 export const CONDITION_OPERATORS = ['eq', 'neq', 'in', 'like'];

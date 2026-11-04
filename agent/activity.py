@@ -7,6 +7,10 @@
 и отправляется в SIEM — POST {SIEM_URL}/ingest/wazuh. Сценарии подобраны под
 seed-правила корреляции (см. docs/REAL_EXECUTION.md, таблица демонстрации).
 
+Изоляция демо: у каждой ВМ свой IP атакующего (attacker_ip_for_host) и свои
+локальные пользователи (host_users) — корреляция SIEM (совпадение по IP /
+учётной записи / активу) не склеивает инциденты разных узлов стенда.
+
 Модуль самодостаточен (только stdlib) — переносится на ВМ без зависимостей.
 """
 
@@ -15,14 +19,38 @@ import random
 import urllib.request
 from datetime import datetime, timezone
 
-# TEST-NET-3 (RFC 5737) — «атакующий» стенда; замените на реальный источник
-DEFAULT_ATTACKER_IP = "203.0.113.66"
+# TEST-NET-3 (RFC 5737) — подсеть «атакующих» стенда; замените на реальный источник
+DEFAULT_ATTACKER_SUBNET = "203.0.113"
 
-NORMAL_USERS = ["alice", "bob"]
+
+def attacker_ip_for_host(hostname: str, explicit: str | None = None) -> str:
+    """IP атакующего для узла: явный ATTACKER_IP приоритетен; иначе —
+    стабильный адрес из подсети TEST-NET-3, производный от имени узла.
+    Разные ВМ эмулируют разных атакующих — их инциденты в SIEM не склеиваются
+    корреляцией по src_ip (каждая цель демонстрируется независимо)."""
+    if explicit:
+        return explicit
+    return f"{DEFAULT_ATTACKER_SUBNET}.{sum(ord(c) for c in hostname) % 200 + 20}"
+
+
+def host_users(hostname: str) -> list[str]:
+    """Локальные пользователи узла (согласованы с emu_state.default_users):
+    свой набор на каждую ВМ — корреляция SIEM по учётной записи не мостит
+    инциденты разных узлов стенда. Первый в списке — «основной» пользователь,
+    он же фигурирует в атакующих сценариях (атакуют его учётку)."""
+    prefix = hostname.split("-")[0].split(".")[0].lower()
+    mapping = {
+        "wks": ["alice", "bob"],
+        "app": ["svc_web", "deployer"],
+        "mail": ["svc_mail", "postmaster"],
+    }
+    return mapping.get(prefix, ["alice", "bob"])
+
 
 # нормальная активность наблюдаемых пользователей (level 3 — Wazuh пересылает
 # с level>=3, но ни одно seed-правило корреляции на неё не реагирует:
-# authentication_success/почта не совпадают с условиями)
+# authentication_success/почта не совпадают с условиями).
+# make(ip, i, user) -> (full_log, data)
 NORMAL_ACTIVITIES = [
     {
         "rule_id": "5715",
@@ -30,8 +58,8 @@ NORMAL_ACTIVITIES = [
         "description": "sshd: authentication success",
         "groups": ["syslog", "sshd", "authentication_success"],
         "location": "/var/log/auth.log",
-        "make": lambda ip, user: (
-            f"Accepted publickey for {user} from 10.20.50.1 port 45222 ssh2",
+        "make": lambda ip, i, user: (
+            f"Accepted publickey for {user} from 10.20.50.1 port {45000 + i} ssh2",
             {"srcip": "10.20.50.1", "dstuser": user},
         ),
         "text": "Вход пользователя {user} в систему (успешный)",
@@ -42,7 +70,7 @@ NORMAL_ACTIVITIES = [
         "description": "postfix: mail sent by local user",
         "groups": ["mail", "postfix", "normal_activity"],
         "location": "/var/log/mail.log",
-        "make": lambda ip, user: (
+        "make": lambda ip, i, user: (
             f"postfix/smtpd[{random.randint(1000, 9999)}]: client={user} from=<user@example.com>",
             {"srcip": ip, "dstuser": user},
         ),
@@ -54,7 +82,7 @@ NORMAL_ACTIVITIES = [
         "description": "auditd: file opened by user",
         "groups": ["auditd", "file_access", "normal_activity"],
         "location": "/var/log/audit/audit.log",
-        "make": lambda ip, user: (
+        "make": lambda ip, i, user: (
             f"audit: OPEN pathname=/home/{user}/documents user={user}",
             {"srcip": ip, "dstuser": user},
         ),
@@ -62,7 +90,9 @@ NORMAL_ACTIVITIES = [
     },
 ]
 
-# атакующая активность: сценарии подобраны под seed-правила корреляции SIEM
+# атакующая активность: сценарии подобраны под seed-правила корреляции SIEM;
+# dstuser — «основной» пользователь узла (host_users), чтобы инциденты
+# разных ВМ не склеивались по учётной записи. make(ip, i, user) -> (full_log, data)
 ATTACK_SCENARIOS = {
     "brute_force": {
         "count": 4,
@@ -73,11 +103,11 @@ ATTACK_SCENARIOS = {
             "groups": ["syslog", "sshd", "authentication_failed"],
             "location": "/var/log/auth.log",
         },
-        "make": lambda ip, i: (
-            f"Failed password for root from {ip} port {40000 + i} ssh2 (attempt {i + 1})",
-            {"srcip": ip, "dstuser": "root"},
+        "make": lambda ip, i, user: (
+            f"Failed password for {user} from {ip} port {40000 + i} ssh2 (attempt {i + 1})",
+            {"srcip": ip, "dstuser": user},
         ),
-        "text": "Атакующий {ip}: неудачная попытка входа под root (подбор пароля)",
+        "text": "Атакующий {ip}: неудачные попытки входа под {user} (подбор пароля)",
     },
     "password_spraying": {
         "count": 6,
@@ -88,9 +118,9 @@ ATTACK_SCENARIOS = {
             "groups": ["syslog", "sshd", "authentication_failed"],
             "location": "/var/log/auth.log",
         },
-        "make": lambda ip, i: (
-            f"Failed password for user_{i % 5} from {ip} port {41000 + i} ssh2",
-            {"srcip": ip, "dstuser": f"user_{i % 5}"},
+        "make": lambda ip, i, user: (
+            f"Failed password for {user}_list{i % 5} from {ip} port {41000 + i} ssh2",
+            {"srcip": ip, "dstuser": f"{user}_list{i % 5}"},
         ),
         "text": "Атакующий {ip}: перебор учётных записей (распыление паролей)",
     },
@@ -103,7 +133,7 @@ ATTACK_SCENARIOS = {
             "groups": ["syslog", "sshd"],
             "location": "/var/log/auth.log",
         },
-        "make": lambda ip, i: (
+        "make": lambda ip, i, user: (
             f"Connection attempt from {ip} port {42000 + i} (scan probe {i + 1})",
             {"srcip": ip},
         ),
@@ -118,7 +148,7 @@ ATTACK_SCENARIOS = {
             "groups": ["web", "attack"],
             "location": "/var/log/nginx/access.log",
         },
-        "make": lambda ip, i: (
+        "make": lambda ip, i, user: (
             f'GET /index.php?id=1%27+OR+%271%27%3D%271 HTTP/1.1 from {ip} (probe {i + 1})',
             {"srcip": ip},
         ),
@@ -133,11 +163,11 @@ ATTACK_SCENARIOS = {
             "groups": ["clamav", "malware"],
             "location": "/var/log/clamav/clamd.log",
         },
-        "make": lambda ip, i: (
-            f"clamd: /home/alice/downloads/invoice.exe found: EICAR-Test-File MALWARE",
-            {"srcip": ip, "dstuser": "alice"},
+        "make": lambda ip, i, user: (
+            f"clamd: /home/{user}/downloads/invoice.exe found: EICAR-Test-File MALWARE",
+            {"srcip": ip, "dstuser": user},
         ),
-        "text": "Пользователь alice скачал файл с вредоносным кодом (EICAR)",
+        "text": "Пользователь {user} скачал файл с вредоносным кодом (EICAR)",
     },
     "privilege_escalation": {
         "count": 1,
@@ -148,11 +178,11 @@ ATTACK_SCENARIOS = {
             "groups": ["syslog", "useradd", "privilege_escalation"],
             "location": "/var/log/auth.log",
         },
-        "make": lambda ip, i: (
-            f"usermod: user 'bob' added to group sudo (from {ip})",
-            {"srcip": ip, "dstuser": "bob"},
+        "make": lambda ip, i, user: (
+            f"usermod: user '{user}' added to group sudo (from {ip})",
+            {"srcip": ip, "dstuser": user},
         ),
-        "text": "Атакующий {ip}: попытка повышения привилегий (bob -> sudo)",
+        "text": "Атакующий {ip}: попытка повышения привилегий ({user} -> sudo)",
     },
     "data_exfiltration": {
         "count": 1,
@@ -163,9 +193,9 @@ ATTACK_SCENARIOS = {
             "groups": ["ids", "suricata", "exfiltration"],
             "location": "/var/log/suricata/eve.json",
         },
-        "make": lambda ip, i: (
+        "make": lambda ip, i, user: (
             f"suspicious outbound transfer 1.2GB to {ip}:4444 (archive.tar.gz)",
-            {"srcip": ip, "dstuser": "svc_backup"},
+            {"srcip": ip, "dstuser": user},
         ),
         "text": "Атакующий {ip}: эксфильтрация данных на внешний сервер",
     },
@@ -176,10 +206,10 @@ def _alert_id() -> str:
     return f"{datetime.now(timezone.utc).timestamp():.0f}.{random.randint(100, 999)}"
 
 
-def build_alert(activity: dict, agent_name: str, agent_id: str, attacker_ip: str, index: int = 0) -> dict:
+def build_alert(activity: dict, agent_name: str, agent_id: str, attacker_ip: str, index: int = 0, user: str = "user") -> dict:
     """Алерт формата Wazuh-менеджера (как присылает integratord в integrator.sh):
     timestamp / rule{id,level,description,groups} / agent{id,name} / data / full_log."""
-    full_log, data = activity["make"](attacker_ip, index)
+    full_log, data = activity["make"](attacker_ip, index, user)
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "rule": {
@@ -217,7 +247,10 @@ def send_to_siem(siem_url: str, alert: dict, timeout: float = 5.0) -> tuple[bool
 
 def run_scenario(siem_url: str, host: object, scenario: str, count: int | None, attacker_ip: str) -> dict:
     """Проигрывание сценария активности: каждая активность → алерт → SIEM;
-    журнал активности узла пополняется (видно в UI агентов)."""
+    журнал активности узла пополняется (видно в UI агентов). Пользователи и
+    IP атакующего — host-специфичные (изоляция демо, см. шапку модуля)."""
+    users = host_users(host.hostname)
+    primary_user = users[0]
     if scenario == "normal_activity":
         activities = NORMAL_ACTIVITIES
         default_count = 3
@@ -236,16 +269,16 @@ def run_scenario(siem_url: str, host: object, scenario: str, count: int | None, 
     for i in range(total):
         if scenario == "normal_activity":
             activity = random.choice(activities)
-            user = random.choice(NORMAL_USERS)
+            user = random.choice(users)
             text = activity["text"].format(user=user)
-            alert = build_alert(activity, host.hostname, agent_id, attacker_ip, i)
+            alert = build_alert(activity, host.hostname, agent_id, attacker_ip, i, user)
             # нормальная активность идёт с внутренних адресов рабочих мест
             # (не с IP атакующего) — make() получает attacker_ip как заглушку
             alert["data"]["srcip"] = f"10.20.{random.randint(1, 60)}.{random.randint(2, 250)}"
         else:
             activity = activities[0]
-            text = activity["text"].format(ip=attacker_ip)
-            alert = build_alert(activity, host.hostname, agent_id, attacker_ip, i)
+            text = activity["text"].format(ip=attacker_ip, user=primary_user)
+            alert = build_alert(activity, host.hostname, agent_id, attacker_ip, i, primary_user)
 
         ok, response = send_to_siem(siem_url, alert)
         if ok:

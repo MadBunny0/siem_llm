@@ -437,12 +437,22 @@ def _seed_execution_targets() -> None:
                 models.ExecutionTarget.name == target_data["name"]
             )
             existing = session.scalar(stmt)
+            # связка с активом по имени (инцидент → актив → цель исполнения);
+            # актива с таким именем может не быть — цель остаётся без связки
+            asset = session.scalar(
+                select(models.Asset).where(models.Asset.name == target_data["name"])
+            )
             if existing:
                 existing.base_url = target_data["base_url"]
                 existing.auth_token = target_data["auth_token"]
+                existing.asset_id = asset.id if asset else None
                 session.add(existing)
             else:
-                session.add(models.ExecutionTarget(**target_data))
+                session.add(
+                    models.ExecutionTarget(
+                        asset_id=asset.id if asset else None, **target_data
+                    )
+                )
         session.commit()
     logger.info("Execution targets seeded: %s", [t["name"] for t in targets])
 
