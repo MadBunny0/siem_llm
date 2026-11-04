@@ -108,17 +108,12 @@ curl http://localhost:8000/api/v1/incidents
 curl -X POST http://localhost:8000/api/v1/incidents/1/analyze
 ```
 
-## Виртуальное окружение Python
+## Среда исполнения
 
-Для локальной разработки:
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-Для основного запуска через Docker виртуальное окружение не требуется.
+Проект запускается и тестируется только через Docker (`docker compose up --build`,
+тесты — `docker compose --profile tests run --rm tests` и `frontend-tests`,
+см. `docs/DEPLOYMENT.md`). Виртуальное окружение Python (`.venv`) в репо не
+используется и в git не входит.
 
 ## Безопасность стенда
 

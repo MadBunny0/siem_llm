@@ -167,9 +167,11 @@ docker compose --profile tests run --rm frontend-tests
 
 **Вариант A — локально (для разработчиков):**
 
+Виртуальное окружение `.venv` в репо не используется и в git не входит — тесты
+запускаются только в контейнерах (Docker — единственная среда исполнения проекта).
+Локальный прогон возможен при отдельно установленном Python 3.12 / Node 20:
+
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate            # Windows; в bash: source .venv/bin/activate
 pip install -r requirements.txt pytest
 pytest
 
