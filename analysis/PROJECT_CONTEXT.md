@@ -49,7 +49,9 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (после stage-15)
+## 4. Статус на 2026-11-04 (после stage-15; stage-16 в ветке `stage-16-feedback-fixes`, ждёт PR)
+
+- **stage-16 (фидбек пользователя, отложенный со stage-15): 4 бага.** Бэкенд: закрытый инцидент защищён (analyze/execute-action/confirm-action → 409, из статусов только closed→in_progress, остальное 409; админ при assign закрепляет свободный инцидент за собой, чужое владение не перехватывает). Фронтенд: dry run (mode=simulation) в тостах — успех («Действие выполнено (dry run…)»), после ручного запуска кнопка сменяется disabled «✓ Выполнено (dry run)» (метка `run_manually` в React-состоянии, сбрасывается при смене инцидента); UI закрытого инцидента блокирует анализ/действия/подтверждение, статус-кнопки — только «В работе»; в строке фильтров счётчик «Показано: N из M» + кнопка «✕ Сбросить». Тесты: 101 бэкенд (+3), 91 фронт (+5), build frontend зелёный. **Важно: баг «не вижу фильтров» — пользователь тестировал сборку stage-14; мультифильтры stage-15 в коде есть, стенду нужна пересборка `docker compose up -d --build`.**
 
 - **stage-12/13 влиты** (PR #10/#11); **stage-14 (`stage-14-ownership-action-ux`) — запушен, ждёт PR**; **stage-15 (`stage-15-ux-logic-fixes`, стековая от stage-14) — сделан двумя параллельными сессиями, сведён ревью-сессией, закоммичен и запушен, ждёт PR**.
 - **stage-15 backend** (фидбек пользователя: случайное тестовое событие, справочник для формы, мультифильтры; + сохранены правки параллельной сессии): мок-сценарии вынесены в `app/services/demo_events.py` (`MockScenario{key,title,events}`, `build_mock_scenarios(now)`; demo_populate переведён, поведение идентично); `POST /demo/test-event` — random сценарий → random событие → `_ingest_alert` → фоновый автоанализ critical как в ingest; аудит `test_event_generated`; `GET /incidents?status=&severity=` — мультивыбор через запятую (`_parse_multiselect`, 422 на недопустимое, пустой = без фильтра); `GET /ingest/reference` — справочник (rules из raw_data событий, groups из событий + условий правил корреляции, agents, assets, users, src_ips); `GET /assets`; `execute-action` — владелец инцидента или админ (`admin_confirmed=user.role=="admin"`; аналитик на критическом активе получает pending_confirmation); `playbook_steps` в execution всех режимов. Тестов 98 (+9; ревью-сессия добавила test_execute_action_permissions в test_auth.py: владелец может, чужой 403, critical-актив → pending, админ снимает).
@@ -113,6 +115,8 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 - Изменения в коде коммитить по образцу существующих: `stage-NN: <описание>` или `fix(scope): <описание>` (но только по запросу пользователя).
 
 ## 7. История обновлений файла
+
+- 2026-11-04 — stage-16: фидбек (dry run как ошибка, защита закрытых инцидентов, назначение при взятии админом, заметность фильтров) закрыт; ветка stage-16-feedback-fixes; тесты 101+91.
 
 - 2026-11-04 — stage-15: random test-event (/demo/test-event + demo_events.py), /ingest/reference + datalists/шаблон в форме, мультифильтры status/severity (API+UI-чипы), execute-action владельцу (+ тесты прав), playbook_steps, JSON под details; тесты 98+86; правки параллельной сессии сведены к контрактам, мёртвые экспорты удалены; ветка stage-15-ux-logic-fixes запушена.
 - 2026-11-03 — создан: первичный gap-анализ Главы 3, баги P0, roadmap.
