@@ -206,8 +206,12 @@ export function executionModeRu(mode) {
 // админ — на любом инциденте; аналитик — владелец инцидента (незакреплённый
 // инцидент закрепляется при запуске, поэтому доступен любому аналитику).
 // Отложенное (pending) и заблокированное действие запустить нельзя.
-export function canRunAction(result, { isAdmin = false, username = null, ownerUsername = null } = {}) {
+// [16] Действие, уже запущенное вручную (run_manually), повторно не запускается,
+// на закрытом инциденте (incidentClosed) запуск запрещён целиком.
+export function canRunAction(result, { isAdmin = false, username = null, ownerUsername = null, incidentClosed = false } = {}) {
   if (!result?.action) return false;
+  if (result?.execution?.run_manually === true) return false;
+  if (incidentClosed) return false;
   if (resultNeedsConfirmation(result)) return false;
   if (result?.validation?.approved !== true) return false;
   if (isAdmin) return true;
@@ -216,8 +220,9 @@ export function canRunAction(result, { isAdmin = false, username = null, ownerUs
 }
 
 // Может ли подтвердить отложенное действие — только администратор (§3.4, p:102).
-export function canConfirmAction(result, isAdmin) {
-  return !!isAdmin && resultNeedsConfirmation(result);
+// [16] На закрытом инциденте подтверждение недоступно — только возврат в работу.
+export function canConfirmAction(result, isAdmin, incidentClosed = false) {
+  return !!isAdmin && !incidentClosed && resultNeedsConfirmation(result);
 }
 
 // Русские подписи плейсхолдеров playbook-шагов ({{src_ip}} и т.п.).

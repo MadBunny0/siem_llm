@@ -361,6 +361,42 @@ describe('canConfirmAction — подтверждение отложенного
   });
 });
 
+/* ==================== Stage 16: feedback fixes — run_manually, закрытый инцидент ==================== */
+
+describe('canRunAction stage-16: run_manually и закрытый инцидент', () => {
+  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'simulation' } };
+  const manual = { ...approved, execution: { mode: 'simulation', run_manually: true } };
+
+  it('run_manually: true — кнопку больше не показываем (даже при approved и админе)', () => {
+    expect(canRunAction(manual, { isAdmin: true })).toBe(false);
+    expect(canRunAction(manual, { isAdmin: false, username: 'analyst1', ownerUsername: 'analyst1' })).toBe(false);
+  });
+
+  it('закрытый инцидент — запуск запрещён (даже админу)', () => {
+    expect(canRunAction(approved, { isAdmin: true, incidentClosed: true })).toBe(false);
+    expect(canRunAction(approved, { isAdmin: false, username: 'analyst1', ownerUsername: 'analyst1', incidentClosed: true })).toBe(false);
+  });
+
+  it('true-кейсы stage-15 не сломаны (метки нет, инцидент открыт)', () => {
+    expect(canRunAction(approved, { isAdmin: true })).toBe(true);
+    expect(canRunAction(approved, { isAdmin: false, username: 'analyst1', ownerUsername: 'analyst1' })).toBe(true);
+    expect(canRunAction(approved, { isAdmin: true, incidentClosed: false })).toBe(true);
+  });
+});
+
+describe('canConfirmAction stage-16: закрытый инцидент и обратная совместимость', () => {
+  const pending = { action: 'block_ip', validation: { requires_confirmation: true } };
+
+  it('закрытый инцидент — подтверждение недоступно (только возврат в работу)', () => {
+    expect(canConfirmAction(pending, true, true)).toBe(false);
+  });
+
+  it('без третьего аргумента поведение прежнее (обратная совместимость)', () => {
+    expect(canConfirmAction(pending, true)).toBe(true);
+    expect(canConfirmAction(pending, false)).toBe(false);
+  });
+});
+
 describe('executionModeRu — русские подписи режимов исполнения', () => {
   it('известные режимы', () => {
     expect(executionModeRu('simulation')).toContain('симуляция');
