@@ -42,6 +42,7 @@ from fastapi import APIRouter
 from app.api.auth_routes import router as auth_router
 from app.api.catalog_routes import router as catalog_router
 from app.api.demo_routes import router as demo_router
+from app.api.execution_routes import router as execution_router
 from app.api.ingest_routes import router as ingest_router
 from app.api.incident_routes import router as incident_router
 from app.api.system_routes import router as system_router
@@ -60,6 +61,7 @@ router = APIRouter(prefix="/api/v1", tags=["SIEM"])
 router.include_router(auth_router, tags=["SIEM"])
 router.include_router(ingest_router, tags=["SIEM"])
 router.include_router(incident_router, tags=["SIEM"])
+router.include_router(execution_router, tags=["SIEM"])
 router.include_router(catalog_router, tags=["SIEM"])
 router.include_router(demo_router, tags=["SIEM"])
 router.include_router(system_router, tags=["SIEM"])
