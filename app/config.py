@@ -32,6 +32,20 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     token_expire_minutes: int = 480
 
+    # Реальное исполнение ответных действий (stage-20): реестр целей —
+    # агентов на виртуальных машинах наблюдаемых пользователей (docs/REAL_EXECUTION.md).
+    # Формат EXECUTION_TARGETS: "name=url|token[,name=url|token…]" (разделитель
+    # url/токена — «|», т.к. URL содержит «://» и порт) — имя цели должно
+    # совпадать с именем актива (Asset.name), тогда инцидент по активу
+    # автоматически находит цель исполнения. Пусто — реестр пуст, действия в
+    # режиме real возвращают reason=no_target.
+    execution_targets: str = ""
+    # таймаут вызова агента (сек): действия быстрые, долгих операций нет
+    execution_timeout_seconds: int = 10
+    # режим по умолчанию для execute-action: simulation (dry run, как в ВКР §3.4)
+    # или real (реальное исполнение на ВМ через агента)
+    execution_default_mode: str = "simulation"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

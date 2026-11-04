@@ -229,6 +229,32 @@ class ValidationPolicy(Base):
 
 
 # ---------------------------------------------------------------------------
+# Сущность ExecutionTarget — цель реального исполнения ответных действий
+# (stage-20): агент, развёрнутый на виртуальной машине наблюдаемого
+# пользователя/сервера. Реестр целей связывает инцидент (через актив) с
+# конечными точками, где playbook выполняется РЕАЛЬНО (в стенде — контейнерные
+# «ВМ», при развёртывании — реальные машины; см. docs/REAL_EXECUTION.md).
+# ---------------------------------------------------------------------------
+class ExecutionTarget(Base):
+    __tablename__ = "execution_targets"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)  # = имя актива (asset.name)
+    asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(50), default="agent")  # agent (endpoint), firewall, itsm — резерв
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)  # http://agent-wks:8100
+    auth_token: Mapped[str | None] = mapped_column(String(255), nullable=True)  # Bearer-токен агента
+    platform: Mapped[str] = mapped_column(String(50), default="container")  # container/linux/windows
+    adapter: Mapped[str] = mapped_column(String(50), default="state")  # state (эмуляция) / linux (реальные команды)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(50), default="unknown")  # unknown/online/offline
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    asset: Mapped["Asset | None"] = relationship()
+
+
+# ---------------------------------------------------------------------------
 # Сущность AuditLog — журнал аудита всех этапов обработки инцидента
 # ---------------------------------------------------------------------------
 class AuditLog(Base):

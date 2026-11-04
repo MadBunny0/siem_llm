@@ -74,6 +74,12 @@ services:
       OLLAMA_NUM_CTX: "8192"
       OLLAMA_NUM_PREDICT: "2048"
       OLLAMA_KEEP_ALIVE: "30m"
+      # stage-20 (реальное исполнение на ВМ): три агента-«ВМ» наблюдаемых
+      # пользователей; имена = имена активов seed, токен — общий стенда.
+      # Разделитель url/токена — «|» (в URL есть «://» и порт)
+      EXECUTION_TARGETS: "wks-finance-12=http://agent-wks:8100|${AGENT_TOKEN:-dev-agent-token},app-web-01=http://agent-app:8100|${AGENT_TOKEN:-dev-agent-token},mail-prod-01=http://agent-mail:8100|${AGENT_TOKEN:-dev-agent-token}"
+      EXECUTION_TIMEOUT_SECONDS: "${EXECUTION_TIMEOUT_SECONDS:-10}"
+      EXECUTION_DEFAULT_MODE: "${EXECUTION_DEFAULT_MODE:-simulation}"
     ports:
       - "8000:8000"
     depends_on:
@@ -106,6 +112,56 @@ services:
       ADMINER_DEFAULT_SERVER: db
     depends_on:
       db:
+        condition: service_healthy
+
+  # stage-20: агенты-«ВМ» наблюдаемых пользователей — исполнение playbook
+  # РЕАЛЬНО меняет состояние узла (фаервол/учётки/изоляция) + генератор
+  # активности (алерты Wazuh → SIEM). Имена сервисов согласованы с
+  # EXECUTION_TARGETS; имена узлов = имена активов seed.
+  # http://localhost:8101/agent/status — состояние АРМ финансиста в браузере
+  agent-wks:
+    build: ./agent
+    environment:
+      AGENT_HOSTNAME: wks-finance-12
+      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
+      SIEM_URL: http://api:8000/api/v1
+      AGENT_STATE_FILE: /data/state.json
+    ports:
+      - "8101:8100"
+    volumes:
+      - agent_wks_data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+
+  agent-app:
+    build: ./agent
+    environment:
+      AGENT_HOSTNAME: app-web-01
+      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
+      SIEM_URL: http://api:8000/api/v1
+      AGENT_STATE_FILE: /data/state.json
+    ports:
+      - "8102:8100"
+    volumes:
+      - agent_app_data:/data
+    depends_on:
+      api:
+        condition: service_healthy
+
+  agent-mail:
+    build: ./agent
+    environment:
+      AGENT_HOSTNAME: mail-prod-01
+      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
+      SIEM_URL: http://api:8000/api/v1
+      AGENT_STATE_FILE: /data/state.json
+    ports:
+      - "8103:8100"
+    volumes:
+      - agent_mail_data:/data
+    depends_on:
+      api:
         condition: service_healthy
 
   # Автотесты бэкенда внутри контейнера — локальный Python не нужен (stage-11):
@@ -154,3 +210,6 @@ volumes:
   ollama_data:
   wazuh_data:
   frontend_node_modules:
+  agent_wks_data:
+  agent_app_data:
+  agent_mail_data:

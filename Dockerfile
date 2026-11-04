@@ -7,9 +7,12 @@ COPY app ./app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # Dev-стадия: прод + автотесты — docker compose --profile tests run --rm tests
-# (см. DEPLOYMENT.md, раздел «Автотесты»); локальный Python не требуется
+# (см. DEPLOYMENT.md, раздел «Автотесты»); локальный Python не требуется.
+# agent/ + tests_agent/ — тесты endpoint-агента (stage-20)
 FROM base AS dev
 COPY pytest.ini ./
 COPY tests ./tests
+COPY tests_agent ./tests_agent
+COPY agent ./agent
 RUN pip install --no-cache-dir pytest
 CMD ["pytest"]
