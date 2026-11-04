@@ -57,7 +57,7 @@ siem_llm/
 ## Запуск
 
 > **Полная инструкция по развёртыванию «с нуля» (Windows/Linux/macOS): [DEPLOYMENT.md](docs/DEPLOYMENT.md)** —
-> требования, установка Docker/WSL2, первый запуск, демо-сценарий, тесты, GPU, troubleshooting.
+> требования, установка Docker/WSL2, первый запуск, демо-сценарий, тесты, производительность LLM, troubleshooting.
 
 ### Быстрый старт (macOS)
 

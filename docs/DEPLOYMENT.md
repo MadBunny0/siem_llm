@@ -16,8 +16,8 @@
 | Диск | **15 ГБ** свободно | **20 ГБ** |
 | Интернет | нужен для первичной загрузки образов и модели LLM (~4 ГБ) | то же |
 
-GPU не обязателен: `qwen2.5:3b` в Ollama работает на CPU (секунды–десятки секунд на
-анализ). Как включить GPU — см. раздел 7.
+GPU не используется: `qwen2.5:3b` в Ollama работает на CPU; ускорение инференса —
+раздел 7 (конфигурация без GPU).
 
 ## 2. Установка ПО (Windows; для Linux/macOS — проще, см. примечания)
 
@@ -200,31 +200,10 @@ cd frontend && npm install && npm test
 
 Диагностика скорости: `docker compose exec ollama ollama run qwen2.5:3b "тест" --verbose`
 показывает `eval rate` (токенов/с) и `load duration` (холодная загрузка модели).
+Замер на этой конфигурации: eval rate 12.6–15 токенов/с — полный анализ занимает
+~1.5–2 минуты, это предел CPU для 3B-модели (GPU-ускорение не используется).
 
-## 8. GPU для LLM (опционально)
-
-В репо есть `docker-compose.gpu.yml`. Запуск с GPU:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
-
-Проверка, что модель работает на GPU: `docker compose exec ollama ollama ps` —
-в колонке `PROCESSOR` должно быть «100% GPU». На GPU инференс быстрее CPU в
-5–15 раз.
-
-**GPU-проброс может не работать.** Проверка: `docker run --rm --gpus all ubuntu ls /dev/nvidia*`
-— если устройств нет, Docker не видит GPU. Типичные причины:
-
-1. Docker Desktop работает на бэкенде **Hyper-V** — GPU пробрасывается только на
-   бэкенде **WSL2** (Settings → General → «Use the WSL 2 based engine»).
-2. Драйвер NVIDIA не отдаёт GPU в WSL2: проверьте `wsl -d <дистрибутив> nvidia-smi`
-   (нужен любой реальный Linux-дистрибутив WSL; в дистрибутиве `docker-desktop`
-   nvidia-smi отсутствует — это нормально). Если и там нет — переустановить
-   драйвер NVIDIA (clean installation) и перезапустить Docker Desktop.
-3. После исправления — поднять стенд командой с `-f docker-compose.gpu.yml`.
-
-## 9. Полезные команды
+## 8. Полезные команды
 
 ```bash
 docker compose ps                  # статус сервисов
