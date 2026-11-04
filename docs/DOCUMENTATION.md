@@ -104,6 +104,8 @@
 | **`playbooks`** | Сценарии автоматизированного реагирования: `name`, `description`, `trigger_conditions`, `allowed_actions`, `steps` (порядок операций, например блокировка IP через фаервол), `priority`, `is_active`. |
 | **`response_actions`** | Выполненные ответные действия: привязка к инциденту, playbook, тип действия (`block_ip`, `disable_account`…), результат, кто инициировал (`playbook`/`validation`/`manual`), метаданные. |
 | **`audit_logs`** | **Журнал аудита всех этапов**: `timestamp`, `event_type` (`event_ingested`, `normalized`, `correlated`, `risk_calculated`, `llm_analyzed`, `playbook_selected`, `action_executed`, `validation_result`), привязка к инциденту/событию/пользователю, детали. |
+| **`execution_targets`** (stage-20) | **Цели реального исполнения** — агенты на ВМ наблюдаемых пользователей: `name` (= имя актива), `asset_id`, `base_url`, `auth_token` (Bearer), `platform`, `adapter` (`state` — эмуляция в контейнере / `linux` — системные команды на ВМ), `status`/`last_seen` (heartbeat), `is_active`. Заполняется seed'ом из `EXECUTION_TARGETS`. См. [REAL_EXECUTION.md](REAL_EXECUTION.md). |
+
 ### 3. Как строится и запускается проект
 
 #### Структура кода
@@ -112,7 +114,8 @@
 siem_llm/
 ├── app/
 │   ├── api/
-│   │   └── routes.py              # API-маршруты FastAPI
+│   │   ├── routes.py              # API-маршруты FastAPI
+│   │   └── execution_routes.py    # stage-20: цели реального исполнения (/execution-targets)
 │   ├── services/
 │   │   ├── normalization.py       # этап 2: нормализация Wazuh
 │   │   ├── correlation.py         # этап 3: корреляция (правила из БД)
@@ -120,16 +123,19 @@ siem_llm/
 │   │   ├── llm.py                 # этап 5: запрос к Ollama/Qwen
 │   │   ├── validation.py          # этап 6: Decision Validation Engine
 │   │   ├── playbook.py            # этап 7: запуск playbook (симуляция)
+│   │   ├── execution.py           # stage-20: диспетчер реального исполнения на ВМ
 │   │   └── audit.py               # логирование AuditLog
-│   ├── models.py                  # SQLAlchemy модели (10 таблиц)
+│   ├── models.py                  # SQLAlchemy модели (11 таблиц)
 │   ├── schemas.py                 # Pydantic-схемы (WazuhAlert, IncidentOut)
 │   ├── db.py                      # engine, sessionmaker, Base, get_db
 │   ├── config.py                  # Settings (DATABASE_URL, OLLAMA_URL, AUTO_RESPONSE...)
-│   ├── init_db.py                 # seed правил корреляции + playbook
+│   ├── init_db.py                 # seed правил корреляции + playbook + целей исполнения
 │   └── main.py                    # FastAPI app
+├── agent/                         # stage-20: endpoint-агент ВМ (standalone FastAPI)
 ├── frontend/                      # React + Vite
-├── tests/                         # pytest-тесты
-├── docker-compose.yml             # оркестрация всех сервисов
+├── tests/                         # pytest-тесты (включая диспетчер исполнения)
+├── tests_agent/                   # stage-20: pytest-тесты агента
+├── docker-compose.yml             # оркестрация всех сервисов (+ 3 агента-«ВМ»)
 ├── Dockerfile
 ├── requirements.txt
 ├── pytest.ini
@@ -157,6 +163,13 @@ siem_llm/
    для `medium/high/critical` playbook выполняет оператор кнопкой «▶ Выполнить»
    (`execution.mode = manual_run`).
    Подробно — [CRITICALITY_MATRIX.md](CRITICALITY_MATRIX.md).
+
+   > С stage-20 у оператора **два режима исполнения**: «Симуляция (dry run)» — как
+   выше, и «Реально на ВМ» (`mode = real`): диспетчер `app/services/execution.py`
+   находит агента на ВМ наблюдаемого пользователя по активу инцидента
+   (`execution_targets`) и применяет действие **реально** (фаервол / учётные
+   записи / изоляция узла). DVE одинаков для обоих режимов. Подробно —
+   [REAL_EXECUTION.md](REAL_EXECUTION.md).
 
 
 ---

@@ -49,7 +49,20 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (stage-18 влит PR #16, main = d1fbdff; ветки почищены, стенд пересобран)
+## 4. Статус на 2026-11-05 (stage-20 в работе, ветка stage-20-real-execution-agents ОТ main = 04fd4cc)
+
+- **stage-19 — ЖИВЁТ ОТДЕЛЬНОЙ ВЕТКОЙ** (`stage-19-legacy-cleanup`, 5 коммитов, запушена; слияние со stage-20 планирует пользователь отдельным агентом). stage-20 создана **от main (04fd4cc)** по указанию пользователя — адаптация к монолиту routes.py, тесты без conftest (локальные фикстуры), TargetsView получает request пропсом (api.js — файл stage-19). Резервная стековая версия stage-20: ветка `stage-20-stacked-backup`.
+- **stage-20 (реальное исполнение playbook на ВМ наблюдаемых пользователей + поток Wazuh-алертов; запрос пользователя):**
+  (1) **Агент ВМ** `agent/` — standalone FastAPI (только stdlib+fastapi/uvicorn; переносится на реальную ВМ): эмулирует узел наблюдаемого пользователя (учётки alice/bob/svc_backup, процессы, файлы, фаервол, изоляция), исполняет действия playbook РЕАЛЬНО меняя состояние (block_ip/unblock_ip/isolate_host/release_host/disable_account/enable_account/kill_process/quarantine_file/collect_evidence/monitor), персистентность JSON (volume), журнал действий + журнал активности, `GET /agent/status` открыт для демонстрации, мутации под Bearer `AGENT_TOKEN`; adapter `state` (стенд) / `linux` (системные команды iptables/usermod на реальной ВМ, честная пометка при недоступной команде); Windows-адаптер НЕ реализован (документировано).
+  (2) **Реестр целей** — модель `ExecutionTarget` (name=имя актива, asset_id, base_url, auth_token, platform, adapter, status/last_seen heartbeat), seed из env `EXECUTION_TARGETS` (формат `name=url|token` — разделитель «|», т.к. в URL «://» и порт).
+  (3) **Диспетчер** `app/services/execution.py`: execute-action `{action, mode:"simulation"|"real"}` — DVE один для обоих режимов; real: инцидент → актив → цель → вызов агента (httpx sync, таймаут 10с) → heartbeat → ResponseAction (metadata_json с целями/снимком) + аудит real_action_executed/failed/skipped; graceful-деградация: no_target / target_unreachable / missing_parameters / unsupported_action; monitor/collect_evidence — passive (снимок событий+анализов, с агентом — и состояние ВМ). Отметка manual_actions для real — только при фактическом успехе.
+  (4) **API целей** `app/api/execution_routes.py` (отдельный роутер, include в routes.py): GET /execution-targets, check, journal, activity, reset, simulate — прокси к агентам (токены не покидают бэкенд).
+  (5) **Генератор активности** агента: `normal_activity` (входы/почта/файлы с внутренних IP — «шум», инцидентов не создаёт) + 7 атак под seed-правила (brute_force/password_spraying/repeated_scan/web_attack/malware/privilege_escalation/data_exfiltration) — алерты формата Wazuh-менеджера → POST /ingest/wazuh (тот же эндпоинт интеграции); запуск из UI или `POST /execution-targets/{id}/simulate`; ответ SIEM (созданные инциденты) — оператору.
+  (6) **Compose**: agent-wks/agent-app/agent-mail (wks-finance-12:8101, app-web-01:8102, mail-prod-01:8103 — имена=активы seed; volumes состояния; EXECUTION_TARGETS в api по умолчанию на трёх агентов); db-primary-01/fw-edge-01 целей НЕ имеют — демо no_target.
+  (7) **Frontend** (main.jsx монолит): вкладка «Агенты (ВМ)» (новый компонент `components/TargetsView.jsx` — статусы, журналы, сброс ВМ, проигрывание активности; request передаётся пропсом), переключатель режима исполнения в боксе «Все действия playbook» (EXECUTION_MODES), тосты real-результатов (execution.result), helpers EXECUTION_MODE_RU += real.
+  (8) **Доки**: docs/REAL_EXECUTION.md (архитектура, демо по каждому playbook, ограничения/нереализованное: Windows-адаптер, гипервизор, ITSM, реальные API МЭ/EDR), DEPLOYMENT (порты 8101–8103, seed целей, демо-сценарий), WAZUH_INTEGRATION (раздел «Без Wazuh-менеджера: активность от агентов»), DOCUMENTATION (execution_targets, структура, пайплайн), README, DEVIATIONS (2 записи в «вне эталона»).
+  Тесты: **179 backend** (+40: test_execution.py диспетчер 12, test_execution_routes.py API 11, tests_agent/ агент 17) + **114 frontend** (+3 TargetsView), vite build зелёный. НЕ делалось: живой прогон стенда (агенты не поднимались compose up — только тесты); PR не создан (пользователь: «PR только в конце, когда всё готово»).
+
 
 - **stage-18, оптимизация LLM (фидбек «qwen очень долго отрабатывает»):** num_ctx=8192 (был дефолт Ollama **2048 — меньше промпта**, модель теряла контекст), num_predict=2048, keep_alive=30m (нет холодной загрузки между запросами), flash attention + KV q8_0 в compose, контекст ужат (12 событий, ECS-строки 800 симв.). Замер CPU: eval rate 12.6–15 ток/с → анализ ≈ 1.5–2 мин — предел CPU для 3B. **GPU-ускорение отклонено пользователем** (на машине RTX 4060 Ti, но Docker GPU не видит; docker-compose.gpu.yml и раздел DEPLOYMENT.md про GPU откачены — проект CPU-only). Быстрая альтернатива — OLLAMA_MODEL=qwen2.5:1.5b. Тесты 139 backend, api/ollama пересобраны на стенде.
 
@@ -128,6 +141,8 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 - Изменения в коде коммитить по образцу существующих: `stage-NN: <описание>` или `fix(scope): <описание>` (но только по запросу пользователя).
 
 ## 7. История обновлений файла
+
+- 2026-11-05 — stage-20 (от main, stage-19 живёт отдельной веткой): реальное исполнение playbook на ВМ наблюдаемых пользователей (agent/, ExecutionTarget, services/execution.py, mode=real, вкладка «Агенты (ВМ)»), генератор активности/атак → /ingest/wazuh; тесты 179+114; PR не создан (ожидание готовности); резерв стековой версии — stage-20-stacked-backup.
 
 - 2026-11-04 — stage-18 (итерация 2): 504 на /analyze → фоновый анализ + опрос + LLM_INFERENCE_LOCK; AUTO_ANALYSIS_LEVELS → low (critical — оператор); состояние кнопок — серверное (Incident.manual_actions + reset-actions + confirm-action перезапись response_raw); фикс blocked-исполнения в автоконвейере + аудит скипа автозакрытия; тесты 139+111.
 

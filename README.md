@@ -38,8 +38,10 @@ Docker Compose специально разделяет подготовку за
 ```
 siem_llm/
 ├── app/                  # Бэкенд: FastAPI (api/, services/, models, init_db)
+├── agent/                # stage-20: endpoint-агент ВМ наблюдаемого пользователя (standalone)
 ├── frontend/             # React-дашборд (src/lib — хелперы, src/components — компоненты)
-├── tests/                # pytest-тесты бэкенда (86, запускаются в контейнере)
+├── tests/                # pytest-тесты бэкенда (179, запускаются в контейнере)
+├── tests_agent/          # stage-20: pytest-тесты endpoint-агента
 ├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION
 ├── samples/              # Примеры алертов Wazuh (JSON)
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
@@ -49,7 +51,7 @@ siem_llm/
 └── requirements.txt, pytest.ini, .env.example
 ```
 
-Тесты: 86 backend (pytest) + 49 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 179 backend (pytest) + 114 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---
