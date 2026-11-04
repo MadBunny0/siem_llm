@@ -5,6 +5,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://siem:siem@localhost:5432/siem"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:3b"
+    # производительность инференса (stage-18, фидбек «qwen очень долго отрабатывает»):
+    # num_ctx — окно контекста (дефолт Ollama 2048 меньше нашего промпта с
+    # ECS-JSON — модель теряла контекст); num_predict — потолок генерации
+    # (реальный ответ укладывается, ограничивает «расползание»); keep_alive —
+    # сколько держать модель в памяти после запроса (иначе каждый холодный
+    # анализ платит десятки секунд за загрузку модели)
+    ollama_num_ctx: int = 8192
+    ollama_num_predict: int = 2048
+    ollama_keep_alive: str = "30m"
     correlation_window_minutes: int = 5
     auto_response: bool = False
     # автоматический LLM-анализ инцидентов без задержек (§3.3.3 ВКР, p:80):

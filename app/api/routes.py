@@ -441,11 +441,12 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
 
 
 # Ограничение объёма ECS-контекста: маленькой локальной модели (qwen2.5:3b)
-# достаточно 1000 символов на строковое значение и 6 уровней вложенности
+# достаточно 800 символов на строковое значение и 6 уровней вложенности.
+# Чем меньше промпт, тем быстрее prefill на CPU (stage-18, фидбек про скорость)
 _ECS_MAX_DEPTH = 6
 
 
-def _trim_ecs(raw: dict, max_str: int = 1000) -> dict | None:
+def _trim_ecs(raw: dict, max_str: int = 800) -> dict | None:
     """Глубокая копия ECS-JSON события с обрезкой длинных строк (контекст LLM).
 
     Исходный JSON Wazuh/Elastic (rule, agent, data, full_log) может содержать
@@ -869,9 +870,11 @@ async def _run_incident_analysis(
     (POST /confirm-action).
     """
     asset = incident.asset
-    # контекст ограничен последними 20 событиями (хронологический порядок):
-    # длинные инциденты не должны переполнять контекст маленькой модели
-    context_events = sorted(incident.events, key=lambda x: x.timestamp)[-20:]
+    # контекст ограничен последними 12 событиями (хронологический порядок):
+    # промпт должен целиком помещаться в num_ctx (8192) — переполнение окна
+    # приводит к потере контекста и «сдвигу», что бьёт и по качеству, и по
+    # скорости инференса (stage-18, фидбек про скорость)
+    context_events = sorted(incident.events, key=lambda x: x.timestamp)[-12:]
     context = {
         "incident_id": incident.id,
         "id": incident.id,

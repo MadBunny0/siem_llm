@@ -181,28 +181,50 @@ cd frontend && npm install && npm test
 Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`;
 вручную: `cd frontend && npm install && npm run build`.
 
-## 7. GPU для LLM (опционально)
+## 7. Производительность LLM
 
-По умолчанию Ollama работает на CPU. Если на машине NVIDIA GPU с последним драйвером
-(Docker Desktop + WSL2 пробрасывает его автоматически), можно создать
-`docker-compose.gpu.yml`:
+По умолчанию Ollama работает на CPU — инференс qwen2.5:3b на большой JSON-схеме
+(stage-18) занимает 1–3 минуты на анализ. Оптимизации, встроенные в проект:
 
-```yaml
-services:
-  ollama:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+| Рычаг | Где | Что даёт |
+|---|---|---|
+| `OLLAMA_NUM_CTX=8192` | `.env` / compose | Дефолт Ollama **2048 меньше нашего промпта** (система ~1100 токенов + ECS-JSON) — модель теряла контекст и «сдвигала» окно. 8192 вмещает промпт целиком: качество выше, нет накладных расходов на сдвиг |
+| `OLLAMA_NUM_PREDICT=2048` | `.env` / compose | Потолок генерации — защита от «расползающегося» ответа (реальный ответ укладывается) |
+| `OLLAMA_KEEP_ALIVE=30m` | `.env` / compose | Модель остаётся в памяти 30 минут после запроса — повторные анализы не платят ~20–40с за загрузку с диска |
+| `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE=q8_0` | compose (ollama) | Ускорение генерации + вдвое меньше памяти под KV-кэш |
+| Обрезка контекста | `routes.py` | Последние 12 событий, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
+| Сериализация запросов | `llm.py` (`LLM_INFERENCE_LOCK`) | CPU-модель обрабатывает запросы по одному — параллельные только трешат CPU |
+
+Быстрая демонстрация (если скорость важнее качества): `OLLAMA_MODEL=qwen2.5:1.5b`
+в compose — генерация в ~2–3 раза быстрее, качество анализа ниже.
+
+Диагностика скорости: `docker compose exec ollama ollama run qwen2.5:3b "тест" --verbose`
+показывает `eval rate` (токенов/с) и `load duration` (холодная загрузка модели).
+
+## 8. GPU для LLM (опционально)
+
+В репо есть `docker-compose.gpu.yml`. Запуск с GPU:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
 ```
 
-и запускать `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`.
-Проверить, что модель видит GPU: `docker compose exec ollama ollama ps`.
+Проверка, что модель работает на GPU: `docker compose exec ollama ollama ps` —
+в колонке `PROCESSOR` должно быть «100% GPU». На GPU инференс быстрее CPU в
+5–15 раз.
 
-## 8. Полезные команды
+**GPU-проброс может не работать.** Проверка: `docker run --rm --gpus all ubuntu ls /dev/nvidia*`
+— если устройств нет, Docker не видит GPU. Типичные причины:
+
+1. Docker Desktop работает на бэкенде **Hyper-V** — GPU пробрасывается только на
+   бэкенде **WSL2** (Settings → General → «Use the WSL 2 based engine»).
+2. Драйвер NVIDIA не отдаёт GPU в WSL2: проверьте `wsl -d <дистрибутив> nvidia-smi`
+   (нужен любой реальный Linux-дистрибутив WSL; в дистрибутиве `docker-desktop`
+   nvidia-smi отсутствует — это нормально). Если и там нет — переустановить
+   драйвер NVIDIA (clean installation) и перезапустить Docker Desktop.
+3. После исправления — поднять стенд командой с `-f docker-compose.gpu.yml`.
+
+## 9. Полезные команды
 
 ```bash
 docker compose ps                  # статус сервисов

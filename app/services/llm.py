@@ -172,6 +172,18 @@ async def analyze_incident(incident: dict) -> dict:
         ],
         "stream": False,
         "format": "json",
+        # Оптимизация производительности (stage-18, фидбек «qwen очень долго
+        # отрабатывает»): num_ctx — размер окна контекста. Дефолт Ollama 2048
+        # МЕНЬШЕ нашего промпта (система ~1100 токенов + ECS-JSON событий) —
+        # модель теряла куски контекста и «сдвигала» окно; num_predict —
+        # потолок генерации от расползающегося ответа; keep_alive — сколько
+        # держать модель загруженной после запроса (без него каждый холодный
+        # анализ платит ~20–40с за загрузку модели с диска)
+        "options": {
+            "num_ctx": settings.ollama_num_ctx,
+            "num_predict": settings.ollama_num_predict,
+        },
+        "keep_alive": settings.ollama_keep_alive,
     }
 
     # лок держит ВЕСЬ httpx-запрос: пока модель генерирует ответ, остальные
