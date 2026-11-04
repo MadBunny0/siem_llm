@@ -48,7 +48,15 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (после stage-13)
+## 4. Статус на 2026-11-04 (после stage-14)
+
+- **stage-12/13 влиты** (PR #10/#11); **stage-14 (`stage-14-ownership-action-ux`) — на ревью** (4 пункта фидбека пользователя).
+- **stage-14 backend:** `_ensure_incident_access` — владение инцидентом (analyst_id закрепляется при analyze/status; чужой аналитик 403 «закреплён за другим аналитиком»; админ — исключение); `Incident.analyst` relationship + `analyst` (id/username/role) в GET /incidents и detail; `playbook_description` в execution всех режимов (включая simulation); тестов 89 (+3 владение/описания).
+- **stage-14 frontend:** result-item — одна главная кнопка по состоянию (pending → «✓ Подтвердить и выполнить» → confirm-action; approved → «▶ Выполнить: <RU>» → execute-action; blocked — только reason); панель последнего анализа восстанавливается из истории (`analysisFromHistory`, бейдж «из истории», защита от гонок detailReqRef, повторный клик по инциденту не сбрасывает панель); RU-расшифровки (ACTION_RU) в результатах, истории и playbooks; бейдж «Назначен: username» (+ «твой»); 60 фронт-тестов.
+- **Пайплайн разработки (от пользователя, обязателен):** Анализ → код → тесты → исправление → тесты → готово. Субагентам запрещены tmp-скрипты вне репо (D:\tmp чистить) и сетевые вызовы из тестов — только штатный vitest/pytest-набор; нехватку зависимостей сообщать в отчёте (добавляются в package.json/requirements).
+- Урок: субагент может упасть фатально (SSL к localhost API) — его частичную работу в рабочем дереве дочищать самостоятельно по его diff; мусор за ним чистить (D:\tmp).
+
+### stage-13 (влит, PR #11): фронтенд-тесты + реорганизация.
 
 - **stage-13 (`stage-13-frontend-tests-restructure`, стековая от stage-12): фронтенд-тесты + реорганизация.** Из main.jsx вынесены хелперы → `frontend/src/lib/helpers.js` и PipelineStatus → `frontend/src/components/PipelineStatus.jsx` (pipelineStageStatuses + data-stage); Vitest + RTL: 49 тестов (`docker compose --profile tests run --rm frontend-tests`, node:20-alpine + volume node_modules); реорганизация: docs/ (3 дока), samples/ (JSON-алерты), ссылки обновлены, analysis/ остался в корне; package-lock.json в репо. Урок: дубль STATUS_LABELS (import vs const) поймал только производственный `vite build` на стенде.
 

@@ -73,6 +73,16 @@ class RegisterIn(BaseModel):
     role: str = Field(default="analyst", pattern="^(analyst|admin)$")
 
 
+class UserBrief(BaseModel):
+    """Краткая информация о пользователе (для поля analyst инцидента)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    role: str
+
+
 class IncidentOut(BaseModel):
     """Ответ о инциденте (включая риск, тип атаки, актив)."""
 
@@ -87,6 +97,7 @@ class IncidentOut(BaseModel):
     attack_type: str | None
     asset_id: int | None
     asset: AssetOut | None = None
+    analyst: UserBrief | None = None  # владелец инцидента (stage-14)
     created_at: datetime
 
 

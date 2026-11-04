@@ -1,11 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-import { analysisResults, confPct, criteriaCountLabel, detailToMessage, formatDate,
-         initiatedByBadge, pendingReasonText, PLAYBOOK_ACTIONS, priorityLabel,
-         PRIORITY_LABELS, resultExecutionBadge, resultNeedsConfirmation,
-         resultValidationBadge, resultsNeedConfirmation, severityOrder, STATUS_LABELS }
+import { actionRuDescription, analysisFromHistory, analysisResults, confPct, criteriaCountLabel,
+         detailToMessage, formatDate, initiatedByBadge, pendingReasonText, PLAYBOOK_ACTIONS,
+         priorityLabel, PRIORITY_LABELS, recommendedActionCodes, resultExecutionBadge,
+         resultNeedsConfirmation, resultValidationBadge, resultsNeedConfirmation, severityOrder,
+         STATUS_LABELS }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
 
@@ -909,9 +910,17 @@ function PlaybooksView({ notify, toastError, isAdmin }) {
                     {rule.description && <div className="rule-desc">{rule.description}</div>}
                   </td>
                   <td>
-                    {(rule.allowed_actions || []).length
-                      ? <div className="stack">{(rule.allowed_actions || []).map(a => <span key={a}>{a}</span>)}</div>
-                      : '—'}
+                    {(rule.allowed_actions || []).length ? (
+                      <>
+                        {/* [3] русское описание каждого действия — tooltip на чипе + строкой под ним */}
+                        <div className="stack">
+                          {(rule.allowed_actions || []).map(a => <span key={a} title={actionRuDescription(a)}>{a}</span>)}
+                        </div>
+                        <div className="playbook-actions-ru">
+                          {(rule.allowed_actions || []).map(a => actionRuDescription(a)).join(' · ')}
+                        </div>
+                      </>
+                    ) : '—'}
                   </td>
                   <td>
                     {Array.isArray(rule.steps) ? rule.steps.length : '—'}
@@ -1182,6 +1191,15 @@ function AuthGate() {
   return <App user={user} onLogout={handleLogout} />;
 }
 
+// Последняя запись истории анализов: по created_at, при равенстве — по большему id.
+function latestAnalysis(list) {
+  const arr = Array.isArray(list) ? list : [];
+  if (!arr.length) return null;
+  return [...arr].sort((a, b) =>
+    (new Date(b.created_at) - new Date(a.created_at)) || ((b.id || 0) - (a.id || 0))
+  )[0];
+}
+
 /* ==================== Приложение ==================== */
 
 function App({ user, onLogout }) {
@@ -1212,6 +1230,8 @@ function App({ user, onLogout }) {
   const [statusBusy, setStatusBusy] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState(false);
+  // Защита от гонки при быстрой смене инцидентов: устаревшие ответы detail игнорируются.
+  const detailReqRef = useRef(0);
 
   const [formData, setFormData] = useState({
     timestamp: new Date().toISOString().replace('Z', ''),
@@ -1241,20 +1261,29 @@ function App({ user, onLogout }) {
 
   async function loadIncidentDetail(id) {
     // [5г] спиннер загрузки detail в карточке инцидента
+    const reqId = ++detailReqRef.current;
     setDetailLoading(true);
     try {
       const detail = await request(`/incidents/${id}`);
+      if (reqId !== detailReqRef.current) return; // ответ устарел — инцидент уже сменён
       setIncidentDetail(detail);
+      // [2] Восстановление последней рекомендации: если свежего анализа нет,
+      // панель результата собирается из последнего анализа истории.
+      const last = latestAnalysis(detail?.analyses);
+      if (last) setAnalysis(prev => prev || analysisFromHistory(last));
     } catch (e) {
-      setError(e.message);
+      if (reqId === detailReqRef.current) setError(e.message);
     } finally {
-      setDetailLoading(false);
+      if (reqId === detailReqRef.current) setDetailLoading(false);
     }
   }
 
   useEffect(() => {
     setIncidentDetail(null);
     setConfirmedAction(false);
+    // [2] при смене инцидента результат предыдущего сбрасывается, затем панель
+    // восстанавливается из истории нового инцидента (в loadIncidentDetail)
+    setAnalysis(null);
     if (selected?.id) loadIncidentDetail(selected.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id]);
@@ -1299,13 +1328,7 @@ function App({ user, onLogout }) {
     active: incidents.filter(i => i.status !== 'closed').length,
   }), [incidents]);
 
-  const lastDetailAnalysis = useMemo(() => {
-    const list = incidentDetail?.analyses || [];
-    if (!list.length) return null;
-    return [...list].sort((a, b) =>
-      (new Date(b.created_at) - new Date(a.created_at)) || ((b.id || 0) - (a.id || 0))
-    )[0];
-  }, [incidentDetail]);
+  const lastDetailAnalysis = useMemo(() => latestAnalysis(incidentDetail?.analyses), [incidentDetail]);
 
   const pendingConfirmation = !!(
     !confirmedAction && (
@@ -1322,6 +1345,8 @@ function App({ user, onLogout }) {
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
   // [6] бейдж источника для свежего результата анализа
   const freshBadge = initiatedByBadge(analysis);
+  // [2] панель, восстановленная из истории, не блокирует повторный запуск анализа
+  const hasFreshAnalysis = !!analysis && !analysis.fromHistory;
 
   async function runAnalysis() {
     if (!selected) return;
@@ -1462,8 +1487,10 @@ function App({ user, onLogout }) {
     try {
       const known = incidents.find(x => x.id === incidentId);
       const incident = known || await request(`/incidents/${incidentId}`);
+      // [2] повторное открытие того же инцидента панель результата не сбрасывает
+      const sameId = selected?.id === incident.id;
       setSelected(incident);
-      setAnalysis(null);
+      if (!sameId) setAnalysis(null);
     } catch (e) { setError(e.message); }
   }
 
@@ -1539,8 +1566,10 @@ function App({ user, onLogout }) {
   }
 
   const handleSelectIncident = (incident) => {
+    // [2] клик по уже выбранному инциденту не сбрасывает панель результата
+    const sameId = selected?.id === incident.id;
     setSelected(incident);
-    setAnalysis(null);
+    if (!sameId) setAnalysis(null);
   };
 
   return <div className="app-shell">
@@ -1628,7 +1657,7 @@ function App({ user, onLogout }) {
                 </ol>
               </details>
 
-              <div className="detail-grid"><div><label>Статус</label><Status value={selected.status}/></div><div><label>Создан</label><span>{formatDate(selected.created_at)}</span></div><div><label>Уровень риска</label><span>{selected.risk_score} / 100</span></div><div><label>Тип атаки</label><span>{selected.attack_type || '-'}</span></div><div><label>Актив</label><span>{selected.asset?.name || '-'}</span></div><div><label>Критичность актива</label><span>{selected.asset?.criticality || '-'}</span></div></div>
+              <div className="detail-grid"><div><label>Статус</label><Status value={selected.status}/></div><div><label>Создан</label><span>{formatDate(selected.created_at)}</span></div><div><label>Уровень риска</label><span>{selected.risk_score} / 100</span></div><div><label>Тип атаки</label><span>{selected.attack_type || '-'}</span></div><div><label>Актив</label><span>{selected.asset?.name || '-'}</span></div><div><label>Критичность актива</label><span>{selected.asset?.criticality || '-'}</span></div><div><label>Назначен</label><span className="assignee-cell">{incidentDetail?.analyst?.username ? (<><span className="assignee-badge" title={incidentDetail.analyst.role ? `Роль: ${incidentDetail.analyst.role}` : 'Закреплённый аналитик'}>{incidentDetail.analyst.username}</span>{incidentDetail.analyst.username === user?.username && <span className="assignee-badge mine" title="Инцидент закреплён за вами">твой</span>}</>) : <span className="assignee-badge none" title="Инцидент ещё не закреплён — закрепляется при первом анализе или смене статуса">не закреплён</span>}</span></div></div>
 
               <div className="status-controls">
                 <label>Изменить статус</label>
@@ -1675,9 +1704,10 @@ function App({ user, onLogout }) {
                 </div>
               )}
 
-              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || analysis}>
+              {/* [2] восстановленная из истории панель не мешает запустить свежий анализ */}
+              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || hasFreshAnalysis}>
                 {analyzing ? <><span className="spinner"></span> Выполняется анализ...</> :
-                 analysis ? '✓ Анализ выполнен' :
+                 hasFreshAnalysis ? '✓ Анализ выполнен' :
                  '✦ Запустить интеллектуальный анализ'}
               </button>
 
@@ -1688,6 +1718,10 @@ function App({ user, onLogout }) {
                     <span className="result-head-right">
                       {freshBadge && (
                         <span className={`initiated-badge ${freshBadge.cls}`} title={freshBadge.title}>{freshBadge.text}</span>
+                      )}
+                      {/* [2] отдельный признак «откуда показаны данные» — не путать с авто/вручную */}
+                      {analysis?.fromHistory && (
+                        <span className="initiated-badge history" title="Показан результат последнего анализа; запусти анализ заново для свежего">из истории</span>
                       )}
                       <span className="approved">✓ Проверено</span>
                     </span>
@@ -1720,26 +1754,50 @@ function App({ user, onLogout }) {
                   {analysisResults(analysis).map((r, index) => {
                     const validationBadge = resultValidationBadge(r);
                     const executionBadge = resultExecutionBadge(r);
+                    // [1] Одна главная кнопка по состоянию результата: ожидает подтверждения →
+                    // «Подтвердить и выполнить», одобрено → «Выполнить: <русское описание>»,
+                    // заблокировано → кнопки нет (виден reason).
+                    const needsConfirm = resultNeedsConfirmation(r);
+                    const canConfirm = isAdmin && r.action && needsConfirm;
+                    const canExecute = isAdmin && r.action && !needsConfirm && r.validation?.approved === true;
                     return (
                       <div className="result-item" key={`${r.action || 'result'}-${index}`}>
                         <div className="result-head-row">
                           <span className="result-action">{r.action || 'действие'}</span>
                           <b className={validationBadge.cls}>{validationBadge.text}</b>
                           <b className={executionBadge.cls}>{executionBadge.text}</b>
-                          {/* Ручной запуск одобренного DVE действия — только администратор */}
-                          {isAdmin && r.action && r.validation?.approved === true && (
+                          {canConfirm && (
                             <button
-                              className="exec-btn"
+                              className="exec-btn exec-confirm"
+                              onClick={confirmPendingAction}
+                              disabled={confirmBusy}
+                              title="Действие ожидает подтверждения администратора"
+                            >
+                              {confirmBusy
+                                ? <><span className="spinner spinner-sm"></span> Выполняется...</>
+                                : '✓ Подтвердить и выполнить'}
+                            </button>
+                          )}
+                          {/* Ручной запуск одобренного DVE действия — только администратор */}
+                          {canExecute && (
+                            <button
+                              className="exec-btn exec-run"
                               onClick={() => executeAction(r.action)}
                               disabled={!!executeBusy}
-                              title="Запустить действие playbook вручную (только администратор)"
+                              title={`Запустить действие playbook вручную (только администратор): ${actionRuDescription(r.action)}`}
                             >
                               {executeBusy === r.action
                                 ? <><span className="spinner spinner-sm"></span> Выполняется...</>
-                                : '▶ Выполнить'}
+                                : <>▶ Выполнить: {actionRuDescription(r.action)}</>}
                             </button>
                           )}
                         </div>
+                        {/* [3] Русская расшифровка кода действия */}
+                        <div className="result-action-ru">{actionRuDescription(r.action)}</div>
+                        {/* [1] Описание сценария из БД (playbook_description, stage-14) */}
+                        {r.execution?.playbook_description && (
+                          <small className="playbook-desc">Сценарий: {r.execution.playbook_description}</small>
+                        )}
                         {(r.validation?.reason || r.execution?.reason) && (
                           <small className="result-reason">{r.validation?.reason || r.execution?.reason}</small>
                         )}
@@ -1787,6 +1845,8 @@ function App({ user, onLogout }) {
                     {incidentDetail.analyses.map(a => {
                       // [6] бейдж источника анализа: initiated_by из response_raw
                       const badge = initiatedByBadge(a);
+                      // [3] русские расшифровки действий из recommended_action («block_ip, isolate_host»)
+                      const actionCodes = recommendedActionCodes(a.recommended_action);
                       return (
                         <div className="history-item" key={a.id}>
                           <div className="history-head"><strong>{a.model || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
@@ -1795,7 +1855,16 @@ function App({ user, onLogout }) {
                             {a.attack_type && <span className="chip accent">{a.attack_type}</span>}
                             {a.confidence != null && <span className="chip">Уверенность: {confPct(a.confidence)}</span>}
                           </div>
-                          {a.recommended_action && <div className="history-action">Действие: {a.recommended_action}</div>}
+                          {a.recommended_action && (
+                            <div className="history-action">
+                              Действие: {a.recommended_action}
+                              {actionCodes.length > 0 && (
+                                <div className="history-action-ru">
+                                  {actionCodes.map((code, i) => <div key={`${code}-${i}`}>{actionRuDescription(code)}</div>)}
+                                </div>
+                              )}
+                            </div>
+                          )}
                           {a.explanation && <p>{a.explanation}</p>}
                         </div>
                       );

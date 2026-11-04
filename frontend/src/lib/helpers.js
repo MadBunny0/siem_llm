@@ -110,6 +110,75 @@ export function initiatedByBadge(analysis) {
   return INITIATED_BY_META[raw?.initiated_by] || null;
 }
 
+/* ==================== Stage 14: русские описания действий, восстановление из истории ==================== */
+
+// Русские описания действий реагирования — для кнопок, списков и подсказок.
+export const ACTION_RU = {
+  block_ip: 'Блокировка IP-адреса источника атаки на межсетевом экране',
+  disable_account: 'Временная блокировка учётной записи в IdM',
+  isolate_host: 'Изоляция узла от сети — карантин EDR',
+  collect_evidence: 'Сбор и сохранение доказательств по инциденту',
+  monitor: 'Наблюдение за инцидентом без активного вмешательства',
+};
+
+export function actionRuDescription(action) {
+  return ACTION_RU[action] || 'Действие по сценарию реагирования';
+}
+
+// «block_ip, isolate_host» → ['block_ip', 'isolate_host']; не-строка/пусто → [].
+export function recommendedActionCodes(value) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  return value.split(',').map(part => part.trim()).filter(Boolean);
+}
+
+// response_raw анализа (строка JSON или уже объект) → объект; при ошибке — null.
+function parseResponseRaw(analysis) {
+  let raw = analysis?.response_raw ?? null;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+  return raw && typeof raw === 'object' ? raw : null;
+}
+
+// [2] Панель результата из последней записи истории анализов: результаты — из
+// response_raw (новый формат) с fallback на саму запись, рекомендация — из полей
+// записи БД. fromHistory — признак «данные показаны из истории» (бейдж в шапке).
+export function analysisFromHistory(last) {
+  if (!last) return null;
+  const raw = parseResponseRaw(last) || {};
+  let results = analysisResults(raw);
+  if (!results.length && (raw.validation || raw.execution || last.recommended_action)) {
+    // старые записи без results: единственный результат из полей записи;
+    // recommended_action приоритетнее execution.action (stage-14)
+    results = [{
+      action: last.recommended_action || raw.execution?.action,
+      validation: raw.validation,
+      execution: raw.execution,
+    }];
+  }
+  if (!results.length) results = analysisResults(last);
+  return {
+    results,
+    recommendation: {
+      description: last.description || '',
+      attack_type: last.attack_type || '',
+      confidence: last.confidence ?? null,
+      explanation: last.explanation || '',
+      recommended_action: last.recommended_action || '',
+    },
+    validation: raw.validation,
+    execution: raw.execution,
+    // response_raw сохраняем, чтобы бейдж авто/вручную (initiatedByBadge) работал
+    // и для восстановленной панели.
+    response_raw: raw,
+    fromHistory: true,
+  };
+}
+
 // «1 критерий» / «3 критерия» / «5 критериев» — счётчик в таблице playbooks.
 export function criteriaCountLabel(count) {
   const mod10 = count % 10;

@@ -65,8 +65,9 @@ def client(engine, db_session, monkeypatch):
 
 
 def seed_users(db_session):
-    """Демо-пользователи: аналитик и администратор."""
+    """Демо-пользователи: два аналитика и администратор."""
     db_session.add(User(username="analyst1", password_hash=hash_password("analyst123"), role="analyst"))
+    db_session.add(User(username="analyst2", password_hash=hash_password("analyst123"), role="analyst"))
     db_session.add(User(username="soc_lead", password_hash=hash_password("soclead123"), role="admin"))
     db_session.commit()
 
@@ -255,3 +256,139 @@ def test_token_contains_role_and_username(db_session):
     assert payload["sub"] == "7"
     assert payload["username"] == "soc_lead"
     assert payload["role"] == "admin"
+
+
+def test_incident_ownership(client, db_session, monkeypatch):
+    """Владение инцидентом (stage-14): чужой аналитик не работает с чужим инцидентом."""
+    from app.models import CorrelationRule
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.commit()
+
+    async def fake_analyze(context):
+        return {"description": "d", "attack_type": "brute_force", "confidence": 0.9,
+                "explanation": "e", "recommended_action": "monitor"}
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    # инцидент создаётся свободным (аналитик не назначен)
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 10, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "test-host"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+
+    analyst_token = login(client, "analyst1", "analyst123").json()["access_token"]
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"] is None
+
+    # аналитик-1 запускает анализ → инцидент закрепляется за ним
+    resp = client.post(f"{API}/incidents/1/analyze", headers=auth_header(analyst_token))
+    assert resp.status_code == 200
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"]["username"] == "analyst1"
+
+    # аналитик-2 не может анализировать и менять статус чужого инцидента
+    analyst2_token = login(client, "analyst2", "analyst123").json()["access_token"]
+    assert client.post(
+        f"{API}/incidents/1/analyze", headers=auth_header(analyst2_token)
+    ).status_code == 403
+    forbidden = client.patch(
+        f"{API}/incidents/1/status", json={"status": "closed"}, headers=auth_header(analyst2_token)
+    )
+    assert forbidden.status_code == 403
+    assert "закреплён" in forbidden.json()["detail"]
+
+    # владелец может менять статус
+    assert client.patch(
+        f"{API}/incidents/1/status", json={"status": "in_progress"}, headers=auth_header(analyst_token)
+    ).status_code == 200
+
+    # админ — исключение: работает с любым инцидентом
+    assert client.patch(
+        f"{API}/incidents/1/status", json={"status": "closed"}, headers=auth_header(admin_token)
+    ).status_code == 200
+
+
+def test_unassigned_incident_self_assign_on_status(client, db_session):
+    """Незакреплённый инцидент закрепляется за тем, кто первым сменил статус."""
+    from app.models import CorrelationRule
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.commit()
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 5, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "test-host"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+
+    analyst_token = login(client, "analyst1", "analyst123").json()["access_token"]
+    assert client.patch(
+        f"{API}/incidents/1/status", json={"status": "in_progress"}, headers=auth_header(analyst_token)
+    ).status_code == 200
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"]["username"] == "analyst1"
+
+
+def test_playbook_description_in_results(client, db_session, monkeypatch):
+    """Результаты анализа содержат русское описание сценария (stage-14)."""
+    from app.models import CorrelationRule, Playbook
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.add(
+        Playbook(
+            name="block_ip", description="Блокировка IP-адреса источника подозрительной активности",
+            trigger_conditions={}, allowed_actions=["block_ip"], steps=[], is_active=True,
+        )
+    )
+    db_session.commit()
+
+    async def fake_analyze(context):
+        return {"description": "d", "attack_type": "brute_force", "confidence": 0.9,
+                "explanation": "e", "recommended_action": "block_ip"}
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 10, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "test-host"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+    # инцидент не critical (level 10, активов нет) → block_ip без подтверждения
+    resp = client.post(f"{API}/incidents/1/analyze", headers=auth_header(admin_token))
+    assert resp.status_code == 200
+    result = resp.json()["results"][0]
+    assert result["validation"]["approved"] is True
+    assert result["execution"].get("playbook_description") == \
+        "Блокировка IP-адреса источника подозрительной активности"

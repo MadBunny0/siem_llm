@@ -75,7 +75,14 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
     # Безопасный режим демонстрации. Реальное изменение инфраструктуры выключено.
     if not settings.auto_response:
         logger.warning("SIMULATION: action=%s context=%s", action, context)
-        return {"executed": False, "mode": "simulation", "action": action}
+        result = {"executed": False, "mode": "simulation", "action": action}
+        # описание сценария — оператор должен понимать, что БЫЛО БЫ выполнено (stage-14)
+        if db is not None:
+            playbook = load_playbook_by_action(db, action)
+            if playbook:
+                result["playbook"] = playbook.name
+                result["playbook_description"] = playbook.description
+        return result
 
     # Точка интеграции с Wazuh Active Response.
     if db is not None:
@@ -83,6 +90,7 @@ def execute_playbook(action: str, context: dict, db: Session | None = None) -> d
         result = {"executed": True, "mode": "controlled", "action": action}
         if playbook:
             result["playbook"] = playbook.name
+            result["playbook_description"] = playbook.description
             # запись выполненного действия в ResponseAction
             resp_action = ResponseAction(
                 incident_id=incident_id,
