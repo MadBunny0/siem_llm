@@ -14,12 +14,14 @@ import {
   formatPlaybookStep,
   formatPlaybookSteps,
   initiatedByBadge,
+  MITRE_TACTIC_RU,
   pendingReasonText,
   priorityLabel,
   recommendedActionCodes,
   resultExecutionBadge,
   resultNeedsConfirmation,
   resultValidationBadge,
+  resultsAwaitManualRun,
   resultsNeedConfirmation,
   ruleTemplateLabel,
 } from './helpers.js';
@@ -127,9 +129,9 @@ describe('бейджи DVE и исполнения', () => {
 });
 
 describe('initiatedByBadge — источник анализа', () => {
-  it('auto_analysis → бейдж «авто (critical)»', () => {
+  it('auto_analysis → бейдж «авто (LLM)»', () => {
     const badge = initiatedByBadge({ response_raw: { initiated_by: 'auto_analysis' } });
-    expect(badge.text).toBe('авто (critical)');
+    expect(badge.text).toBe('авто (LLM)');
     expect(badge.cls).toBe('auto');
   });
 
@@ -289,7 +291,7 @@ describe('stage-14: analysisFromHistory — восстановление пан�
 
   it('response_raw сохраняется — бейдж авто/вручную продолжает работать', () => {
     const panel = analysisFromHistory(stored);
-    expect(initiatedByBadge(panel).text).toBe('авто (critical)');
+    expect(initiatedByBadge(panel).text).toBe('авто (LLM)');
   });
 
   it('строка response_raw из API парсится', () => {
@@ -503,5 +505,60 @@ describe('ruleTemplateLabel — подпись шаблона правила и�
   it('пустое правило → пустая строка', () => {
     expect(ruleTemplateLabel(null)).toBe('');
     expect(ruleTemplateLabel(undefined)).toBe('');
+  });
+});
+
+/* ==================== Stage 17: тактики MITRE ATT&CK (матрица критичности) ==================== */
+
+describe('MITRE_TACTIC_RU — справочник тактик для формы и таблицы правил', () => {
+  it('14 тактик ATT&CK (матрица критичности)', () => {
+    expect(Object.keys(MITRE_TACTIC_RU)).toHaveLength(14);
+  });
+
+  it('подпись credential_access содержит «Credential Access»', () => {
+    expect(MITRE_TACTIC_RU.credential_access).toContain('Credential Access');
+  });
+
+  it('значения — «английское название — русский перевод»', () => {
+    for (const label of Object.values(MITRE_TACTIC_RU)) {
+      expect(label).toContain(' — ');
+      expect(label.trim()).toBe(label);
+    }
+  });
+});
+
+describe('stage-17: ручной режим исполнения (manual_run)', () => {
+  it('resultExecutionBadge: manual_run → «ОЖИДАЕТ ЗАПУСКА»', () => {
+    const badge = resultExecutionBadge({ execution: { executed: false, mode: 'manual_run' } });
+    expect(badge.text).toBe('ОЖИДАЕТ ЗАПУСКА');
+  });
+
+  it('resultExecutionBadge: simulation и pending не сломаны', () => {
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'simulation' } }).text).toBe('СИМУЛЯЦИЯ');
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'pending_confirmation' } }).text).toBe('ОЖИДАЕТ');
+    expect(resultExecutionBadge({ execution: { executed: true, mode: 'controlled' } }).text).toBe('ВЫПОЛНЕНО');
+  });
+
+  it('executionModeRu: manual_run — «ожидает запуска оператором»', () => {
+    expect(executionModeRu('manual_run')).toContain('ожидает запуска оператором');
+  });
+
+  it('resultsAwaitManualRun: true только при наличии manual_run', () => {
+    expect(resultsAwaitManualRun([{ execution: { mode: 'manual_run' } }])).toBe(true);
+    expect(resultsAwaitManualRun([{ execution: { mode: 'simulation' } }])).toBe(false);
+    expect(resultsAwaitManualRun([])).toBe(false);
+    expect(resultsAwaitManualRun(null)).toBe(false);
+  });
+
+  it('manual_run не считается ни pending, ни выполненным', () => {
+    const result = {
+      action: 'monitor',
+      validation: { approved: true },
+      execution: { executed: false, mode: 'manual_run' },
+    };
+    expect(resultNeedsConfirmation(result)).toBe(false);
+    // одобренное DVE действие доступно для ручного запуска оператором
+    expect(canRunAction(result, { isAdmin: true })).toBe(true);
+    expect(resultExecutionBadge(result).text).toBe('ОЖИДАЕТ ЗАПУСКА');
   });
 });

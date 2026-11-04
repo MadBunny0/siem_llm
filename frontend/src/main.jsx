@@ -4,10 +4,12 @@ import './styles.css';
 
 import { actionRuDescription, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, criteriaCountLabel, detailToMessage,
-         executionModeRu, formatDate, formatPlaybookSteps, initiatedByBadge, pendingReasonText,
+         executionModeRu, formatDate, formatPlaybookSteps, initiatedByBadge, MITRE_TACTIC_RU,
+         pendingReasonText,
          PLAYBOOK_ACTIONS, priorityLabel, PRIORITY_LABELS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
-         resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS, STATUS_LABELS }
+         resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
+         STATUS_LABELS }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
 
@@ -397,6 +399,8 @@ function RulesView({ notify, toastError, isAdmin }) {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(() => emptyRuleForm());
 
+  // [17] MITRE ATT&CK у правила: тактика (матрица критичности), техника (T-код)
+  // и признак «поставщик логов отметил событие как крайне значимое» (+1 уровень).
   function emptyRuleForm() {
     return {
       name: '',
@@ -404,6 +408,9 @@ function RulesView({ notify, toastError, isAdmin }) {
       time_window_minutes: '10',
       min_events: '2',
       priority: 2,
+      mitre_tactic: '',
+      mitre_technique: '',
+      escalated_by_vendor: false,
       is_active: true,
       conditions: [{ field: '', operator: 'eq', value: '' }],
     };
@@ -438,6 +445,10 @@ function RulesView({ notify, toastError, isAdmin }) {
       time_window_minutes: String(rule.time_window_minutes ?? 10),
       min_events: String(rule.min_events ?? 2),
       priority: rule.priority === null || rule.priority === undefined ? 2 : Number(rule.priority),
+      // [17] тактика/техника из правила; отсутствуют (старые записи) → пусто/false
+      mitre_tactic: rule.mitre_tactic || '',
+      mitre_technique: rule.mitre_technique || '',
+      escalated_by_vendor: rule.escalated_by_vendor === true,
       is_active: rule.is_active !== false,
       conditions: conditions.length
         ? conditions.map(c => ({
@@ -482,6 +493,10 @@ function RulesView({ notify, toastError, isAdmin }) {
       time_window_minutes: parseInt(form.time_window_minutes, 10) || 0,
       min_events: parseInt(form.min_events, 10) || 1,
       priority: Number.isFinite(priorityNumber) ? priorityNumber : 1,
+      // [17] пустые тактика/техника уходят в null — бэкенд ждёт null, а не ''
+      mitre_tactic: form.mitre_tactic || null,
+      mitre_technique: form.mitre_technique.trim() || null,
+      escalated_by_vendor: form.escalated_by_vendor,
       is_active: form.is_active,
     };
   }
@@ -585,6 +600,7 @@ function RulesView({ notify, toastError, isAdmin }) {
               <tr>
                 <th>Название</th>
                 <th>Условия</th>
+                <th>MITRE</th>
                 <th>Окно</th>
                 <th>События</th>
                 <th>Приоритет</th>
@@ -600,6 +616,23 @@ function RulesView({ notify, toastError, isAdmin }) {
                     {rule.description && <div className="rule-desc">{rule.description}</div>}
                   </td>
                   <td className="clamp">{conditionSummary(rule)}</td>
+                  {/* [17] Привязка к тактике MITRE: чип с русской подписью (полный текст —
+                      в title вместе с техникой), под чипом мелко код техники */}
+                  <td className="rule-mitre">
+                    {rule.mitre_tactic && MITRE_TACTIC_RU[rule.mitre_tactic] ? (
+                      <>
+                        <span
+                          className="chip accent"
+                          title={`${MITRE_TACTIC_RU[rule.mitre_tactic]}${rule.mitre_technique ? ` — ${rule.mitre_technique}` : ''}`}
+                        >
+                          {MITRE_TACTIC_RU[rule.mitre_tactic]}
+                        </span>
+                        {rule.mitre_technique && <div className="rule-mitre-code">{rule.mitre_technique}</div>}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td className="nowrap">{rule.time_window_minutes} мин</td>
                   <td>{rule.min_events}</td>
                   <td>{rule.priority ? <span className="chip">{priorityLabel(rule.priority)}</span> : '—'}</td>
@@ -683,6 +716,28 @@ function RulesView({ notify, toastError, isAdmin }) {
               </div>
             </div>
 
+            {/* [17] Привязка правила к MITRE ATT&CK: тактика задаёт критичность по матрице
+                (docs/CRITICALITY_MATRIX.md), пустой выбор — критичность по числовой модели риска */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: '12px' }}>
+              <div className="form-group">
+                <label>Тактика MITRE</label>
+                <select value={form.mitre_tactic} onChange={e => setForm({ ...form, mitre_tactic: e.target.value })}>
+                  <option value="">— не задана (критичность по числовой модели риска) —</option>
+                  {Object.entries(MITRE_TACTIC_RU).map(([key, label]) => (
+                    <option key={key} value={key}>{label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Техника (T-код)</label>
+                <input
+                  value={form.mitre_technique}
+                  onChange={e => setForm({ ...form, mitre_technique: e.target.value })}
+                  placeholder="T1110"
+                />
+              </div>
+            </div>
+
             <div className="form-group">
               <label>Условия: поле / оператор / значение</label>
               {form.conditions.map((cond, index) => (
@@ -721,6 +776,19 @@ function RulesView({ notify, toastError, isAdmin }) {
               />
               <span>Правило активно</span>
             </label>
+
+            {/* [17] Эскалация от поставщика логов: +1 уровень критичности инцидента */}
+            <label className="checkbox-item standalone">
+              <input
+                type="checkbox"
+                checked={form.escalated_by_vendor}
+                onChange={e => setForm({ ...form, escalated_by_vendor: e.target.checked })}
+              />
+              <span>Поставщик логов отметил событие как крайне значимое (+1 уровень критичности)</span>
+            </label>
+            <span className="form-hint">
+              Повышение применяется по процедуре определения критичности (docs/CRITICALITY_MATRIX.md): максимум один уровень
+            </span>
 
             <div className="form-actions">
               <button className="ghost" onClick={() => setShowForm(false)}>Отмена</button>
@@ -1415,6 +1483,10 @@ function App({ user, onLogout }) {
     )
   );
 
+  // [17] Ручной режим (medium/high/critical): есть действия, ожидающие запуска
+  // оператором — конвейер показывает Playbook как активный этап
+  const awaitingManualRun = resultsAwaitManualRun(analysisResults(analysis));
+
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
   // [6] бейдж источника для свежего результата анализа
   const freshBadge = initiatedByBadge(analysis);
@@ -1554,8 +1626,11 @@ function App({ user, onLogout }) {
       const order = ['critical', 'high', 'medium', 'low'];
       const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
       if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
+      // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
+      // low закроется сам, у critical рекомендации ждут ручного запуска
+      const scheduled = Number(result?.auto_analysis_scheduled) || 0;
       showToast(created.length
-        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}`
+        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}${scheduled ? ` · автоанализ запущен: ${scheduled}` : ''}`
         : 'События созданы, корреляция не сформировала инцидентов');
       await load();
     } catch (e) {
@@ -1778,6 +1853,7 @@ function App({ user, onLogout }) {
                 analysis={analysis}
                 analysesLength={(incidentDetail?.analyses || []).length}
                 pendingConfirmation={pendingConfirmation}
+                awaitingManualRun={awaitingManualRun}
               />
 
               {pendingConfirmation && (
@@ -1916,7 +1992,8 @@ function App({ user, onLogout }) {
                           <small className="playbook-desc">Сценарий: {r.execution.playbook_description}</small>
                         )}
                         {/* [15] Шаги сценария — «команды» действия: при симуляции показываем,
-                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено */}
+                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено;
+                            [17] manual_run — шаги запустит оператор кнопкой «▶ Выполнить» */}
                         {formatPlaybookSteps(r.execution?.playbook_steps).length > 0 && (
                           <div className="result-steps">
                             <label>
@@ -1924,7 +2001,9 @@ function App({ user, onLogout }) {
                                 ? 'Что было бы выполнено (симуляция):'
                                 : r.execution?.mode === 'controlled'
                                   ? 'Шаги сценария (выполнено):'
-                                  : 'Шаги сценария:'}
+                                  : r.execution?.mode === 'manual_run'
+                                    ? 'Шаги сценария (запустит оператор):'
+                                    : 'Шаги сценария:'}
                             </label>
                             <ol>
                               {formatPlaybookSteps(r.execution.playbook_steps).map((line, i) => (

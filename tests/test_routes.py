@@ -117,24 +117,26 @@ def seed_rule(db_session, name="brute_rule", **overrides):
 
 
 def seed_demo_rules_and_assets(db_session):
-    """Seed правил корреляции и активов как в init_db (stage-12) — общее
+    """Seed правил корреляции и активов как в init_db (stage-12/17) — общее
     для тестов мок-сценариев: /demo/populate и /demo/test-event берут
-    правила и привязку агентов к активам из БД."""
+    правила (включая тактики MITRE матрицы критичности) и привязку агентов
+    к активам из БД."""
     from app.models import Asset, CorrelationRule
 
-    for name, conds, window, min_events, priority in [
-        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2),
-        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3),
-        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3),
-        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1),
-        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2),
-        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3),
+    for name, conds, window, min_events, priority, tactic, technique in [
+        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2, "credential_access", "T1110"),
+        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3, "credential_access", "T1110.003"),
+        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3, "privilege_escalation", "T1068"),
+        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1, None, "T1046"),
+        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2, "initial_access", "T1190"),
+        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3, "execution", "T1204"),
     ]:
         db_session.add(
             CorrelationRule(
                 name=name, description=name, conditions=conds,
                 time_window_minutes=window, min_events=min_events,
                 priority=priority, is_active=True,
+                mitre_tactic=tactic, mitre_technique=technique,
             )
         )
     # активы — моки используют имена агентов = имена активов
@@ -162,12 +164,15 @@ def frozen_demo_time(monkeypatch):
 
 
 def test_health(client):
-    """GET /api/v1/health — сервис и БД доступны."""
+    """GET /api/v1/health — сервис и БД доступны; настройки автообработки."""
     resp = client.get(f"{API}/health")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
     assert data["database"] == "ok"
+    # stage-17: уровни автоанализа и «фильтр автоматического закрытия»
+    assert data["auto_analysis_levels"] == ["critical", "low"]
+    assert data["auto_close_levels"] == ["low"]
 
 
 def test_ingest_without_rules(client):
@@ -257,7 +262,7 @@ def test_patch_incident_status(client, db_session):
 
 
 def test_analyze_incident_success(client, db_session, monkeypatch):
-    """POST /api/v1/incidents/{id}/analyze — LLM-анализ, валидация, simulation-режим."""
+    """POST /api/v1/incidents/{id}/analyze — LLM-анализ, валидация, manual_run."""
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -278,13 +283,56 @@ def test_analyze_incident_success(client, db_session, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["validation"]["approved"] is True
-    # auto_response=False → действие исполняется в режиме simulation
-    assert data["execution"]["mode"] == "simulation"
+    # stage-17: инцидент high (не из AUTO_CLOSE_LEVELS) — playbook НЕ исполняется
+    # автоматически, действие ждёт ручного запуска оператором
+    assert data["execution"]["mode"] == "manual_run"
+    assert data["execution"]["executed"] is False
     assert data["recommendation"]["attack_type"] == "brute_force"
 
     # результаты анализа доступны в общей статистике качества LLM-модуля
     analyses = client.get(f"{API}/analyses").json()
     assert any(a["attack_type"] == "brute_force" for a in analyses)
+
+    # аудит: действие зафиксировано как ожидающее ручного запуска
+    logs = client.get(f"{API}/audit-logs").json()
+    assert any(
+        a["event_type"] == "action_awaiting_manual_run"
+        and a["incident_id"] == incident_id
+        and a["details"]["mode"] == "manual_run"
+        for a in logs
+    )
+
+
+def test_manual_playbook_execution_for_high(client, db_session, monkeypatch):
+    """stage-17, фидбек: для инцидента high анализ только рекомендует
+    (manual_run), playbook выполняет оператор через POST /execute-action —
+    при AUTO_RESPONSE=false это dry run (simulation)."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    async def fake_analyze(context):
+        return {
+            "description": "Подбор пароля",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "Много неудачных попыток входа",
+            "recommended_action": "collect_evidence",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    analysis = client.post(f"{API}/incidents/{incident_id}/analyze").json()
+    assert analysis["execution"]["mode"] == "manual_run"
+
+    run = client.post(
+        f"{API}/incidents/{incident_id}/execute-action",
+        json={"action": "collect_evidence"},
+    )
+    assert run.status_code == 200
+    body = run.json()
+    assert body["validation"]["approved"] is True
+    assert body["execution"]["executed"] is False
+    assert body["execution"]["mode"] == "simulation"
 
 
 def test_analyze_incident_llm_unavailable(client, db_session, monkeypatch):
@@ -398,6 +446,50 @@ def test_create_rule_validation(client):
     assert resp.status_code == 422
 
 
+def test_correlation_rule_mitre_fields(client):
+    """CRUD правил (stage-17): тактика/техника MITRE и флаг поставщика
+    сохраняются и отдаются; неизвестная тактика → 422 (Literal-валидация)."""
+    created = client.post(
+        f"{API}/correlation-rules",
+        json={
+            "name": "r_mitre",
+            "description": "тест",
+            "conditions": [{"field": "event_type", "operator": "like", "value": "auth"}],
+            "mitre_tactic": "credential_access",
+            "mitre_technique": "T1110",
+            "escalated_by_vendor": True,
+        },
+    )
+    assert created.status_code in (200, 201)
+    body = created.json()
+    assert body["mitre_tactic"] == "credential_access"
+    assert body["mitre_technique"] == "T1110"
+    assert body["escalated_by_vendor"] is True
+
+    rule = next(r for r in client.get(f"{API}/correlation-rules").json() if r["name"] == "r_mitre")
+    assert rule["mitre_tactic"] == "credential_access"
+    assert rule["mitre_technique"] == "T1110"
+    assert rule["escalated_by_vendor"] is True
+
+    # правила без тактик (например, repeated_scan) отдают None/False
+    default = client.post(
+        f"{API}/correlation-rules",
+        json={"name": "r_plain", "conditions": []},
+    )
+    assert default.status_code in (200, 201)
+    plain = default.json()
+    assert plain["mitre_tactic"] is None
+    assert plain["mitre_technique"] is None
+    assert plain["escalated_by_vendor"] is False
+
+    # неизвестная тактика отвергается схемой (FastAPI → 422)
+    bad = client.post(
+        f"{API}/correlation-rules",
+        json={"name": "r_bad", "conditions": [], "mitre_tactic": "hacking"},
+    )
+    assert bad.status_code == 422
+
+
 def test_analyze_multiple_actions(client, db_session, monkeypatch):
     """Перечень действий LLM: каждое проходит DVE, ответ — список results (stage-11)."""
     seed_rule(db_session)
@@ -426,14 +518,66 @@ def test_analyze_multiple_actions(client, db_session, monkeypatch):
     assert any(a["recommended_action"] == "monitor, collect_evidence" for a in analyses)
 
 
-def test_planned_mode_default_critical_only(client, db_session, monkeypatch):
-    """Плановый режим: по умолчанию автоанализ только critical; high — не анализируется."""
-    seed_rule(db_session)
-    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels = "critical"
+def test_planned_mode_default_critical_and_low(client, db_session, engine, monkeypatch):
+    """Плановый режим (stage-17): новый дефолт AUTO_ANALYSIS_LEVELS="critical,low" —
+    анализируются critical и low (low — без участия человека); medium/high — нет."""
+    from sqlalchemy.orm import sessionmaker
 
-    resp = client.post(f"{API}/ingest/wazuh", json=make_alert())  # level 10 → severity high
-    assert resp.status_code == 200
-    assert "analysis" not in resp.json()
+    from app.models import Asset
+
+    seed_rule(db_session)  # правило без тактики — severity по числовой модели
+    db_session.add(Asset(name="crit-host", type="server", criticality="critical"))
+    # отдельное правило с тактикой для сценария critical (иначе перебивается
+    # brute_rule с равным приоритетом)
+    seed_rule(
+        db_session, name="cred_rule", mitre_tactic="credential_access",
+        conditions=[{"field": "event_type", "operator": "like", "value": "web"}],
+    )
+    db_session.commit()
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels = "critical,low"
+    # фоновая задача создаёт свою сессию — направляем её в тестовую БД
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    # high (level 10 → числовая модель 70) — не анализируется
+    high_alert = make_alert(data={"srcip": "192.0.2.11", "dstuser": "u_high"})
+    resp_high = client.post(f"{API}/ingest/wazuh", json=high_alert)
+    assert resp_high.status_code == 200
+    assert resp_high.json()["severity"] == "high"
+    assert "analysis" not in resp_high.json()
+
+    # medium (level 7 → 49) — не анализируется
+    med_alert = make_alert(
+        rule={"level": 7, "description": "test", "groups": ["authentication_failed"]},
+        data={"srcip": "192.0.2.12", "dstuser": "u_med"},
+    )
+    resp_med = client.post(f"{API}/ingest/wazuh", json=med_alert)
+    assert resp_med.json()["severity"] == "medium"
+    assert "analysis" not in resp_med.json()
+
+    # critical (правило credential_access: high +1 за критичный актив) — анализируется
+    crit_alert = make_alert(
+        rule={"level": 10, "description": "test", "groups": ["web"]},
+        agent={"id": "003", "name": "crit-host"},
+        data={"srcip": "192.0.2.13", "dstuser": "u_crit"},
+    )
+    resp_crit = client.post(f"{API}/ingest/wazuh", json=crit_alert)
+    data_crit = resp_crit.json()
+    assert data_crit["severity"] == "critical"
+    assert data_crit["analysis"] == {"scheduled": True, "severity": "critical"}
+    # stage-17: critical не входит в auto_close_levels ("low") — автозакрытия нет
+    crit_detail = client.get(f"{API}/incidents/{data_crit['incident_id']}").json()
+    assert crit_detail["status"] == "in_progress"
 
 
 def test_planned_mode_levels_include_high(client, db_session, engine, monkeypatch):
@@ -441,7 +585,7 @@ def test_planned_mode_levels_include_high(client, db_session, engine, monkeypatc
     фоновая задача с собственной сессией доводит его до Analysis (stage-12)."""
     from sqlalchemy.orm import sessionmaker
 
-    from app.models import Analysis
+    from app.models import Analysis, Incident
 
     seed_rule(db_session)
     monkeypatch.setattr(settings, "auto_analysis", True)
@@ -469,6 +613,244 @@ def test_planned_mode_levels_include_high(client, db_session, engine, monkeypatc
     analyses = db_session.query(Analysis).all()
     assert len(analyses) == 1
     assert analyses[0].response_raw["initiated_by"] == "auto_analysis"
+    # stage-17: high не входит в auto_close_levels ("low") — автозакрытия нет
+    incident = db_session.get(Incident, data["incident_id"])
+    assert incident.status == "in_progress"
+    assert "auto_closed" not in (analyses[0].response_raw or {})
+
+
+# ---------------------------------------------------------------------------
+# Автообработка и автозакрытие low-инцидентов (stage-17)
+# ---------------------------------------------------------------------------
+def _low_alert(**overrides):
+    """Алерт, дающий low-инцидент: правило без тактики, агент вне инвентаря,
+    низкий level, группа без опасного типа атаки → числовая модель (fallback) → low."""
+    alert = make_alert(
+        rule={"level": 1, "description": "test", "groups": ["syslog"]},
+    )
+    alert.update(overrides)
+    return alert
+
+
+def _seed_low_rule(db_session):
+    """Активное правило без тактики под события с группой syslog (low-сценарии)."""
+    seed_rule(
+        db_session,
+        conditions=[{"field": "event_type", "operator": "like", "value": "syslog"}],
+    )
+
+
+def test_auto_analysis_closes_low_incident(client, db_session, engine, monkeypatch):
+    """Автообработка low (stage-17): автоанализ → автозакрытие — статус closed,
+    пометка auto_closed в последнем Analysis, аудит и уведомление."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)  # levels: critical,low
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["severity"] == "low"
+    assert data["analysis"] == {"scheduled": True, "severity": "low"}
+
+    incident_id = data["incident_id"]
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["status"] == "closed"
+
+    # пометка auto_closed — в ПОСЛЕДНЕМ Analysis (переприсвоение JSON-колонки)
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    assert analyses[0].response_raw["auto_closed"] is True
+
+    # аудит автозакрытия
+    logs = client.get(f"{API}/audit-logs").json()
+    entry = next(a for a in logs if a["event_type"] == "incident_auto_closed")
+    assert entry["incident_id"] == incident_id
+    assert entry["details"]["initiated_by"] == "auto_close"
+    assert entry["details"]["severity"] == "low"
+
+    # уведомление о автозакрытии
+    notes = client.get(f"{API}/notifications").json()
+    assert any(
+        n["event_type"] == "incident_auto_closed" and n["incident_id"] == incident_id
+        for n in notes
+    )
+
+
+def test_auto_close_skipped_on_pending_confirmation(client, db_session, engine, monkeypatch):
+    """Автозакрытие не выполняется при отложенном действии: low-инцидент на
+    КРИТИЧЕСКОМ активе, block_ip ждёт подтверждения администратора → инцидент
+    остаётся in_progress, пометки auto_closed нет."""
+    import asyncio
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api.routes import run_auto_analysis
+    from app.models import Analysis, Asset, Incident, Playbook, ValidationPolicy
+
+    _seed_low_rule(db_session)
+    asset = Asset(name="crit-db", type="server", criticality="critical")
+    db_session.add(asset)
+    # политика low обычно не разрешает block_ip — для сценария pending
+    # разрешаем явно: DVE доходит до проверки критического актива
+    db_session.add(
+        ValidationPolicy(severity="low", allowed_actions=["monitor", "collect_evidence", "block_ip"])
+    )
+    db_session.add(Playbook(
+        name="block_ip", description="d", trigger_conditions={},
+        allowed_actions=["block_ip"], steps=[],
+    ))
+    db_session.commit()
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert(agent={"id": "001", "name": "plain-host"}))
+    data = resp.json()
+    assert data["severity"] == "low"
+    incident_id = data["incident_id"]
+
+    # актив привязывается к инциденту после ингеста (в момент ингеста агент
+    # вне инвентаря — иначе числовая модель дала бы не low, а critical)
+    incident = db_session.get(Incident, incident_id)
+    incident.asset_id = asset.id
+    db_session.commit()
+
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "block_ip",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    # фоновая задача автоанализа запускается напрямую (как из BackgroundTasks)
+    asyncio.run(run_auto_analysis(incident_id))
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["status"] == "in_progress"  # НЕ closed
+
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    assert analyses[0].response_raw["initiated_by"] == "auto_analysis"
+    assert "auto_closed" not in analyses[0].response_raw
+    # действие действительно отложено до подтверждения администратора
+    assert analyses[0].response_raw["execution"]["mode"] == "pending_confirmation"
+    # аудита автозакрытия нет
+    logs = client.get(f"{API}/audit-logs").json()
+    assert not any(a["event_type"] == "incident_auto_closed" for a in logs)
+
+
+def test_auto_close_disabled_by_empty_levels(client, db_session, engine, monkeypatch):
+    """Пустой AUTO_CLOSE_LEVELS — автозакрытие выключено: low-инцидент
+    анализируется, но остаётся in_progress."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)
+    monkeypatch.setattr(settings, "auto_close_levels", "")
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    data = resp.json()
+    assert data["analysis"] == {"scheduled": True, "severity": "low"}
+
+    detail = client.get(f"{API}/incidents/{data['incident_id']}").json()
+    assert detail["status"] == "in_progress"
+    analyses = db_session.query(Analysis).filter_by(incident_id=data["incident_id"]).all()
+    assert len(analyses) == 1
+    assert "auto_closed" not in analyses[0].response_raw
+
+
+# ---------------------------------------------------------------------------
+# Критичность по матрице MITRE в конвейере ингеста (stage-17)
+# ---------------------------------------------------------------------------
+def test_ingest_severity_by_mitre_matrix(client, db_session, monkeypatch):
+    """Severity по матрице: credential_access (high) на критическом активе →
+    critical (high +1), на некритичном → high; basis — в аудите risk_calculated."""
+    from app.models import Asset
+
+    db_session.add(Asset(name="crit-host", type="server", criticality="critical"))
+    db_session.add(Asset(name="med-host", type="server", criticality="medium"))
+    seed_rule(
+        db_session, name="cred_rule", mitre_tactic="credential_access",
+        mitre_technique="T1110",
+        conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+    )
+    db_session.commit()
+
+    # критический актив: high +1 за critical_asset → critical
+    crit_alert = make_alert(
+        agent={"id": "001", "name": "crit-host"},
+        data={"srcip": "192.0.2.21", "dstuser": "svc1"},
+    )
+    crit = client.post(f"{API}/ingest/wazuh", json=crit_alert).json()
+    assert crit["severity"] == "critical"
+
+    # некритичный актив: без повышения → high
+    med_alert = make_alert(
+        agent={"id": "002", "name": "med-host"},
+        data={"srcip": "192.0.2.22", "dstuser": "svc2"},
+    )
+    med = client.post(f"{API}/ingest/wazuh", json=med_alert).json()
+    assert med["severity"] == "high"
+
+    logs = client.get(f"{API}/audit-logs").json()
+    risk_logs = [a for a in logs if a["event_type"] == "risk_calculated"]
+
+    crit_log = next(a for a in risk_logs if a["incident_id"] == crit["incident_id"])
+    assert crit_log["details"]["severity_basis"] == "mitre_matrix"
+    assert crit_log["details"]["mitre_tactic"] == "credential_access"
+    assert crit_log["details"]["escalation_reasons"] == ["critical_asset"]
+    assert crit_log["details"]["risk_score"] == crit["risk_score"]
+
+    med_log = next(a for a in risk_logs if a["incident_id"] == med["incident_id"])
+    assert med_log["details"]["severity_basis"] == "mitre_matrix"
+    assert med_log["details"]["escalation_reasons"] == []
+
+
+def test_ingest_severity_fallback_risk_score(client, db_session):
+    """Fallback (stage-17): правило без тактики → severity по числовой модели,
+    в аудите risk_calculated — severity_basis="risk_score"."""
+    seed_rule(db_session)
+    data = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()
+    assert data["severity"] == "high"  # level 10 → числовая модель 70 → high
+
+    logs = client.get(f"{API}/audit-logs").json()
+    risk_log = next(a for a in logs if a["event_type"] == "risk_calculated")
+    assert risk_log["details"]["severity_basis"] == "risk_score"
+    assert risk_log["details"]["mitre_tactic"] is None
+    assert risk_log["details"]["escalation_reasons"] == []
 
 
 def test_validation_policy_endpoint(client, db_session):
@@ -513,10 +895,78 @@ def test_demo_populate(client, db_session):
     assert {"brute_force_attempts", "password_spraying", "privilege_escalation_attempt",
             "repeated_scan", "web_attack", "malware_detection"} <= rules
 
+    # severity по матрице критичности (stage-17): базовая — по тактике MITRE
+    # правила, повышение — максимум +1 (критичный актив/периметр); правило
+    # без тактики (repeated_scan) — по числовой модели (fallback)
+    sev_by_rule: dict[str, set] = {}
+    for i in incidents:
+        sev_by_rule.setdefault(i["rule"], set()).add(i["severity"])
+    assert sev_by_rule["web_attack"] == {"medium"}  # initial_access, повышения нет (было high)
+    assert sev_by_rule["malware_detection"] == {"high"}  # execution, актив medium
+    assert sev_by_rule["brute_force_attempts"] == {"critical"}  # credential_access high +1 (критичный актив + периметр)
+    assert sev_by_rule["password_spraying"] == {"critical"}  # credential_access high +1 (критичный актив)
+    assert sev_by_rule["privilege_escalation_attempt"] == {"critical"}  # privilege_escalation high +1
+    # repeated_scan без тактики: скан fw-edge → high, фоновый шум → low
+    assert sev_by_rule["repeated_scan"] == {"high", "low"}
+
     # активы привязаны (моки используют seed-имена агентов)
     items = client.get(f"{API}/incidents").json()
     with_assets = [i for i in items if i["asset"]]
     assert len(with_assets) >= 5
+
+    # автоанализ выключен фикстурой — populate ничего не планировал
+    assert data["auto_analysis_scheduled"] == 0
+
+
+def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatch):
+    """Мок-сценарии + автоконвейер (stage-17, фидбек): populate запускает
+    фоновый автоанализ для уровней из AUTO_ANALYSIS_LEVELS; low проходит
+    конвейер до конца (анализ → исполнение → автозакрытие), critical
+    анализируется, но остаётся открытым — playbook выполняет оператор."""
+    seed_demo_rules_and_assets(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)  # levels: critical,low
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "test",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/demo/populate")
+    assert resp.status_code == 200
+    data = resp.json()
+    # мок-набор: 3 critical (brute/spraying/privilege) + 1 low (фоновый шум);
+    # high/medium в автоанализ не попадают
+    assert data["auto_analysis_scheduled"] == 4
+
+    by_severity: dict[str, list[int]] = {}
+    for inc in data["incidents"]:
+        by_severity.setdefault(inc["severity"], []).append(inc["incident_id"])
+
+    # low: весь конвейер — анализ, исполнение (dry run), автозакрытие
+    assert by_severity.get("low"), "в мок-наборе должен быть low-инцидент"
+    for inc_id in by_severity["low"]:
+        detail = client.get(f"{API}/incidents/{inc_id}").json()
+        assert detail["status"] == "closed"
+        assert len(detail["analyses"]) == 1
+        assert detail["analyses"][-1]["response_raw"]["auto_closed"] is True
+
+    # critical: автоанализ выполнен, инцидент открыт — действие ждёт оператора
+    assert by_severity.get("critical"), "в мок-наборе должны быть critical-инциденты"
+    for inc_id in by_severity["critical"]:
+        detail = client.get(f"{API}/incidents/{inc_id}").json()
+        assert detail["status"] == "in_progress"
+        assert len(detail["analyses"]) == 1
+        raw = detail["analyses"][-1]["response_raw"]
+        assert raw["initiated_by"] == "auto_analysis"
+        assert "auto_closed" not in raw
+        assert raw["results"][0]["execution"]["mode"] == "manual_run"
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,24 @@ describe('pipelineStageStatuses — чистая логика этапов', () 
     expect(stages.find((s) => s.id === 'playbook').status).toBe('active');
     expect(stages.find((s) => s.id === 'qwen').status).toBe('pending');
   });
+
+  it('stage-17: awaitingManualRun — playbook active с подписью «ожидает запуска»', () => {
+    const stages = pipelineStageStatuses({ hasAnalysis: true, awaitingManualRun: true });
+    const playbook = stages.find((s) => s.id === 'playbook');
+    expect(playbook.status).toBe('active');
+    expect(playbook.note).toBe('ожидает запуска оператором');
+    // qwen/validate выполнены — анализ уже был
+    expect(stages.find((s) => s.id === 'qwen').status).toBe('completed');
+  });
+
+  it('stage-17: pendingConfirmation приоритетнее awaitingManualRun', () => {
+    const stages = pipelineStageStatuses({
+      hasAnalysis: true,
+      pendingConfirmation: true,
+      awaitingManualRun: true,
+    });
+    expect(stages.find((s) => s.id === 'playbook').note).toBe('ожидает подтверждения');
+  });
 });
 
 describe('PipelineStatus — рендер', () => {

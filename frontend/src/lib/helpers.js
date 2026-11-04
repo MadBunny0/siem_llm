@@ -80,16 +80,21 @@ export function resultValidationBadge(result) {
 export function resultExecutionBadge(result) {
   if (result?.execution?.executed) return { cls: 'executed-text', text: 'ВЫПОЛНЕНО' };
   if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ' };
+  if (result?.execution?.mode === 'manual_run') {
+    // [17] ручной режим: playbook выполнит оператор кнопкой «▶ Выполнить»
+    return { cls: 'badge-pending', text: 'ОЖИДАЕТ ЗАПУСКА' };
+  }
   return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
 }
 
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
-// («auto_analysis» — автоанализ при создании critical-инцидента, «manual» — запуск вручную).
+// («auto_analysis» — автоанализ при создании инцидента уровней из
+// AUTO_ANALYSIS_LEVELS (critical, low), «manual» — запуск вручную).
 export const INITIATED_BY_META = {
   auto_analysis: {
     cls: 'auto',
-    text: 'авто (critical)',
-    title: 'Автоматический анализ при создании critical-инцидента; LLM недетерминирована — повторный анализ может дать другой результат',
+    text: 'авто (LLM)',
+    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (critical, low); LLM недетерминирована — повторный анализ может дать другой результат',
   },
   manual: {
     cls: 'manual',
@@ -196,10 +201,18 @@ export const EXECUTION_MODE_RU = {
   controlled: 'реальное выполнение',
   pending_confirmation: 'ожидает подтверждения администратора',
   blocked: 'заблокировано политикой DVE',
+  // [17] ручной режим: medium/high/critical — playbook запускает оператор
+  manual_run: 'ожидает запуска оператором — playbook ещё не выполнялся',
 };
 
 export function executionModeRu(mode) {
   return EXECUTION_MODE_RU[mode] || mode || '';
+}
+
+// [17] Есть ли среди результатов действия, ожидающие ручного запуска
+// оператором (medium/high/critical — playbook не исполнялся автоматически).
+export function resultsAwaitManualRun(results) {
+  return (results || []).some(r => r?.execution?.mode === 'manual_run');
 }
 
 // Может ли текущий пользователь вручную запустить одобренное DVE действие:
@@ -297,3 +310,24 @@ export function ruleTemplateLabel(rule) {
   if (!rule) return '';
   return `${rule.id} — ${rule.description}`;
 }
+
+/* ==================== Stage 17: тактики MITRE ATT&CK (матрица критичности) ==================== */
+
+// [17] Тактики MITRE ATT&CK (матрица критичности, docs/CRITICALITY_MATRIX.md) —
+// русские подписи для формы и таблицы правил корреляции.
+export const MITRE_TACTIC_RU = {
+  reconnaissance: 'Reconnaissance — разведка',
+  resource_development: 'Resource Development — подготовка ресурсов',
+  initial_access: 'Initial Access — начальный доступ',
+  discovery: 'Discovery — изучение среды',
+  privilege_escalation: 'Privilege Escalation — повышение привилегий',
+  credential_access: 'Credential Access — доступ к учётным данным',
+  execution: 'Execution — выполнение',
+  persistence: 'Persistence — закрепление',
+  defense_evasion: 'Defense Evasion — обход защиты',
+  lateral_movement: 'Lateral Movement — боковое перемещение',
+  collection: 'Collection — сбор данных',
+  command_and_control: 'Command and Control — управление (C2)',
+  exfiltration: 'Exfiltration — кража данных',
+  impact: 'Impact — воздействие',
+};

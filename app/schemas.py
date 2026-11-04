@@ -1,8 +1,28 @@
 """Pydantic-схемы для REST API."""
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Тактики MITRE ATT&CK матрицы критичности (stage-17, процедура PDF v3.1,
+# см. docs/CRITICALITY_MATRIX.md): FastAPI сам отдаёт 422 на неизвестное значение
+MitreTacticLiteral = Literal[
+    "reconnaissance",
+    "resource_development",
+    "initial_access",
+    "discovery",
+    "privilege_escalation",
+    "credential_access",
+    "execution",
+    "persistence",
+    "defense_evasion",
+    "lateral_movement",
+    "collection",
+    "command_and_control",
+    "exfiltration",
+    "impact",
+]
 
 
 class AssetOut(BaseModel):
@@ -152,7 +172,11 @@ class AuditLogOut(BaseModel):
 
 
 class CorrelationRuleIn(BaseModel):
-    """Создание/обновление правила корреляции (§3.2 — изменение без правки кода)."""
+    """Создание/обновление правила корреляции (§3.2 — изменение без правки кода).
+
+    mitre_tactic — тактика из матрицы критичности (stage-17): задаёт базовую
+    критичность инцидента; None — числовая модель риска (fallback).
+    """
 
     name: str = Field(min_length=1)
     description: str | None = None
@@ -161,6 +185,9 @@ class CorrelationRuleIn(BaseModel):
     min_events: int = Field(default=1, ge=1)
     priority: int = 1
     is_active: bool = True
+    mitre_tactic: MitreTacticLiteral | None = None
+    mitre_technique: str | None = None
+    escalated_by_vendor: bool = False  # п.7 процедуры критичности — флаг поставщика
 
 
 class CorrelationRuleOut(BaseModel):
@@ -176,6 +203,9 @@ class CorrelationRuleOut(BaseModel):
     min_events: int
     priority: int
     is_active: bool
+    mitre_tactic: MitreTacticLiteral | None = None
+    mitre_technique: str | None = None
+    escalated_by_vendor: bool = False
 
 
 class PlaybookIn(BaseModel):
