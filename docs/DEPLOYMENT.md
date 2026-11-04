@@ -61,7 +61,8 @@ cd siem_llm
 ## 3. Настройка окружения
 
 1. **Порты** должны быть свободны: `3000` (веб-интерфейс), `8000` (API/Swagger), `5433`
-   (PostgreSQL наружу), `11434` (Ollama), `8080` (Adminer — веб-UI PostgreSQL), а с профилем
+   (PostgreSQL наружу), `11434` (Ollama), `8080` (Adminer — веб-UI PostgreSQL), `8101`–`8103`
+   (агенты-«ВМ» stage-20 — веб-статусы эмулируемых узлов), а с профилем
    Wazuh ещё `1514`, `1515`, `55000`.
 2. **Файл `.env`** (необязательно на старте): скопируй `.env.example` → `.env` при желании
    переопределить параметры. Ключевые переменные:
@@ -77,6 +78,10 @@ cd siem_llm
    | `AUTO_CLOSE_LEVELS` | `low` | уровни полного автоконвейера (анализ → исполнение → автозакрытие); пусто = выключен |
    | `CORRELATION_WINDOW_MINUTES` | `5` | окно корреляции по умолчанию |
    | `OLLAMA_MODEL` | `qwen2.5:3b` | модель интеллектуального анализа |
+   | `EXECUTION_TARGETS` | 3 агента стенда (см. compose) | реестр целей реального исполнения (stage-20): `имя=URL|токен` через запятую; **имя цели = имя актива** — инцидент находит цель по активу автоматически; пусто = реестр пуст, `mode=real` возвращает `no_target` |
+   | `EXECUTION_TIMEOUT_SECONDS` | `10` | таймаут HTTP-вызова агента при исполнении действия |
+   | `EXECUTION_DEFAULT_MODE` | `simulation` | режим execute-action по умолчанию: `simulation` (dry run, как в §3.4 ВКР) или `real` (исполнение на ВМ через агента) |
+   | `AGENT_TOKEN` | `dev-agent-token` | Bearer-токен агентов-«ВМ» стенда — общий для `EXECUTION_TARGETS` и сервисов agent-* |
 
    Все тюнируемые переменные сервиса api из таблицы выше (`JWT_SECRET`, `JWT_ALGORITHM`,
    `TOKEN_EXPIRE_MINUTES`, `AUTO_RESPONSE`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
@@ -106,6 +111,7 @@ healthcheck'ами. Последующие запуски — минуты.
 | Правила корреляции | 7 шт. по MITRE ATT&CK (T1110, T1110.003, T1046, T1068/T1548, T1190, T1204, T1048) |
 | Playbooks | 5 шт. (block_ip, disable_account, isolate_host, collect_evidence, monitor) с критериями успешного завершения |
 | Политика DVE | 4 уровня (validation_policy) |
+| Цели исполнения (stage-20) | из `EXECUTION_TARGETS`: `wks-finance-12`, `app-web-01`, `mail-prod-01` — агенты-«ВМ» наблюдаемых пользователей (имена = имена активов seed) |
 
 ### Проверка после запуска
 
@@ -116,6 +122,9 @@ healthcheck'ами. Последующие запуски — минуты.
   (доступ с правами суперпользователя этой БД; можно смотреть/править все таблицы)
 - **Health:** `curl http://localhost:8000/api/v1/health` — ответ содержит `status: ok`,
   модель и уровни автоанализа
+- **Агенты-«ВМ» (stage-20):** `curl http://localhost:8101/agent/status` — состояние АРМ
+  финансиста (`8102` — app-web-01, `8103` — mail-prod-01); в UI — вкладка «Агенты»
+  (реестр целей, heartbeat, журнал исполненных действий, сброс состояния ВМ)
 
 ### Первое демо (важно: 1 событие ≠ инцидент)
 
@@ -152,8 +161,8 @@ docker compose --profile wazuh up --build
 
 ## 6. Автотесты — только Docker, локальный Python/Node не нужны
 
-**Бэкенд (138 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
-`base` — прод, `dev` — прод + тесты):
+**Бэкенд (178 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
+`base` — прод, `dev` — прод + тесты + `agent/`):
 
 ```bash
 docker compose --profile tests build tests      # собрать образ с тестами
@@ -162,7 +171,9 @@ docker compose --profile tests run --rm tests   # прогнать pytest
 
 Тесты самодостаточны (SQLite in-memory) — БД/Ollama/запущенный стенд не требуются.
 Повторный прогон после правок: та же команда `run` (кэш сборки обновит только слои
-с изменившимися файлами — это секунды).
+с изменившимися файлами — это секунды). В набор входят `tests_agent/` — тесты
+endpoint-агента (состояние ВМ, журнал, сценарии активности; сетевые вызовы подменяются
+monkeypatch), общий прогон с backend-тестами через `pytest.ini` (`testpaths = tests tests_agent`).
 
 **Фронтенд (111 тестов, Vitest + React Testing Library):**
 
@@ -224,6 +235,8 @@ docker compose start               # продолжить
 docker compose down                # остановить и убрать контейнеры (данные в volumes сохраняются)
 docker compose down -v             # ⚠️ ПОЛНЫЙ СБРОС: удалит БД, модель и данные Wazuh
 docker compose run --rm ollama-init  # докачать модель, если загрузка прервалась (идемпотентно)
+docker compose logs -f agent-wks   # логи агента-«ВМ» (8102 — agent-app, 8103 — agent-mail)
+curl http://localhost:8101/agent/status   # состояние эмулируемой ВМ в браузере
 ```
 
 ## 9. Типичные проблемы
@@ -246,4 +259,6 @@ docker compose run --rm ollama-init  # докачать модель, если �
 - Подключить реальные события Wazuh и атаки — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md)
   (демо-матрица: какие seed-правила чем воспроизводить).
 - Стенд с виртуальными машинами (VirtualBox) для экспериментов — там же, «Способ 2».
+- Реальное исполнение playbook на ВМ (stage-20: `mode=real`, агенты, журнал) —
+  [REAL_EXECUTION.md](REAL_EXECUTION.md) и [agent/README.md](../agent/README.md).
 - Описание системы — [README.md](../README.md) и [DOCUMENTATION.md](DOCUMENTATION.md).
