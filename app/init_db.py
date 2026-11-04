@@ -440,18 +440,30 @@ def _seed_execution_targets() -> None:
     if not targets:
         logger.info("EXECUTION_TARGETS is empty — real execution registry left empty.")
         return
+    from sqlalchemy.orm import Session  # стиль main: локальный импорт в seed-функциях
+
     with Session(engine) as session:
         for target_data in targets:
             stmt = select(models.ExecutionTarget).where(
                 models.ExecutionTarget.name == target_data["name"]
             )
             existing = session.scalar(stmt)
+            # связка с активом по имени (инцидент → актив → цель исполнения);
+            # актива с таким именем может не быть — цель остаётся без связки
+            asset = session.scalar(
+                select(models.Asset).where(models.Asset.name == target_data["name"])
+            )
             if existing:
                 existing.base_url = target_data["base_url"]
                 existing.auth_token = target_data["auth_token"]
+                existing.asset_id = asset.id if asset else None
                 session.add(existing)
             else:
-                session.add(models.ExecutionTarget(**target_data))
+                session.add(
+                    models.ExecutionTarget(
+                        asset_id=asset.id if asset else None, **target_data
+                    )
+                )
         session.commit()
     logger.info("Execution targets seeded: %s", [t["name"] for t in targets])
 

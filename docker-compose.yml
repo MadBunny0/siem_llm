@@ -22,6 +22,9 @@ services:
       target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
+      # stage-20: seed реестра целей исполнения выполняет db-init — env должен
+      # совпадать с api (иначе реестр останется пустым)
+      EXECUTION_TARGETS: "wks-finance-12=http://agent-wks:8100|${AGENT_TOKEN:-dev-agent-token},app-web-01=http://agent-app:8100|${AGENT_TOKEN:-dev-agent-token},mail-prod-01=http://agent-mail:8100|${AGENT_TOKEN:-dev-agent-token}"
     depends_on:
       db:
         condition: service_healthy

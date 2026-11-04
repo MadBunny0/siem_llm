@@ -24,7 +24,7 @@ import os
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from activity import DEFAULT_ATTACKER_IP, run_scenario
+from activity import attacker_ip_for_host, run_scenario
 from emu_state import EmulatedHost
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -36,7 +36,9 @@ AGENT_PLATFORM = os.environ.get("AGENT_PLATFORM", "linux")
 AGENT_ADAPTER = os.environ.get("AGENT_ADAPTER", "state")  # state | linux
 AGENT_STATE_FILE = os.environ.get("AGENT_STATE_FILE", "")  # пусто — без персистентности
 SIEM_URL = os.environ.get("SIEM_URL", "http://api:8000/api/v1")
-ATTACKER_IP = os.environ.get("ATTACKER_IP", DEFAULT_ATTACKER_IP)
+# IP атакующего сценариев: по умолчанию выводится из имени узла (разные ВМ —
+# разные атакующие, инциденты не склеиваются); ATTACKER_IP задаёт явно
+ATTACKER_IP = attacker_ip_for_host(AGENT_HOSTNAME, os.environ.get("ATTACKER_IP"))
 
 host = EmulatedHost(
     hostname=AGENT_HOSTNAME,
