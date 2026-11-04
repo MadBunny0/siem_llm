@@ -20,6 +20,7 @@ from app.schemas import ExecuteActionIn, IncidentDetailOut, IncidentOut, Inciden
 from app.services.audit import audit
 from app.services.auth import get_current_user, require_admin
 from app.services.auto_analysis import run_auto_analysis
+from app.services.execution import execute_real_action
 from app.services.playbook import execute_playbook
 
 router = APIRouter()
@@ -276,6 +277,9 @@ def execute_action(
     Успешный запуск (simulation/controlled) сохраняет отметку в
     incident.manual_actions (stage-18, фидбек) — состояние кнопок действий
     видно всем операторам с сервера, а не из localStorage.
+
+    Stage-20: payload.mode="real" — реальное исполнение на ВМ через агента
+    (services/execution.py): DVE тот же, меняется только способ исполнения.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -294,7 +298,10 @@ def execute_action(
         db, incident, action, admin_confirmed=user.role == "admin"
     )
     if validation["approved"]:
-        execution = execute_playbook(validation["action"], {"incident_id": incident.id}, db)
+        if payload.mode == "real":
+            execution = execute_real_action(db, incident, validation["action"], requested_by=user.username)
+        else:
+            execution = execute_playbook(validation["action"], {"incident_id": incident.id}, db)
     elif validation.get("requires_confirmation"):
         # Аналитик запустил действие на критическом активе — как в анализе:
         # сохраняется до подтверждения администратора
@@ -308,10 +315,13 @@ def execute_action(
             "action": action,
             "reason": validation["reason"],
         }
-    if execution.get("mode") in ("simulation", "controlled"):
+    if execution.get("mode") in ("simulation", "controlled") or execution.get("executed"):
         # Отметка ручного запуска в карте инцидента — состояние кнопок видно
-        # всем операторам (stage-18, фидбек). Отметка ставится ТОЛЬКО при
-        # фактическом исполнении: pending_confirmation/blocked её не пишут.
+        # всем операторам (stage-18, фидбек). Отметка ставится при фактическом
+        # запуске: pending_confirmation/blocked её не пишут. Симуляция пишет
+        # всегда (executed=False там означает dry run, а не ошибку); real —
+        # только если цель подтвердила исполнение (stage-20), иначе кнопка
+        # остаётся доступной для повторного запуска.
         # переприсвоение JSON-колонок обязательно — см. common.py
         incident.manual_actions = {
             **(incident.manual_actions or {}),

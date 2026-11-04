@@ -3,6 +3,7 @@
 import logging
 
 from sqlalchemy import select
+from app.config import settings
 from app.db import Base, SessionLocal, engine
 from app import models  # noqa: F401 - registers all SQLAlchemy models
 
@@ -18,6 +19,7 @@ def main() -> None:
     _seed_default_correlation_rules()
     _seed_default_playbooks()
     _seed_validation_policy()
+    _seed_execution_targets()
 
 
 def _ensure_schema_updates() -> None:
@@ -394,6 +396,54 @@ def _seed_validation_policy() -> None:
                     )
                 )
         session.commit()
+
+
+def _parse_execution_targets(raw: str) -> list[dict]:
+    """Разбор реестра целей исполнения из env EXECUTION_TARGETS (stage-20).
+
+    Формат: "name=url:token,name=url:token" (токен опционален). Имя цели
+    совпадает с именем актива — инцидент по активу находит цель.
+    """
+    targets = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, rest = chunk.split("=", 1)
+        url, _, token = rest.partition(":")
+        if name.strip() and url.strip():
+            targets.append(
+                {"name": name.strip(), "base_url": url.strip().rstrip("/"), "auth_token": token.strip() or None}
+            )
+    return targets
+
+
+def _seed_execution_targets() -> None:
+    """Seed реестра целей реального исполнения (stage-20, docs/REAL_EXECUTION.md).
+
+    Источник — env EXECUTION_TARGETS (name=url:token,...): в compose это три
+    агента-«ВМ» (wks-finance-12, app-web-01, mail-prod-01 — имена совпадают
+    с активами). Цель не из env не создаётся; существующая — обновляется
+    (url/токен), чтобы смена конфигурации подхватывалась рестартом.
+    """
+    targets = _parse_execution_targets(settings.execution_targets)
+    if not targets:
+        logger.info("EXECUTION_TARGETS is empty — real execution registry left empty.")
+        return
+    with SessionLocal() as session:
+        for target_data in targets:
+            stmt = select(models.ExecutionTarget).where(
+                models.ExecutionTarget.name == target_data["name"]
+            )
+            existing = session.scalar(stmt)
+            if existing:
+                existing.base_url = target_data["base_url"]
+                existing.auth_token = target_data["auth_token"]
+                session.add(existing)
+            else:
+                session.add(models.ExecutionTarget(**target_data))
+        session.commit()
+    logger.info("Execution targets seeded: %s", [t["name"] for t in targets])
 
 
 if __name__ == "__main__":
