@@ -5,7 +5,8 @@
 оценка риска → [авто]LLM-анализ → Decision Validation Engine → playbook → аудит.
 """
 
-from datetime import datetime, timedelta, timezone
+import random
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select, text
@@ -28,12 +29,14 @@ from app.models import (
 )
 from app.schemas import (
     AnalysisOut,
+    AssetOut,
     AuditLogOut,
     CorrelationRuleIn,
     CorrelationRuleOut,
     IncidentDetailOut,
     IncidentOut,
     IncidentStatusIn,
+    IngestReferenceOut,
     LoginIn,
     NotificationOut,
     PlaybookIn,
@@ -43,6 +46,7 @@ from app.schemas import (
     ValidationPolicyOut,
     WazuhAlert,
 )
+from app.services.demo_events import build_mock_scenarios
 from app.services.auth import get_current_user, require_admin
 from app.services.security import create_access_token, hash_password, verify_password
 from app.services.audit import audit
@@ -306,11 +310,141 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
     return asset.criticality if asset else None
 
 
+# ---------------------------------------------------------------------------
+# Справочник для формы добавления события Wazuh (stage-15, фидбек
+# пользователя): поля формы — выпадающие списки из фактических данных БД,
+# а не ручной ввод ID правила/группы/агента
+# ---------------------------------------------------------------------------
+def _ingest_reference(db: Session) -> dict:
+    """Сбор справочных данных из БД (объём прототипа мал — Python-стороной).
+
+    - rules: distinct по raw_data["rule"]["id"] из событий; level/description/
+      groups — из первой встреченной записи этого id; события без rule пропускаются;
+    - groups: union групп правил Wazuh из событий + значения условий
+      корреляционных правил по полю event_type (ср. correlation._event_type_values);
+    - agents: distinct пары (id, name) из raw_data["agent"] (пустые не включаются);
+    - assets: весь инвентарь активов; users/src_ips: непустые значения событий.
+    """
+    rules: dict[str, dict] = {}
+    groups: set[str] = set()
+    agents: dict[tuple[str, str], None] = {}  # упорядоченный set пар (id, name)
+    users: set[str] = set()
+    src_ips: set[str] = set()
+
+    events = list(db.scalars(select(Event).order_by(Event.id)).all())
+    for e in events:
+        rule = (e.raw_data or {}).get("rule") or {}
+        rule_id = rule.get("id")
+        if rule_id is not None and str(rule_id).strip():
+            key = str(rule_id)
+            if key not in rules:  # первая встреченная запись этого id
+                level = rule.get("level")
+                try:
+                    level = int(level) if level is not None else None
+                except (TypeError, ValueError):
+                    level = None
+                rules[key] = {
+                    "id": key,
+                    "level": level,
+                    "description": rule.get("description"),
+                    "groups": [str(g) for g in (rule.get("groups") or []) if g],
+                }
+        groups.update(str(g) for g in (rule.get("groups") or []) if g)
+
+        agent = (e.raw_data or {}).get("agent") or {}
+        if agent.get("id") and agent.get("name"):
+            agents.setdefault((str(agent["id"]), str(agent["name"])), None)
+
+        if e.user:
+            users.add(str(e.user))
+        if e.src_ip:
+            src_ips.add(str(e.src_ip))
+
+    # значения event_type из условий правил корреляции: скаляр (eq/like/neq)
+    # или список (in) — справочник перечисляет таксономию, оператор не важен
+    for corr in db.scalars(select(CorrelationRule)).all():
+        for cond in (corr.conditions or []):
+            if not isinstance(cond, dict) or cond.get("field") != "event_type":
+                continue
+            value = cond.get("value")
+            if isinstance(value, list):
+                groups.update(str(v) for v in value if v)
+            elif value is not None and str(value).strip():
+                groups.add(str(value))
+
+    return {
+        "rules": sorted(rules.values(), key=lambda r: r["id"]),
+        "groups": sorted(groups),
+        "agents": [{"id": agent_id, "name": agent_name} for agent_id, agent_name in sorted(agents)],
+        "assets": [
+            {
+                "name": a.name,
+                "type": a.type,
+                "criticality": a.criticality,
+                "network_segment": a.network_segment,
+                "ip_addresses": a.ip_addresses,
+            }
+            for a in db.scalars(select(Asset).order_by(Asset.name)).all()
+        ],
+        "users": sorted(users),
+        "src_ips": sorted(src_ips),
+    }
+
+
+@router.get("/ingest/reference", response_model=IngestReferenceOut)
+def ingest_reference(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Справочник для формы добавления события Wazuh (stage-15).
+
+    Собирается из фактических данных БД: правила/группы/агенты — из принятых
+    событий и условий корреляции, активы — из инвентаря (§3.2).
+    """
+    return _ingest_reference(db)
+
+
+ALLOWED_INCIDENT_STATUSES = ("new", "in_progress", "closed")
+ALLOWED_INCIDENT_SEVERITIES = ("low", "medium", "high", "critical")
+
+
+def _parse_multiselect(raw: str | None, allowed: tuple[str, ...], name: str) -> list[str]:
+    """Разбор query-параметра-мультивыбора «v1,v2» фильтров списка инцидентов (stage-15).
+
+    Пустой/отсутствующий параметр → [] (без фильтра); недопустимое
+    значение → 422 с перечнем допустимых.
+    """
+    if not raw or not raw.strip():
+        return []
+    values = [v.strip() for v in raw.split(",") if v.strip()]
+    invalid = [v for v in values if v not in allowed]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Недопустимое значение параметра {name}: {', '.join(invalid)}. "
+                f"Допустимые значения: {', '.join(allowed)}"
+            ),
+        )
+    return list(dict.fromkeys(values))  # без дубликатов, с сохранением порядка
+
+
 @router.get("/incidents", response_model=list[IncidentOut])
-def incidents(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    items = list(db.scalars(
-        select(Incident).order_by(Incident.created_at.desc())
-    ).all())
+def incidents(
+    status: str | None = None,
+    severity: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Список инцидентов (created_at ↓) с мультифильтрами (stage-15):
+    ?status=new,in_progress&severity=high,critical — значения через запятую;
+    пустой/отсутствующий параметр = без фильтра (прежнее поведение).
+    """
+    statuses = _parse_multiselect(status, ALLOWED_INCIDENT_STATUSES, "status")
+    severities = _parse_multiselect(severity, ALLOWED_INCIDENT_SEVERITIES, "severity")
+    query = select(Incident).order_by(Incident.created_at.desc())
+    if statuses:
+        query = query.where(Incident.status.in_(statuses))
+    if severities:
+        query = query.where(Incident.severity.in_(severities))
+    items = list(db.scalars(query).all())
     # from_attributes в схемах — валидация напрямую из ORM-объектов
     return [IncidentOut.model_validate(incident) for incident in items]
 
@@ -326,9 +460,6 @@ def incident_detail(
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
     return IncidentDetailOut.model_validate(incident)
-
-
-ALLOWED_INCIDENT_STATUSES = ("new", "in_progress", "closed")
 
 
 @router.patch("/incidents/{incident_id}/status", response_model=IncidentOut)
@@ -559,9 +690,11 @@ async def _run_incident_analysis(
                 "mode": "pending_confirmation",
                 "action": validation["action"],
                 "reason": validation["reason"],
-                # описание сценария — чтобы действие было понятно оператору (stage-14)
+                # описание и шаги сценария — чтобы действие было понятно
+                # оператору (stage-14 описание, stage-15 шаги)
                 "playbook": playbook.name if playbook else None,
                 "playbook_description": playbook.description if playbook else None,
+                "playbook_steps": playbook.steps if playbook else None,
             }
             pending_any = True
         else:
@@ -759,17 +892,22 @@ def execute_action(
     incident_id: int,
     payload: ExecuteActionIn,
     db: Session = Depends(get_db),
-    admin: User = Depends(require_admin),
+    user: User = Depends(get_current_user),
 ):
-    """Ручной запуск playbook-действия администратором (stage-12).
+    """Ручной запуск playbook-действия (stage-12; stage-15: владелец инцидента или админ).
 
-    DVE проверяет действие (администратор снимает требование подтверждения);
-    при одобрении действие исполняется через execute_playbook (симуляция при
-    AUTO_RESPONSE=false). Не одобренное — возвращается с причиной.
+    Запуск действия — работа с инцидентом: свободный инцидент закрепляется за
+    исполнителем, чужой аналитику недоступен (403), админ — без ограничений.
+    DVE проверяет действие; требование подтверждения критического актива
+    снимает только администратор (admin_confirmed по роли): аналитик на
+    критическом активе получает pending_confirmation (§3.4, p:102).
+    Исполнение — через execute_playbook: при AUTO_RESPONSE=false это dry run
+    (симуляция, без изменения инфраструктуры), иначе — контролируемое выполнение.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    _ensure_incident_access(incident, user, assign=True)
 
     action = payload.action.strip()
     playbook = load_playbook_by_action(db, action)
@@ -779,17 +917,39 @@ def execute_action(
         {"recommended_action": action},
         asset_criticality=asset.criticality if asset else None,
         playbook_found=playbook is not None,
-        admin_confirmed=True,
+        admin_confirmed=user.role == "admin",
         db=db,
     )
-    execution = (
-        execute_playbook(validation["action"], {"incident_id": incident.id}, db)
-        if validation["approved"]
-        else {"executed": False, "mode": "blocked", "action": action, "reason": validation["reason"]}
-    )
+    if validation["approved"]:
+        execution = execute_playbook(validation["action"], {"incident_id": incident.id}, db)
+    elif validation.get("requires_confirmation"):
+        # Аналитик запустил действие на критическом активе — как в анализе:
+        # сохраняется до подтверждения администратора
+        execution = {
+            "executed": False,
+            "mode": "pending_confirmation",
+            "action": validation["action"],
+            "reason": validation["reason"],
+            "playbook": playbook.name if playbook else None,
+            "playbook_description": playbook.description if playbook else None,
+            "playbook_steps": playbook.steps if playbook else None,
+        }
+    else:
+        execution = {
+            "executed": False,
+            "mode": "blocked",
+            "action": action,
+            "reason": validation["reason"],
+        }
     audit(
         "action_executed_manually",
-        {"action": action, "validation": validation, "execution": execution, "by": admin.username},
+        {
+            "action": action,
+            "validation": validation,
+            "execution": execution,
+            "by": user.username,
+            "role": user.role,
+        },
         db=db,
         incident_id=incident.id,
     )
@@ -807,61 +967,14 @@ def demo_populate(db: Session = Depends(get_db), admin: User = Depends(require_a
     """Мок-сценарии для демонстрации (stage-12): 19 событий → 7 инцидентов
     всех уровней риска, разные активы и классы атак (MITRE ATT&CK).
 
+    Сценарии — общий пул из app/services/demo_events.py (stage-15).
     Автоанализ для critical здесь НЕ запускается — намеренно: демонстрация
     детерминированная, анализ запускается вручную кнопкой.
     """
-    now = datetime.now(timezone.utc)
-
-    def ev(minutes_ago: float, *, level: int, groups: list[str], agent: str,
-           srcip: str, user: str | None = None, description: str = "") -> dict:
-        return {
-            "timestamp": (now - timedelta(minutes=minutes_ago)).isoformat(),
-            "rule": {"id": "900000", "level": level, "description": description or groups[0],
-                     "groups": groups},
-            "agent": {"id": "001", "name": agent},
-            "data": {"srcip": srcip, "dstuser": user} if user else {"srcip": srcip},
-            "full_log": f"{groups[0]} from {srcip}" + (f" user={user}" if user else ""),
-        }
-
-    scenarios: list[list[dict]] = [
-        # T1110 brute force на критическом активе (mail-prod-01) → critical
-        [ev(4 - i, level=10, groups=["syslog", "sshd", "authentication_failed"],
-            agent="mail-prod-01", srcip="198.51.100.7", user="root",
-            description="sshd: authentication failure") for i in range(4)],
-        # T1110.003 распыление паролей на db-primary-01 (critical) → critical
-        # (6 событий: порог spraying 5, чтобы перебить brute_force на том же паттерне)
-        [ev(6 - i, level=9, groups=["syslog", "sshd", "authentication_failed"],
-            agent="db-primary-01", srcip="198.51.100.23", user=f"user{i:02d}",
-            description="sshd: authentication failure") for i in range(6)],
-        # T1068/T1548 повышение привилегий на mail-prod-01 → critical
-        # (40 мин назад — вне окон других сценариев: общий актив иначе склеил бы инциденты)
-        [ev(40, level=15, groups=["privilege_escalation"],
-            agent="mail-prod-01", srcip="198.51.100.7", user="root",
-            description="user added to sudo group")],
-        # T1046 сканирование fw-edge-01 (high) → high
-        [ev(8 - i, level=5, groups=["syslog", "sshd"],
-            agent="fw-edge-01", srcip="203.0.113.99",
-            description="Connection closed by scanning host") for i in range(3)],
-        # T1190 веб-атака на app-web-01 (high) → high
-        [ev(5 - i, level=8, groups=["web", "attack", "sqlinjection"],
-            agent="app-web-01", srcip="203.0.113.77",
-            description="SQL injection attempt in query string") for i in range(2)],
-        # T1204 вредоносное ПО на wks-finance-12 (medium) → high
-        [ev(3, level=12, groups=["malware"],
-            agent="wks-finance-12", srcip="198.51.100.50",
-            description="Malicious executable detected")],
-        # фоновые события уровня low → low-инцидент
-        # (41/40 мин назад — вне окна malware-сценария; агент вне инвентаря →
-        # актив не определён, критичность актива не завышает оценку → низкий риск)
-        [ev(41 - i, level=2, groups=["syslog"],
-            agent="wks-office-15", srcip="203.0.113.250",
-            description="Minor system event") for i in range(2)],
-    ]
-
     created_incidents: dict[int, dict] = {}
     events_count = 0
-    for scenario in scenarios:
-        for alert_payload in scenario:
+    for scenario in build_mock_scenarios(datetime.now(timezone.utc)):
+        for alert_payload in scenario.events:
             result = _ingest_alert(db, alert_payload)
             events_count += 1
             if result.get("correlated") and result.get("incident_id"):
@@ -883,10 +996,63 @@ def demo_populate(db: Session = Depends(get_db), admin: User = Depends(require_a
     }
 
 
+@router.post("/demo/test-event")
+def demo_test_event(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Случайное тестовое событие из мок-пула (stage-15, фидбек пользователя).
+
+    random.choice по сценариям → random.choice по событиям выбранного сценария
+    → полный конвейер _ingest_alert. Доступно всем ролям (get_current_user,
+    не require_admin). Автоанализ критических инцидентов — в фоне, как у
+    POST /ingest/wazuh (stage-12); служебный ключ _auto_analysis_incident_id
+    в ответ не попадает.
+    """
+    scenarios = build_mock_scenarios(datetime.now(timezone.utc))
+    scenario = random.choice(scenarios)
+    alert_payload = random.choice(scenario.events)
+
+    result = _ingest_alert(db, alert_payload)
+
+    # пост-обработка как в ingest_wazuh: автоанализ уходит в фон (stage-12)
+    auto_incident_id = result.pop("_auto_analysis_incident_id", None)
+    if auto_incident_id:
+        background_tasks.add_task(run_auto_analysis, auto_incident_id)
+
+    audit(
+        "test_event_generated",
+        {
+            "scenario": scenario.key,
+            "event_id": result.get("event_id"),
+            "correlated": result.get("correlated"),
+            "incident_id": result.get("incident_id"),
+        },
+        db=db,
+        event_id=result.get("event_id"),
+        incident_id=result.get("incident_id"),
+        user_id=user.id,
+    )
+    db.commit()
+    return {
+        "scenario": scenario.key,
+        "scenario_title": scenario.title,
+        "event": alert_payload,
+        "result": result,
+    }
+
+
 @router.get("/validation-policy", response_model=list[ValidationPolicyOut])
 def validation_policy(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Политика DVE: разрешённые действия по уровням риска (§3.4, p:103, stage-11)."""
     return list(db.scalars(select(ValidationPolicy).order_by(ValidationPolicy.id)).all())
+
+
+@router.get("/assets", response_model=list[AssetOut])
+def assets(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Справочник защищаемых активов (§3.2) — выпадающие списки UI (stage-15)."""
+    return list(db.scalars(select(Asset).order_by(Asset.name)).all())
 
 
 @router.get("/health")

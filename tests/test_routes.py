@@ -10,6 +10,8 @@
   отдельно в test_auth.py).
 """
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -21,6 +23,7 @@ from app.db import get_db
 from app.main import app
 from app.models import Base, User
 from app.services.auth import get_current_user
+from app.services.demo_events import build_mock_scenarios
 
 API = "/api/v1"
 
@@ -111,6 +114,51 @@ def seed_rule(db_session, name="brute_rule", **overrides):
     db_session.add(rule)
     db_session.commit()
     return rule
+
+
+def seed_demo_rules_and_assets(db_session):
+    """Seed правил корреляции и активов как в init_db (stage-12) — общее
+    для тестов мок-сценариев: /demo/populate и /demo/test-event берут
+    правила и привязку агентов к активам из БД."""
+    from app.models import Asset, CorrelationRule
+
+    for name, conds, window, min_events, priority in [
+        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2),
+        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3),
+        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3),
+        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1),
+        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2),
+        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3),
+    ]:
+        db_session.add(
+            CorrelationRule(
+                name=name, description=name, conditions=conds,
+                time_window_minutes=window, min_events=min_events,
+                priority=priority, is_active=True,
+            )
+        )
+    # активы — моки используют имена агентов = имена активов
+    for name, criticality in [
+        ("mail-prod-01", "critical"), ("db-primary-01", "critical"),
+        ("fw-edge-01", "high"), ("wks-finance-12", "medium"), ("app-web-01", "high"),
+    ]:
+        db_session.add(Asset(name=name, type="server", criticality=criticality))
+    db_session.commit()
+
+
+FROZEN_NOW = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def frozen_demo_time(monkeypatch):
+    """Фиксирует datetime в app.api.routes: таймстампы мок-сценариев в
+    /demo/*-эндпоинтах становятся предсказуемыми (детерминизм тестов)."""
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: N805 — имитация datetime.now
+            return FROZEN_NOW
+
+    monkeypatch.setattr("app.api.routes.datetime", _FrozenDatetime)
 
 
 def test_health(client):
@@ -451,31 +499,7 @@ def test_incident_description_actualized(client, db_session):
 
 def test_demo_populate(client, db_session):
     """POST /demo/populate — мок-сценарии: 19 событий → 7 инцидентов всех уровней."""
-    from app.models import Asset, CorrelationRule
-
-    # seed правил корреляции (как в init_db) — демо берёт правила из БД
-    for name, conds, window, min_events, priority in [
-        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2),
-        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3),
-        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3),
-        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1),
-        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2),
-        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3),
-    ]:
-        db_session.add(
-            CorrelationRule(
-                name=name, description=name, conditions=conds,
-                time_window_minutes=window, min_events=min_events,
-                priority=priority, is_active=True,
-            )
-        )
-    # seed активов — моки используют имена агентов = имена активов
-    for name, criticality in [
-        ("mail-prod-01", "critical"), ("db-primary-01", "critical"),
-        ("fw-edge-01", "high"), ("wks-finance-12", "medium"), ("app-web-01", "high"),
-    ]:
-        db_session.add(Asset(name=name, type="server", criticality=criticality))
-    db_session.commit()
+    seed_demo_rules_and_assets(db_session)
 
     resp = client.post(f"{API}/demo/populate")
     assert resp.status_code == 200
@@ -493,6 +517,230 @@ def test_demo_populate(client, db_session):
     items = client.get(f"{API}/incidents").json()
     with_assets = [i for i in items if i["asset"]]
     assert len(with_assets) >= 5
+
+
+# ---------------------------------------------------------------------------
+# POST /demo/test-event — случайное тестовое событие из мок-пула (stage-15)
+# ---------------------------------------------------------------------------
+def test_demo_test_event_structure(client, db_session, monkeypatch, frozen_demo_time):
+    """Контракт ответа (scenario/scenario_title/event/result); событие в БД."""
+    seed_demo_rules_and_assets(db_session)
+
+    # детерминизм: random.choice всегда берёт первый элемент —
+    # первый сценарий, затем первое событие выбранного сценария
+    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
+
+    resp = client.post(f"{API}/demo/test-event")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    scenarios = build_mock_scenarios(FROZEN_NOW)
+    assert set(data.keys()) == {"scenario", "scenario_title", "event", "result"}
+    assert data["scenario"] == scenarios[0].key
+    assert data["scenario_title"] == scenarios[0].title
+    assert data["event"] == scenarios[0].events[0]
+
+    # result — ответ конвейера без служебного ключа; одиночное событие
+    # не набирает порог brute_force (min_events=3) → инцидент не создаётся
+    result = data["result"]
+    assert "_auto_analysis_incident_id" not in result
+    assert result["correlated"] is False
+    assert result["incident_id"] is None
+
+    # событие реально попало в БД
+    from app.models import Event
+    event = db_session.get(Event, result["event_id"])
+    assert event is not None
+    assert event.src_ip == data["event"]["data"]["srcip"]
+    assert event.user == data["event"]["data"]["dstuser"]
+
+
+def test_demo_test_event_deterministic(client, db_session, monkeypatch, frozen_demo_time):
+    """Подмена random.choice: два вызова дают одно и то же событие (stage-15)."""
+    seed_demo_rules_and_assets(db_session)
+    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
+
+    first = client.post(f"{API}/demo/test-event").json()
+    second = client.post(f"{API}/demo/test-event").json()
+    assert first["scenario"] == second["scenario"]
+    assert first["scenario_title"] == second["scenario_title"]
+    assert first["event"] == second["event"]
+
+
+def test_demo_test_event_creates_incident(client, db_session, monkeypatch, frozen_demo_time):
+    """Сценарий с правилом min_events=1 → correlated=True, инцидент в БД, аудит."""
+    seed_demo_rules_and_assets(db_session)
+
+    scenarios = build_mock_scenarios(FROZEN_NOW)
+    target = next(s for s in scenarios if s.key == "privilege_escalation")
+    picks = iter([target, target.events[0]])
+    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: next(picks))
+
+    resp = client.post(f"{API}/demo/test-event")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["scenario"] == "privilege_escalation"
+    assert data["result"]["correlated"] is True
+    incident_id = data["result"]["incident_id"]
+    assert incident_id is not None
+
+    detail = client.get(f"{API}/incidents/{incident_id}")
+    assert detail.status_code == 200
+    assert len(detail.json()["events"]) == 1
+
+    # аудит зафиксировал генерацию тестового события
+    logs = client.get(f"{API}/audit-logs").json()
+    entry = next(a for a in logs if a["event_type"] == "test_event_generated")
+    assert entry["details"]["scenario"] == "privilege_escalation"
+    assert entry["details"]["correlated"] is True
+    assert entry["details"]["incident_id"] == incident_id
+    assert entry["details"]["event_id"] == data["result"]["event_id"]
+
+
+def test_demo_test_event_available_to_analyst(client, db_session, monkeypatch, frozen_demo_time):
+    """«Тестовое событие» доступно аналитику (get_current_user, не require_admin)."""
+    seed_demo_rules_and_assets(db_session)
+    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=2, username="analyst1", role="analyst"
+    )
+    resp = client.post(f"{API}/demo/test-event")
+    assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET /incidents?status=&severity= — мультифильтры списка инцидентов (stage-15)
+# ---------------------------------------------------------------------------
+def _make_incident(db_session, **overrides):
+    """Инцидент напрямую в БД — тесты фильтров без полного конвейера."""
+    from app.models import Incident
+
+    params = dict(
+        title="incident",
+        description="d",
+        severity="medium",
+        status="new",
+        risk_score=50,
+        created_at=FROZEN_NOW,
+    )
+    params.update(overrides)
+    incident = Incident(**params)
+    db_session.add(incident)
+    db_session.commit()
+    db_session.refresh(incident)
+    return incident
+
+
+def test_incidents_filters(client, db_session):
+    """Фильтры status/severity через запятую: вместе, по одному, пустые."""
+    _make_incident(db_session, title="crit-new", severity="critical", status="new",
+                   created_at=datetime(2026, 1, 3, tzinfo=timezone.utc))
+    _make_incident(db_session, title="high-progress", severity="high", status="in_progress",
+                   created_at=datetime(2026, 1, 2, tzinfo=timezone.utc))
+    _make_incident(db_session, title="low-closed", severity="low", status="closed",
+                   created_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+
+    # оба параметра вместе
+    resp = client.get(f"{API}/incidents",
+                      params={"status": "new,in_progress", "severity": "high,critical"})
+    assert [i["title"] for i in resp.json()] == ["crit-new", "high-progress"]  # created_at desc
+
+    # по одному
+    resp = client.get(f"{API}/incidents", params={"status": "closed"})
+    assert [i["title"] for i in resp.json()] == ["low-closed"]
+    resp = client.get(f"{API}/incidents", params={"severity": "critical,low"})
+    assert {i["title"] for i in resp.json()} == {"crit-new", "low-closed"}
+
+    # пустой/отсутствующий параметр — без фильтра (прежнее поведение)
+    assert len(client.get(f"{API}/incidents").json()) == 3
+    assert len(client.get(f"{API}/incidents", params={"status": ""}).json()) == 3
+    assert len(client.get(f"{API}/incidents", params={"severity": ","}).json()) == 3
+
+
+def test_incidents_filter_invalid_value(client):
+    """Недопустимое значение фильтра → 422 с понятным detail (stage-15)."""
+    resp = client.get(f"{API}/incidents", params={"status": "archived"})
+    assert resp.status_code == 422
+    assert "archived" in resp.json()["detail"]
+
+    resp = client.get(f"{API}/incidents", params={"severity": "ultra"})
+    assert resp.status_code == 422
+    assert "ultra" in resp.json()["detail"]
+
+    # мусор среди валидных значений тоже отклоняется
+    resp = client.get(f"{API}/incidents", params={"status": "new,junk"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# GET /ingest/reference — справочник для формы события Wazuh (stage-15)
+# ---------------------------------------------------------------------------
+def test_ingest_reference_after_ingest(client, db_session):
+    """Справочник собирается из событий, условий правил корреляции и активов."""
+    from app.models import Asset, CorrelationRule
+
+    db_session.add(CorrelationRule(
+        name="in_rule", description="d",
+        conditions=[{"field": "event_type", "operator": "in", "value": ["web", "attack"]}],
+        time_window_minutes=5, min_events=2, priority=1, is_active=True,
+    ))
+    db_session.add(CorrelationRule(
+        name="like_rule", description="d",
+        conditions=[{"field": "event_type", "operator": "like", "value": "malware"}],
+        time_window_minutes=5, min_events=1, priority=1, is_active=True,
+    ))
+    db_session.add(Asset(name="srv-01", type="server", criticality="critical",
+                         network_segment="DMZ", ip_addresses="198.51.100.1"))
+    db_session.commit()
+
+    alert_with_rule_id = {
+        "timestamp": "2026-01-01T10:00:00Z",
+        "rule": {"id": "5710", "level": 10, "description": "sshd: authentication failure",
+                 "groups": ["syslog", "sshd", "authentication_failed"]},
+        "agent": {"id": "001", "name": "mail-prod-01"},
+        "data": {"srcip": "198.51.100.7", "dstuser": "root"},
+        "full_log": "Failed password",
+    }
+    client.post(f"{API}/ingest/wazuh", json=alert_with_rule_id)
+    # алерт без rule.id и с другим агентом: правило в справочник не попадает,
+    # но группы/агент/пользователь/IP дополняются
+    client.post(f"{API}/ingest/wazuh", json=make_alert())
+    # повтор правила 5710 с другим уровнем — остаётся первая встреченная запись
+    repeat = dict(alert_with_rule_id)
+    repeat["rule"] = dict(alert_with_rule_id["rule"], level=5)
+    client.post(f"{API}/ingest/wazuh", json=repeat)
+
+    resp = client.get(f"{API}/ingest/reference")
+    assert resp.status_code == 200
+    ref = resp.json()
+
+    assert ref["rules"] == [{
+        "id": "5710", "level": 10, "description": "sshd: authentication failure",
+        "groups": ["syslog", "sshd", "authentication_failed"],
+    }]
+    # группы: из событий + из условий правил (in-список раскрыт)
+    assert ref["groups"] == sorted(
+        {"syslog", "sshd", "authentication_failed", "web", "attack", "malware"}
+    )
+    assert ref["agents"] == [
+        {"id": "001", "name": "mail-prod-01"}, {"id": "001", "name": "test-host"},
+    ]
+    assert ref["assets"] == [{
+        "name": "srv-01", "type": "server", "criticality": "critical",
+        "network_segment": "DMZ", "ip_addresses": "198.51.100.1",
+    }]
+    assert ref["users"] == ["root"]
+    assert ref["src_ips"] == ["192.0.2.10", "198.51.100.7"]
+
+
+def test_ingest_reference_empty_db(client):
+    """Справочник на пустой БД — пустые списки, не 500 (stage-15)."""
+    resp = client.get(f"{API}/ingest/reference")
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "rules": [], "groups": [], "agents": [],
+        "assets": [], "users": [], "src_ips": [],
+    }
 
 
 def test_execute_action_manual(client, db_session):

@@ -392,3 +392,104 @@ def test_playbook_description_in_results(client, db_session, monkeypatch):
     assert result["validation"]["approved"] is True
     assert result["execution"].get("playbook_description") == \
         "Блокировка IP-адреса источника подозрительной активности"
+
+
+def test_execute_action_permissions(client, db_session):
+    """Ручной запуск действия (stage-15): владелец-аналитик может, чужой — 403,
+    критический актив для аналитика → pending_confirmation, админ подтверждает."""
+    from app.models import Asset, CorrelationRule, Incident, Playbook
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.add(Asset(name="mail-prod-01", type="server", criticality="critical"))
+    db_session.add(
+        Playbook(
+            name="block_ip", description="Блокировка IP-адреса",
+            trigger_conditions={}, allowed_actions=["block_ip"],
+            steps=[{"action": "block_ip", "target": "{{src_ip}}", "tool": "firewall"}],
+            is_active=True,
+        )
+    )
+    db_session.add(
+        Playbook(
+            name="collect_evidence", description="Сбор доказательств",
+            trigger_conditions={}, allowed_actions=["collect_evidence"],
+            steps=[{"action": "collect_evidence", "target": "{{incident}}", "tool": "audit"}],
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+    # инцидент на критическом активе (агент = имя актива из инвентаря)
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 10, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "mail-prod-01"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+    # уровень риска фиксирован: block_ip разрешён политикой для critical
+    incident = db_session.get(Incident, 1)
+    incident.severity = "critical"
+    db_session.commit()
+
+    analyst_token = login(client, "analyst1", "analyst123").json()["access_token"]
+    analyst2_token = login(client, "analyst2", "analyst123").json()["access_token"]
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+
+    # аналитик запускает опасное действие на критическом активе → отложено (p:102),
+    # инцидент закрепляется за ним (запуск действия = работа с инцидентом)
+    resp = client.post(
+        f"{API}/incidents/1/execute-action",
+        json={"action": "block_ip"},
+        headers=auth_header(analyst_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["validation"]["requires_confirmation"] is True
+    assert body["validation"]["approved"] is False
+    assert body["execution"]["mode"] == "pending_confirmation"
+    assert body["execution"]["executed"] is False
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"]["username"] == "analyst1"
+
+    # чужой аналитик не может запускать действия по чужому инциденту
+    foreign = client.post(
+        f"{API}/incidents/1/execute-action",
+        json={"action": "block_ip"},
+        headers=auth_header(analyst2_token),
+    )
+    assert foreign.status_code == 403
+    assert "закреплён" in foreign.json()["detail"]
+
+    # админ снимает требование подтверждения → dry run (симуляция), шаги сценария видны
+    resp = client.post(
+        f"{API}/incidents/1/execute-action",
+        json={"action": "block_ip"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["validation"]["approved"] is True
+    assert body["execution"]["executed"] is False  # AUTO_RESPONSE=false — dry run
+    assert body["execution"]["mode"] == "simulation"
+    assert body["execution"]["playbook_steps"] == [
+        {"action": "block_ip", "target": "{{src_ip}}", "tool": "firewall"}
+    ]
+
+    # пассивное действие владелец запускает и на критическом активе без подтверждения
+    resp = client.post(
+        f"{API}/incidents/1/execute-action",
+        json={"action": "collect_evidence"},
+        headers=auth_header(analyst_token),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["validation"]["approved"] is True
+    assert body["execution"]["mode"] == "simulation"
