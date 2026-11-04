@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-import { actionRuDescription, analysisFromHistory, analysisResults, applyIncidentFilters,
+import { clearIncidentRuns, getIncidentRuns, isActionRun, markActionRun } from './lib/actionRuns.js';
+import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, criteriaCountLabel, detailToMessage,
          executionModeRu, formatDate, formatPlaybookSteps, initiatedByBadge, MITRE_TACTIC_RU,
          pendingReasonText,
          PLAYBOOK_ACTIONS, priorityLabel, PRIORITY_LABELS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
          resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
-         STATUS_LABELS }
+         STATUS_LABELS, structuredAnalysis, verdictBadge }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
 
@@ -40,6 +41,17 @@ const NOTIFICATION_STATUS_CLASS = {
   pending: 'badge-status-pending',
   failed: 'badge-status-failed',
 };
+
+// [18] Подписи структурированных блоков анализа в панели «Результат анализа»;
+// process_tree рисуется деревом через <pre>, поэтому в этом списке его нет.
+const ANALYSIS_BLOCK_LABELS = [
+  ['command_explanation', 'Разбор команд и событий'],
+  ['suspicious_fragments', 'Подозрительные фрагменты'],
+  ['possible_legitimate_indicators', 'Возможные легитимные объяснения'],
+  ['affected_entities', 'Затронутые сущности'],
+  ['missing_data', 'Недостающие данные'],
+  ['recommendations', 'Рекомендации для дальнейших действий'],
+];
 // [15] Дефолты формы «Добавить событие Wazuh»: агент — seed-актив mail-prod-01,
 // чтобы событие сразу привязывалось к активу (критичность влияет на риск/DVE).
 function emptyEventForm() {
@@ -1487,6 +1499,18 @@ function App({ user, onLogout }) {
   // оператором — конвейер показывает Playbook как активный этап
   const awaitingManualRun = resultsAwaitManualRun(analysisResults(analysis));
 
+  // [18] Структурированные поля вердикта LLM: у свежего анализа — в recommendation,
+  // у панели из истории — в response_raw.recommendation (см. structuredAnalysis).
+  const structured = useMemo(() => structuredAnalysis(analysis), [analysis]);
+
+  // [18] Результаты анализа по каждому действию — для бокса «Предложенные действия»
+  const resultItems = analysisResults(analysis);
+
+  // [18] Отметки «действие запускали вручную» для текущего инцидента — читаются из
+  // localStorage на каждый рендер (ставятся/сбрасываются вне React-состояния),
+  // поэтому кнопки «выполнено» переживают смену инцидента и перезагрузку страницы.
+  const incidentRuns = selected ? getIncidentRuns(selected.id) : {};
+
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
   // [6] бейдж источника для свежего результата анализа
   const freshBadge = initiatedByBadge(analysis);
@@ -1583,6 +1607,10 @@ function App({ user, onLogout }) {
       // [16] При успехе помечаем совпавший результат run_manually: кнопка «Выполнить»
       // сменяется отметкой «Выполнено». Метка живёт в React-состоянии (переживает
       // обновление detail, сбрасывается при смене инцидента) — сухой run повторяем.
+      // [18] Дубль отметки в localStorage: состояние кнопок закреплено на таске,
+      // переживает смену инцидента и перезагрузку страницы. Только при успехе —
+      // при pending_confirmation/blocked отметка не ставится.
+      if (success) markActionRun(selected.id, action, result?.execution?.mode);
       const executionPatch = success
         ? { ...result.execution, run_manually: true }
         : (result?.execution ?? null);
@@ -1899,6 +1927,18 @@ function App({ user, onLogout }) {
                       <span className="approved">✓ Проверено</span>
                     </span>
                   </div>
+                  {/* [18] Строка вердикта LLM; у старых анализов вердикта нет — бейдж не показываем */}
+                  <div className="verdict-row">
+                    {structured.verdict && (
+                      <span
+                        className={`badge ${verdictBadge(structured.verdict).cls}`}
+                        title={verdictBadge(structured.verdict).title}
+                      >
+                        {verdictBadge(structured.verdict).text}
+                      </span>
+                    )}
+                    <span className="verdict-confidence">Уверенность: <b>{confPct(analysis.recommendation?.confidence)}</b></span>
+                  </div>
                   <div className="recommendation">
                     <div>
                       <label>Рекомендованное действие</label>
@@ -1908,23 +1948,43 @@ function App({ user, onLogout }) {
                          '—'}
                       </strong>
                     </div>
-                    <div>
-                      <label>Уверенность</label>
-                      <strong>
-                        {analysis.recommendation?.confidence != null ?
-                          `${Math.round(analysis.recommendation.confidence * 100)}%` :
-                          '—'}
-                    </strong>
-                    </div>
                   </div>
-                  <p>
-                    {analysis.recommendation?.reason ||
-                     analysis.recommendation?.explanation ||
-                     'Модель не вернула текстовое обоснование.'}
-                  </p>
-                  {/* Stage 11: по одному результату на каждое действие из перечня LLM
+                  {/* [18] Резюме анализа; у старых анализов summary нет — прежний текст обоснования */}
+                  {structured.summary ? (
+                    <div className="analysis-block">
+                      <label>Резюме</label>
+                      <p>{structured.summary}</p>
+                    </div>
+                  ) : (
+                    <p>
+                      {analysis.recommendation?.reason ||
+                       analysis.recommendation?.explanation ||
+                       'Модель не вернула текстовое обоснование.'}
+                    </p>
+                  )}
+                  {/* [18] Структурированные блоки анализа — рендерим только непустые списки */}
+                  {ANALYSIS_BLOCK_LABELS.filter(([field]) => structured[field].length > 0).map(([field, label]) => (
+                    <div className="analysis-block" key={field}>
+                      <label>{label}</label>
+                      <ul>
+                        {structured[field].map((line, i) => <li key={i}>{line}</li>)}
+                      </ul>
+                    </div>
+                  ))}
+                  {structured.process_tree.length > 0 && (
+                    <div className="analysis-block">
+                      <label>Дерево процессов</label>
+                      <pre className="process-tree">{structured.process_tree.join('\n')}</pre>
+                    </div>
+                  )}
+                  {/* [18] Предложенные действия — отдельные боксы (result-item) внутри общего бокса;
+                      Stage 11: по одному результату на каждое действие из перечня LLM
                       (fallback на старый одиночный формат — см. analysisResults) */}
-                  {analysisResults(analysis).map((r, index) => {
+                  <div className="proposed-actions">
+                    <span className="box-label">Предложенные действия (проверка DVE)</span>
+                    {resultItems.length === 0 ? (
+                      <div className="proposed-empty">Действий не предложено</div>
+                    ) : resultItems.map((r, index) => {
                     const validationBadge = resultValidationBadge(r);
                     const executionBadge = resultExecutionBadge(r);
                     // [1] Одна главная кнопка по состоянию результата: ожидает подтверждения →
@@ -1943,6 +2003,10 @@ function App({ user, onLogout }) {
                       ownerUsername: incidentDetail?.analyst?.username || null,
                       incidentClosed,
                     });
+                    // [18] «Выполнено» учитывает и отметку в localStorage (actionRuns):
+                    // она переживает смену инцидента и перезагрузку страницы,
+                    // run_manually живёт только в React-состоянии
+                    const isDone = r.execution?.run_manually === true || isActionRun(selected.id, r.action);
                     return (
                       <div className="result-item" key={`${r.action || 'result'}-${index}`}>
                         <div className="result-head-row">
@@ -1961,18 +2025,19 @@ function App({ user, onLogout }) {
                                 : '✓ Подтвердить и выполнить'}
                             </button>
                           )}
-                          {/* [16] Действие уже запускали вручную в этой сессии: кнопка
-                              сменяется отметкой «Выполнено» (для симуляции — dry run) */}
-                          {r.execution?.run_manually === true ? (
+                          {/* [16]/[18] Действие уже запускали вручную: кнопка сменяется
+                              отметкой «Выполнено» (для симуляции — dry run) */}
+                          {isDone ? (
                             <button
                               className="exec-btn exec-run"
                               disabled
                               title="Действие уже запускали вручную; повторный запуск — после нового анализа (сухой run повторяем)"
                             >
-                              ✓ Выполнено{r.execution?.mode === 'simulation' ? ' (dry run)' : ''}
+                              ✓ Выполнено{(r.execution?.mode ?? incidentRuns[r.action]?.mode) === 'simulation' ? ' (dry run)' : ''}
                             </button>
                           ) : canExecute && (
-                            /* Ручной запуск одобренного DVE действия — владелец инцидента или администратор */
+                            /* Ручной запуск одобренного DVE действия — владелец инцидента или администратор;
+                               [18] на кнопке только короткая подпись — полное описание строкой ниже и в tooltip */
                             <button
                               className="exec-btn exec-run"
                               onClick={() => executeAction(r.action)}
@@ -1981,7 +2046,7 @@ function App({ user, onLogout }) {
                             >
                               {executeBusy === r.action
                                 ? <><span className="spinner spinner-sm"></span> Выполняется...</>
-                                : <>▶ Выполнить: {actionRuDescription(r.action)}</>}
+                                : <>▶ {actionShortLabel(r.action)}</>}
                             </button>
                           )}
                         </div>
@@ -2018,6 +2083,45 @@ function App({ user, onLogout }) {
                       </div>
                     );
                   })}
+                  </div>
+                  {/* [18] Все действия playbook — отдельный бокс рядом с предложенными
+                      действиями: пользователю доступны все кнопки плейбука; отметки
+                      «Выполнено» закреплены за инцидентом (actionRuns, localStorage) */}
+                  <div className="playbook-actions-box">
+                    <div className="box-label-row">
+                      <span className="box-label">Все действия playbook</span>
+                      {Object.keys(incidentRuns).length > 0 && (
+                        <button
+                          className="link-btn"
+                          onClick={() => { clearIncidentRuns(selected.id); showToast('Отметки выполненных действий сброшены'); }}
+                          title="Убрать отметки «Выполнено» у кнопок playbook этого инцидента"
+                        >
+                          Сбросить отметки
+                        </button>
+                      )}
+                    </div>
+                    <div className="playbook-actions-grid">
+                      {PLAYBOOK_ACTIONS.map(a => {
+                        const runDone = isActionRun(selected.id, a);
+                        return (
+                          <button
+                            key={a}
+                            className={`pb-action-btn${runDone ? ' done' : ''}`}
+                            onClick={() => executeAction(a)}
+                            disabled={runDone || !!executeBusy || incidentClosed || foreignOwner}
+                            title={runDone
+                              ? 'Действие уже запускали вручную на этом инциденте'
+                              : actionRuDescription(a)}
+                          >
+                            {runDone ? '✓ Выполнено' : actionShortLabel(a)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <small className="playbook-actions-hint">
+                      Запуск проверяется DVE; при выключенном AUTO_RESPONSE — симуляция (dry run). Свободный инцидент закрепляется за вами.
+                    </small>
+                  </div>
                   {/* [15] Сырой JSON убран под сворачиваемый блок: технические данные
                       не должны сбивать с толку — человекочитаемая часть (бейджи DVE,
                       русские описания, reason) остаётся сверху */}
@@ -2067,11 +2171,15 @@ function App({ user, onLogout }) {
                       const badge = initiatedByBadge(a);
                       // [3] русские расшифровки действий из recommended_action («block_ip, isolate_host»)
                       const actionCodes = recommendedActionCodes(a.recommended_action);
+                      // [18] вердикт LLM из структурированного ответа (response_raw.recommendation,
+                      // у записей истории может быть строкой JSON — structuredAnalysis распарсит)
+                      const verdict = structuredAnalysis({ response_raw: a.response_raw }).verdict;
                       return (
                         <div className="history-item" key={a.id}>
                           <div className="history-head"><strong>{a.model || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
                           <div className="history-meta">
                             {badge && <span className={`initiated-badge ${badge.cls}`} title={badge.title}>{badge.text}</span>}
+                            {verdict && <span className="chip">{verdict}</span>}
                             {a.attack_type && <span className="chip accent">{a.attack_type}</span>}
                             {a.confidence != null && <span className="chip">Уверенность: {confPct(a.confidence)}</span>}
                           </div>

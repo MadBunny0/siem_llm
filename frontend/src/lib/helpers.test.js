@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   actionRuDescription,
+  actionShortLabel,
   analysisFromHistory,
   analysisResults,
   applyIncidentFilters,
@@ -24,6 +25,8 @@ import {
   resultsAwaitManualRun,
   resultsNeedConfirmation,
   ruleTemplateLabel,
+  structuredAnalysis,
+  verdictBadge,
 } from './helpers.js';
 
 describe('analysisResults — нормализация форматов ответа анализа', () => {
@@ -560,5 +563,130 @@ describe('stage-17: ручной режим исполнения (manual_run)', 
     // одобренное DVE действие доступно для ручного запуска оператором
     expect(canRunAction(result, { isAdmin: true })).toBe(true);
     expect(resultExecutionBadge(result).text).toBe('ОЖИДАЕТ ЗАПУСКА');
+  });
+});
+
+/* ==================== Stage 18: вердикт LLM, краткие подписи, структурированный анализ ==================== */
+
+describe('verdictBadge — бейдж вердикта LLM', () => {
+  it('канонические значения → свои бейджи', () => {
+    expect(verdictBadge('True Positive')).toEqual({
+      cls: 'badge-verdict-tp',
+      text: 'TRUE POSITIVE',
+      title: 'Вердикт LLM: подтверждённая угроза',
+    });
+    expect(verdictBadge('False Positive')).toEqual({
+      cls: 'badge-verdict-fp',
+      text: 'FALSE POSITIVE',
+      title: 'Вердикт LLM: ложное срабатывание',
+    });
+  });
+
+  it('сокращения tp/fp и любой регистр распознаются', () => {
+    expect(verdictBadge('tp').cls).toBe('badge-verdict-tp');
+    expect(verdictBadge('TP').text).toBe('TRUE POSITIVE');
+    expect(verdictBadge('fp').cls).toBe('badge-verdict-fp');
+    expect(verdictBadge('false positive').text).toBe('FALSE POSITIVE');
+  });
+
+  it('неизвестное/пустое → PENDING', () => {
+    expect(verdictBadge('что-то иное')).toEqual({
+      cls: 'badge-verdict-pending',
+      text: 'PENDING',
+      title: 'Вердикт LLM: требуется дополнительный анализ',
+    });
+    expect(verdictBadge('').text).toBe('PENDING');
+    expect(verdictBadge(null).text).toBe('PENDING');
+    expect(verdictBadge(undefined).text).toBe('PENDING');
+  });
+});
+
+describe('actionShortLabel — короткие подписи для кнопок', () => {
+  it('все 5 действий playbook', () => {
+    expect(actionShortLabel('monitor')).toBe('Мониторинг');
+    expect(actionShortLabel('collect_evidence')).toBe('Сбор артефактов');
+    expect(actionShortLabel('isolate_host')).toBe('Изолировать узел');
+    expect(actionShortLabel('block_ip')).toBe('Блокировать IP');
+    expect(actionShortLabel('disable_account')).toBe('Отключить учётную запись');
+  });
+
+  it('неизвестное действие → сам код', () => {
+    expect(actionShortLabel('quarantine_vlan')).toBe('quarantine_vlan');
+  });
+});
+
+describe('structuredAnalysis — структурированные поля вердикта LLM', () => {
+  it('свежий анализ: поля лежат в recommendation', () => {
+    const structured = structuredAnalysis({
+      recommendation: {
+        verdict: 'True Positive',
+        summary: 'Брутфорс SSH с источника 192.0.2.10',
+        command_explanation: ['ssh root@host — подбор пароля', ''],
+        suspicious_fragments: ['Failed password for root'],
+        possible_legitimate_indicators: [],
+        affected_entities: ['mail-prod-01'],
+        missing_data: [],
+        process_tree: ['sshd (1234)', '  └─ bash (1300)'],
+        recommendations: ['Блокировать IP источника'],
+      },
+    });
+    expect(structured.verdict).toBe('True Positive');
+    expect(structured.summary).toBe('Брутфорс SSH с источника 192.0.2.10');
+    expect(structured.command_explanation).toEqual(['ssh root@host — подбор пароля']);
+    expect(structured.suspicious_fragments).toEqual(['Failed password for root']);
+    // отступы дерева процессов не трим — дерево рисуется строками
+    expect(structured.process_tree).toEqual(['sshd (1234)', '  └─ bash (1300)']);
+    expect(structured.recommendations).toEqual(['Блокировать IP источника']);
+  });
+
+  it('панель из истории: recommendation без вердикта → берём response_raw.recommendation (строка JSON)', () => {
+    const structured = structuredAnalysis({
+      recommendation: { description: 'Из колонок БД', confidence: 0.9 },
+      response_raw: JSON.stringify({
+        recommendation: {
+          verdict: 'False Positive',
+          summary: 'Легитимный скан инвентаря',
+          missing_data: ['логи VPN за ночь'],
+        },
+      }),
+    });
+    expect(structured.verdict).toBe('False Positive');
+    expect(structured.summary).toBe('Легитимный скан инвентаря');
+    expect(structured.missing_data).toEqual(['логи VPN за ночь']);
+  });
+
+  it('списки чистятся: не-массивы → [], элементы к строке, пустые отбрасываются', () => {
+    const structured = structuredAnalysis({
+      recommendation: {
+        verdict: 'tp',
+        suspicious_fragments: 'не массив',
+        affected_entities: [42, null, 'ok', '', '   '],
+        recommendations: { a: 1 },
+      },
+    });
+    expect(structured.suspicious_fragments).toEqual([]);
+    expect(structured.affected_entities).toEqual(['42', 'ok']);
+    expect(structured.recommendations).toEqual([]);
+  });
+
+  it('нет ничего → безопасные дефолты (verdict/summary пустые, списки [])', () => {
+    expect(structuredAnalysis(null)).toEqual({
+      verdict: '',
+      summary: '',
+      command_explanation: [],
+      suspicious_fragments: [],
+      possible_legitimate_indicators: [],
+      affected_entities: [],
+      missing_data: [],
+      process_tree: [],
+      recommendations: [],
+    });
+    expect(structuredAnalysis({}).verdict).toBe('');
+    expect(structuredAnalysis({ recommendation: {} }).summary).toBe('');
+  });
+
+  it('битый JSON в response_raw не роняет функцию', () => {
+    expect(structuredAnalysis({ response_raw: '{broken' }).verdict).toBe('');
+    expect(structuredAnalysis({ response_raw: 42 }).summary).toBe('');
   });
 });

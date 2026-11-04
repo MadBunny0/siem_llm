@@ -407,6 +407,52 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
     return asset.criticality if asset else None
 
 
+# Ограничение объёма ECS-контекста: маленькой локальной модели (qwen2.5:3b)
+# достаточно 1000 символов на строковое значение и 6 уровней вложенности
+_ECS_MAX_DEPTH = 6
+
+
+def _trim_ecs(raw: dict, max_str: int = 1000) -> dict | None:
+    """Глубокая копия ECS-JSON события с обрезкой длинных строк (контекст LLM).
+
+    Исходный JSON Wazuh/Elastic (rule, agent, data, full_log) может содержать
+    очень длинные значения — для промпта они обрезаются до max_str символов;
+    структуры глубже _ECS_MAX_DEPTH уровней отбрасываются. None/не-dict → None.
+    """
+    def trim(value, depth: int):
+        if depth >= _ECS_MAX_DEPTH:
+            return None
+        if isinstance(value, dict):
+            return {key: trim(val, depth + 1) for key, val in value.items()}
+        if isinstance(value, list):
+            return [trim(item, depth + 1) for item in value]
+        if isinstance(value, str):
+            return value[:max_str]
+        return value
+
+    if not isinstance(raw, dict):
+        return None
+    return trim(raw, 0)
+
+
+def _event_recommendations(events) -> list[str]:
+    """Рекомендации, имеющиеся в самих событиях, в плоский список строк.
+
+    В raw_data событий ключ "recommendations" — список или строка; пустые и
+    отсутствующие значения пропускаются. Подаётся отдельным верхнеуровневым
+    ключом контекста: системный промпт LLM просит использовать «рекомендации,
+    имеющиеся в самом событии».
+    """
+    collected: list[str] = []
+    for event in events:
+        raw = (event.raw_data or {}).get("recommendations")
+        if isinstance(raw, list):
+            collected.extend(str(item).strip() for item in raw if str(item).strip())
+        elif isinstance(raw, str) and raw.strip():
+            collected.append(raw.strip())
+    return collected
+
+
 # ---------------------------------------------------------------------------
 # Справочник для формы добавления события Wazuh (stage-15, фидбек
 # пользователя): поля формы — выпадающие списки из фактических данных БД,
@@ -743,6 +789,9 @@ async def _run_incident_analysis(
     "manual_run"), playbook запускает оператор через POST /execute-action.
     """
     asset = incident.asset
+    # контекст ограничен последними 20 событиями (хронологический порядок):
+    # длинные инциденты не должны переполнять контекст маленькой модели
+    context_events = sorted(incident.events, key=lambda x: x.timestamp)[-20:]
     context = {
         "incident_id": incident.id,
         "id": incident.id,
@@ -767,9 +816,16 @@ async def _run_incident_analysis(
                 "user": e.user,
                 "src_ip": e.src_ip,
                 "message": (e.raw_message or "")[:500],
+                # исходный JSON Wazuh/Elastic с парсингом ECS (rule, agent,
+                # data, full_log) — системный промпт LLM ожидает «json из
+                # Elastic Security Solution»; длинные строки обрезаются
+                "ecs": _trim_ecs(e.raw_data),
             }
-            for e in sorted(incident.events, key=lambda x: x.timestamp)
+            for e in context_events
         ],
+        # рекомендации из самих событий (raw_data) — промпт просит учитывать
+        # их в рекомендациях для дальнейших действий
+        "recommendations": _event_recommendations(context_events),
     }
     prompt_text = render_full_prompt(context)
 
