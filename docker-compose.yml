@@ -64,11 +64,17 @@ services:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: qwen2.5:3b
-      CORRELATION_WINDOW_MINUTES: 5
-      AUTO_RESPONSE: "false"
-      AUTO_ANALYSIS: "true"
+      # тюнируемые приложением параметры: значения берутся из .env
+      # (см. .env.example), после :- указаны дефолты
+      JWT_SECRET: "${JWT_SECRET:-dev-secret-change-me-in-production}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      TOKEN_EXPIRE_MINUTES: "${TOKEN_EXPIRE_MINUTES:-480}"
+      CORRELATION_WINDOW_MINUTES: "${CORRELATION_WINDOW_MINUTES:-5}"
+      AUTO_RESPONSE: "${AUTO_RESPONSE:-false}"
+      AUTO_ANALYSIS: "${AUTO_ANALYSIS:-true}"
       # stage-18 (фидбек): автоанализ и автоконвейер — только для low
-      AUTO_ANALYSIS_LEVELS: "low"
+      AUTO_ANALYSIS_LEVELS: "${AUTO_ANALYSIS_LEVELS:-low}"
+      AUTO_CLOSE_LEVELS: "${AUTO_CLOSE_LEVELS:-low}"
       # производительность инференса (stage-18, фидбек про скорость):
       # окно контекста / потолок генерации / удержание модели в памяти
       OLLAMA_NUM_CTX: "8192"
@@ -121,7 +127,7 @@ services:
   # Автотесты фронтенда (Vitest + RTL) — локальный Node не нужен (stage-13):
   # docker compose --profile tests run --rm frontend-tests
   frontend-tests:
-    image: node:20-alpine
+    image: node:22-alpine
     working_dir: /work
     profiles: ["tests"]
     volumes:
