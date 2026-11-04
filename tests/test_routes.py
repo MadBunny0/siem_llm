@@ -262,7 +262,7 @@ def test_patch_incident_status(client, db_session):
 
 
 def test_analyze_incident_success(client, db_session, monkeypatch):
-    """POST /api/v1/incidents/{id}/analyze — LLM-анализ, валидация, simulation-режим."""
+    """POST /api/v1/incidents/{id}/analyze — LLM-анализ, валидация, manual_run."""
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -283,13 +283,56 @@ def test_analyze_incident_success(client, db_session, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["validation"]["approved"] is True
-    # auto_response=False → действие исполняется в режиме simulation
-    assert data["execution"]["mode"] == "simulation"
+    # stage-17: инцидент high (не из AUTO_CLOSE_LEVELS) — playbook НЕ исполняется
+    # автоматически, действие ждёт ручного запуска оператором
+    assert data["execution"]["mode"] == "manual_run"
+    assert data["execution"]["executed"] is False
     assert data["recommendation"]["attack_type"] == "brute_force"
 
     # результаты анализа доступны в общей статистике качества LLM-модуля
     analyses = client.get(f"{API}/analyses").json()
     assert any(a["attack_type"] == "brute_force" for a in analyses)
+
+    # аудит: действие зафиксировано как ожидающее ручного запуска
+    logs = client.get(f"{API}/audit-logs").json()
+    assert any(
+        a["event_type"] == "action_awaiting_manual_run"
+        and a["incident_id"] == incident_id
+        and a["details"]["mode"] == "manual_run"
+        for a in logs
+    )
+
+
+def test_manual_playbook_execution_for_high(client, db_session, monkeypatch):
+    """stage-17, фидбек: для инцидента high анализ только рекомендует
+    (manual_run), playbook выполняет оператор через POST /execute-action —
+    при AUTO_RESPONSE=false это dry run (simulation)."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    async def fake_analyze(context):
+        return {
+            "description": "Подбор пароля",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "Много неудачных попыток входа",
+            "recommended_action": "collect_evidence",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    analysis = client.post(f"{API}/incidents/{incident_id}/analyze").json()
+    assert analysis["execution"]["mode"] == "manual_run"
+
+    run = client.post(
+        f"{API}/incidents/{incident_id}/execute-action",
+        json={"action": "collect_evidence"},
+    )
+    assert run.status_code == 200
+    body = run.json()
+    assert body["validation"]["approved"] is True
+    assert body["execution"]["executed"] is False
+    assert body["execution"]["mode"] == "simulation"
 
 
 def test_analyze_incident_llm_unavailable(client, db_session, monkeypatch):
@@ -870,6 +913,60 @@ def test_demo_populate(client, db_session):
     items = client.get(f"{API}/incidents").json()
     with_assets = [i for i in items if i["asset"]]
     assert len(with_assets) >= 5
+
+    # автоанализ выключен фикстурой — populate ничего не планировал
+    assert data["auto_analysis_scheduled"] == 0
+
+
+def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatch):
+    """Мок-сценарии + автоконвейер (stage-17, фидбек): populate запускает
+    фоновый автоанализ для уровней из AUTO_ANALYSIS_LEVELS; low проходит
+    конвейер до конца (анализ → исполнение → автозакрытие), critical
+    анализируется, но остаётся открытым — playbook выполняет оператор."""
+    seed_demo_rules_and_assets(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)  # levels: critical,low
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "test",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/demo/populate")
+    assert resp.status_code == 200
+    data = resp.json()
+    # мок-набор: 3 critical (brute/spraying/privilege) + 1 low (фоновый шум);
+    # high/medium в автоанализ не попадают
+    assert data["auto_analysis_scheduled"] == 4
+
+    by_severity: dict[str, list[int]] = {}
+    for inc in data["incidents"]:
+        by_severity.setdefault(inc["severity"], []).append(inc["incident_id"])
+
+    # low: весь конвейер — анализ, исполнение (dry run), автозакрытие
+    assert by_severity.get("low"), "в мок-наборе должен быть low-инцидент"
+    for inc_id in by_severity["low"]:
+        detail = client.get(f"{API}/incidents/{inc_id}").json()
+        assert detail["status"] == "closed"
+        assert len(detail["analyses"]) == 1
+        assert detail["analyses"][-1]["response_raw"]["auto_closed"] is True
+
+    # critical: автоанализ выполнен, инцидент открыт — действие ждёт оператора
+    assert by_severity.get("critical"), "в мок-наборе должны быть critical-инциденты"
+    for inc_id in by_severity["critical"]:
+        detail = client.get(f"{API}/incidents/{inc_id}").json()
+        assert detail["status"] == "in_progress"
+        assert len(detail["analyses"]) == 1
+        raw = detail["analyses"][-1]["response_raw"]
+        assert raw["initiated_by"] == "auto_analysis"
+        assert "auto_closed" not in raw
+        assert raw["results"][0]["execution"]["mode"] == "manual_run"
 
 
 # ---------------------------------------------------------------------------

@@ -19,19 +19,31 @@ const STAGES = [
   { id: 'playbook', label: 'Playbook' },
 ];
 
-export function pipelineStageStatuses({ hasAnalysis = false, pendingConfirmation = false } = {}) {
+export function pipelineStageStatuses({
+  hasAnalysis = false,
+  pendingConfirmation = false,
+  awaitingManualRun = false,
+} = {}) {
   return STAGES.map((stage) => {
     const isLlmStage = stage.id === 'qwen' || stage.id === 'validate' || stage.id === 'playbook';
     let status = 'completed';
+    let note = null;
     if (isLlmStage && !hasAnalysis) status = 'pending';
-    if (stage.id === 'playbook' && pendingConfirmation) status = 'active';
-    return { id: stage.id, label: stage.label, status };
+    if (stage.id === 'playbook' && pendingConfirmation) {
+      status = 'active';
+      note = 'ожидает подтверждения';
+    } else if (stage.id === 'playbook' && awaitingManualRun) {
+      // [17] ручной режим: playbook не исполнялся — запустит оператор
+      status = 'active';
+      note = 'ожидает запуска оператором';
+    }
+    return { id: stage.id, label: stage.label, status, note };
   });
 }
 
-export default function PipelineStatus({ analysis, analysesLength, pendingConfirmation }) {
+export default function PipelineStatus({ analysis, analysesLength, pendingConfirmation, awaitingManualRun }) {
   const hasAnalysis = (analysesLength || 0) > 0 || !!analysis;
-  const stageStatuses = pipelineStageStatuses({ hasAnalysis, pendingConfirmation });
+  const stageStatuses = pipelineStageStatuses({ hasAnalysis, pendingConfirmation, awaitingManualRun });
 
   return (
     <div className="pipeline-container">
@@ -47,7 +59,7 @@ export default function PipelineStatus({ analysis, analysesLength, pendingConfir
                 {stage.status === 'pending' && '○'}
               </div>
               {stage.status === 'active' && stage.id === 'playbook' &&
-                <div className="stage-note">ожидает подтверждения</div>}
+                <div className="stage-note">{stage.note}</div>}
             </div>
             {index < stageStatuses.length - 1 && (
               <div className={`pipeline-arrow ${stage.status === 'completed' ? 'completed' : ''}`}>→</div>

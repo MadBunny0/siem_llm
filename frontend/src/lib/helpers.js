@@ -80,6 +80,10 @@ export function resultValidationBadge(result) {
 export function resultExecutionBadge(result) {
   if (result?.execution?.executed) return { cls: 'executed-text', text: 'ВЫПОЛНЕНО' };
   if (resultNeedsConfirmation(result)) return { cls: 'badge-pending', text: 'ОЖИДАЕТ' };
+  if (result?.execution?.mode === 'manual_run') {
+    // [17] ручной режим: playbook выполнит оператор кнопкой «▶ Выполнить»
+    return { cls: 'badge-pending', text: 'ОЖИДАЕТ ЗАПУСКА' };
+  }
   return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
 }
 
@@ -197,10 +201,18 @@ export const EXECUTION_MODE_RU = {
   controlled: 'реальное выполнение',
   pending_confirmation: 'ожидает подтверждения администратора',
   blocked: 'заблокировано политикой DVE',
+  // [17] ручной режим: medium/high/critical — playbook запускает оператор
+  manual_run: 'ожидает запуска оператором — playbook ещё не выполнялся',
 };
 
 export function executionModeRu(mode) {
   return EXECUTION_MODE_RU[mode] || mode || '';
+}
+
+// [17] Есть ли среди результатов действия, ожидающие ручного запуска
+// оператором (medium/high/critical — playbook не исполнялся автоматически).
+export function resultsAwaitManualRun(results) {
+  return (results || []).some(r => r?.execution?.mode === 'manual_run');
 }
 
 // Может ли текущий пользователь вручную запустить одобренное DVE действие:

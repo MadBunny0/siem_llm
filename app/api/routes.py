@@ -736,6 +736,11 @@ async def _run_incident_analysis(
     Контекст → Ollama → Decision Validation Engine → playbook → аудит.
     Результаты сохраняются в Analysis (LLMAnalysis);
     initiated_by: manual | auto_analysis (для UI-бейджа, stage-12).
+
+    Исполнение рекомендаций (stage-17, фидбек): инциденты уровней из
+    AUTO_CLOSE_LEVELS (автоконвейер) — одобренные DVE действия исполняются
+    сразу; остальные уровни — только рекомендация (execution.mode =
+    "manual_run"), playbook запускает оператор через POST /execute-action.
     """
     asset = incident.asset
     context = {
@@ -825,8 +830,36 @@ async def _run_incident_analysis(
                 "playbook_steps": playbook.steps if playbook else None,
             }
             pending_any = True
-        else:
+        elif incident.severity in _auto_close_levels():
+            # Автоконвейер (stage-17): low-инциденты обрабатываются от начала
+            # до конца без человека — одобренное DVE действие исполняется сразу
+            # (при AUTO_RESPONSE=false — dry run симуляция)
             execution = execute_playbook(validation["action"], context, db)
+        elif not validation["approved"]:
+            # Ручной режим, DVE заблокировал действие (заменил на monitor):
+            # ничего не исполняем — оператор видит блокировку и причину
+            execution = {
+                "executed": False,
+                "mode": "blocked",
+                "action": action,
+                "reason": validation["reason"],
+                "playbook": playbook.name if playbook else None,
+                "playbook_description": playbook.description if playbook else None,
+                "playbook_steps": playbook.steps if playbook else None,
+            }
+        else:
+            # Ручной режим (stage-17, фидбек): для medium/high/critical playbook
+            # выполняет ОПЕРАТОР кнопкой «▶ Выполнить» (владелец инцидента или
+            # админ, POST /execute-action) — анализ только рекомендует
+            execution = {
+                "executed": False,
+                "mode": "manual_run",
+                "action": validation["action"],
+                "reason": validation["reason"],
+                "playbook": playbook.name if playbook else None,
+                "playbook_description": playbook.description if playbook else None,
+                "playbook_steps": playbook.steps if playbook else None,
+            }
 
         audit("validation_result", validation, db=db, incident_id=incident.id)
         audit(
@@ -835,7 +868,15 @@ async def _run_incident_analysis(
             db=db,
             incident_id=incident.id,
         )
-        audit("action_executed", execution, db=db, incident_id=incident.id)
+        audit(
+            # действие ещё не исполнено — ждёт ручного запуска оператором
+            "action_awaiting_manual_run"
+            if execution.get("mode") == "manual_run"
+            else "action_executed",
+            execution,
+            db=db,
+            incident_id=incident.id,
+        )
 
         results.append({"action": action, "validation": validation, "execution": execution})
 
@@ -1099,15 +1140,22 @@ def execute_action(
 
 
 @router.post("/demo/populate")
-def demo_populate(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def demo_populate(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
     """Мок-сценарии для демонстрации (stage-12): 19 событий → 7 инцидентов
     всех уровней риска, разные активы и классы атак (MITRE ATT&CK).
 
     Сценарии — общий пул из app/services/demo_events.py (stage-15).
-    Автоанализ для critical здесь НЕ запускается — намеренно: демонстрация
-    детерминированная, анализ запускается вручную кнопкой.
+    Автоанализ (stage-17, фидбек): инциденты уровней из AUTO_ANALYSIS_LEVELS
+    уходят в фоновый LLM-анализ как при обычном ingest — low после него
+    закрывается автоматически (_maybe_auto_close). Ответ содержит
+    auto_analysis_scheduled — сколько анализов запланировано.
     """
     created_incidents: dict[int, dict] = {}
+    auto_analysis_ids: list[int] = []
     events_count = 0
     for scenario in build_mock_scenarios(datetime.now(timezone.utc)):
         for alert_payload in scenario.events:
@@ -1119,16 +1167,29 @@ def demo_populate(db: Session = Depends(get_db), admin: User = Depends(require_a
                     "severity": result["severity"],
                     "rule": result["rule"],
                 }
+            auto_id = result.get("_auto_analysis_incident_id")
+            if auto_id and auto_id not in auto_analysis_ids:
+                auto_analysis_ids.append(auto_id)
+
+    # фоновый автоанализ — как в /ingest/wazuh (route ingest_wazuh)
+    for incident_id in auto_analysis_ids:
+        background_tasks.add_task(run_auto_analysis, incident_id)
 
     audit(
         "demo_populated",
-        {"events": events_count, "incidents": len(created_incidents), "by": admin.username},
+        {
+            "events": events_count,
+            "incidents": len(created_incidents),
+            "auto_analysis_scheduled": len(auto_analysis_ids),
+            "by": admin.username,
+        },
         db=db,
     )
     db.commit()
     return {
         "created_events": events_count,
         "incidents": sorted(created_incidents.values(), key=lambda x: x["incident_id"]),
+        "auto_analysis_scheduled": len(auto_analysis_ids),
     }
 
 

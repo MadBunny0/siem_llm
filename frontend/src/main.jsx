@@ -8,7 +8,8 @@ import { actionRuDescription, analysisFromHistory, analysisResults, applyInciden
          pendingReasonText,
          PLAYBOOK_ACTIONS, priorityLabel, PRIORITY_LABELS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
-         resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS, STATUS_LABELS }
+         resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
+         STATUS_LABELS }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
 
@@ -1482,6 +1483,10 @@ function App({ user, onLogout }) {
     )
   );
 
+  // [17] Ручной режим (medium/high/critical): есть действия, ожидающие запуска
+  // оператором — конвейер показывает Playbook как активный этап
+  const awaitingManualRun = resultsAwaitManualRun(analysisResults(analysis));
+
   const tabMeta = TAB_META[activeTab] || TAB_META.incidents;
   // [6] бейдж источника для свежего результата анализа
   const freshBadge = initiatedByBadge(analysis);
@@ -1621,8 +1626,11 @@ function App({ user, onLogout }) {
       const order = ['critical', 'high', 'medium', 'low'];
       const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
       if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
+      // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
+      // low закроется сам, у critical рекомендации ждут ручного запуска
+      const scheduled = Number(result?.auto_analysis_scheduled) || 0;
       showToast(created.length
-        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}`
+        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}${scheduled ? ` · автоанализ запущен: ${scheduled}` : ''}`
         : 'События созданы, корреляция не сформировала инцидентов');
       await load();
     } catch (e) {
@@ -1845,6 +1853,7 @@ function App({ user, onLogout }) {
                 analysis={analysis}
                 analysesLength={(incidentDetail?.analyses || []).length}
                 pendingConfirmation={pendingConfirmation}
+                awaitingManualRun={awaitingManualRun}
               />
 
               {pendingConfirmation && (
@@ -1983,7 +1992,8 @@ function App({ user, onLogout }) {
                           <small className="playbook-desc">Сценарий: {r.execution.playbook_description}</small>
                         )}
                         {/* [15] Шаги сценария — «команды» действия: при симуляции показываем,
-                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено */}
+                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено;
+                            [17] manual_run — шаги запустит оператор кнопкой «▶ Выполнить» */}
                         {formatPlaybookSteps(r.execution?.playbook_steps).length > 0 && (
                           <div className="result-steps">
                             <label>
@@ -1991,7 +2001,9 @@ function App({ user, onLogout }) {
                                 ? 'Что было бы выполнено (симуляция):'
                                 : r.execution?.mode === 'controlled'
                                   ? 'Шаги сценария (выполнено):'
-                                  : 'Шаги сценария:'}
+                                  : r.execution?.mode === 'manual_run'
+                                    ? 'Шаги сценария (запустит оператор):'
+                                    : 'Шаги сценария:'}
                             </label>
                             <ol>
                               {formatPlaybookSteps(r.execution.playbook_steps).map((line, i) => (

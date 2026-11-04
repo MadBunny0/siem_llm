@@ -21,6 +21,7 @@ import {
   resultExecutionBadge,
   resultNeedsConfirmation,
   resultValidationBadge,
+  resultsAwaitManualRun,
   resultsNeedConfirmation,
   ruleTemplateLabel,
 } from './helpers.js';
@@ -523,5 +524,41 @@ describe('MITRE_TACTIC_RU — справочник тактик для форм�
       expect(label).toContain(' — ');
       expect(label.trim()).toBe(label);
     }
+  });
+});
+
+describe('stage-17: ручной режим исполнения (manual_run)', () => {
+  it('resultExecutionBadge: manual_run → «ОЖИДАЕТ ЗАПУСКА»', () => {
+    const badge = resultExecutionBadge({ execution: { executed: false, mode: 'manual_run' } });
+    expect(badge.text).toBe('ОЖИДАЕТ ЗАПУСКА');
+  });
+
+  it('resultExecutionBadge: simulation и pending не сломаны', () => {
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'simulation' } }).text).toBe('СИМУЛЯЦИЯ');
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'pending_confirmation' } }).text).toBe('ОЖИДАЕТ');
+    expect(resultExecutionBadge({ execution: { executed: true, mode: 'controlled' } }).text).toBe('ВЫПОЛНЕНО');
+  });
+
+  it('executionModeRu: manual_run — «ожидает запуска оператором»', () => {
+    expect(executionModeRu('manual_run')).toContain('ожидает запуска оператором');
+  });
+
+  it('resultsAwaitManualRun: true только при наличии manual_run', () => {
+    expect(resultsAwaitManualRun([{ execution: { mode: 'manual_run' } }])).toBe(true);
+    expect(resultsAwaitManualRun([{ execution: { mode: 'simulation' } }])).toBe(false);
+    expect(resultsAwaitManualRun([])).toBe(false);
+    expect(resultsAwaitManualRun(null)).toBe(false);
+  });
+
+  it('manual_run не считается ни pending, ни выполненным', () => {
+    const result = {
+      action: 'monitor',
+      validation: { approved: true },
+      execution: { executed: false, mode: 'manual_run' },
+    };
+    expect(resultNeedsConfirmation(result)).toBe(false);
+    // одобренное DVE действие доступно для ручного запуска оператором
+    expect(canRunAction(result, { isAdmin: true })).toBe(true);
+    expect(resultExecutionBadge(result).text).toBe('ОЖИДАЕТ ЗАПУСКА');
   });
 });
