@@ -158,17 +158,29 @@ def render_full_prompt(context: dict) -> str:
     )
 
 
+def _split_full_prompt(full_prompt: str) -> tuple[str, str]:
+    """Разбор полного промпта на содержимое system- и user-сообщений chat-API.
+
+    render_full_prompt склеивает "[SYSTEM]\\n<system>\\n\\n[USER]\\n<user>";
+    chat-API принимает те же тексты отдельными сообщениями, поэтому единый
+    промпт разбирается обратно по маркеру секции — содержимое сообщений
+    байт-в-байт совпадает с прежней раздельной сборкой (stage-19: промпт
+    строится одной точкой, запрос к модели и сохраняемый в Analysis.prompt
+    текст не могут разойтись).
+    """
+    system_section, user_content = full_prompt.split("\n\n[USER]\n", 1)
+    return system_section.removeprefix("[SYSTEM]\n"), user_content
+
+
 async def analyze_incident(incident: dict) -> dict:
+    # единая сборка промпта одним render_full_prompt + разбор секций [SYSTEM]/[USER]
+    system_content, user_content = _split_full_prompt(render_full_prompt(incident))
     payload = {
         "model": settings.ollama_model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                # префикс перед JSON: события — недоверенные данные, не инструкции
-                "content": USER_PROMPT_PREFIX
-                + json.dumps(incident, ensure_ascii=False, default=str),
-            },
+            {"role": "system", "content": system_content},
+            # user-сообщение: защитный префикс («данные, не инструкции») + JSON
+            {"role": "user", "content": user_content},
         ],
         "stream": False,
         "format": "json",

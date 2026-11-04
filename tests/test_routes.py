@@ -16,15 +16,10 @@
 from datetime import datetime, timezone
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.db import get_db
 from app.main import app
-from app.models import Base, User
+from app.models import User
 from app.services.auth import get_current_user
 from app.services.demo_events import build_mock_scenarios
 
@@ -49,54 +44,13 @@ def make_alert(**overrides):
 
 
 @pytest.fixture
-def engine():
-    """Изолированная in-memory SQLite-БД, общая для всех соединений (StaticPool)."""
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    yield engine
-    engine.dispose()
-
-
-@pytest.fixture
-def client(engine, monkeypatch):
-    """TestClient с подменой зависимости get_db на тестовую БД."""
-    # LLM-автоанализ и реальное реагирование отключаем: тесты не должны
-    # зависеть ни от запущенного Ollama, ни от локального .env
-    monkeypatch.setattr(settings, "auto_analysis", False)
-    monkeypatch.setattr(settings, "auto_response", False)
-
-    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    # авторизация в этих тестах обходится: фейковый пользователь с ролью admin
-    # (реальный флоу JWT тестируется в test_auth.py)
+def client(client):
+    """Базовый client (conftest) + обход авторизации: фейковый пользователь
+    с ролью admin (реальный флоу JWT тестируется в test_auth.py)."""
     app.dependency_overrides[get_current_user] = lambda: User(
         id=1, username="tester", role="admin"
     )
-    yield TestClient(app)
-    app.dependency_overrides.clear()
-
-
-@pytest.fixture
-def db_session(engine):
-    """Прямая сессия к той же БД — для подготовки данных (seed правил)."""
-    SessionLocal = sessionmaker(bind=engine)
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    yield client
 
 
 def seed_rule(db_session, name="brute_rule", **overrides):
@@ -1189,6 +1143,8 @@ def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatc
     critical/high/medium остаются открытыми БЕЗ анализов — анализ и playbook
     выполняет оператор."""
     seed_demo_rules_and_assets(db_session)
+    from sqlalchemy.orm import sessionmaker  # конфтест-чистка убрала импорт верхнего уровня
+
     monkeypatch.setattr(settings, "auto_analysis", True)  # default levels: low
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 

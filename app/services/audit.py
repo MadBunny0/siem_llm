@@ -2,7 +2,6 @@ import json
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import select
 from app.models import AuditLog
 
 logger = logging.getLogger("audit")

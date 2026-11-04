@@ -6,62 +6,12 @@ Bearer-токен → доступ/401/403.
 """
 
 import jwt as pyjwt
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app.config import settings
-from app.db import get_db
-from app.main import app
-from app.models import Base, User
+from app.models import User
 from app.services.security import create_access_token, hash_password
 
 API = "/api/v1"
-
-
-@pytest.fixture
-def engine():
-    """Изолированная in-memory SQLite-БД, общая для всех соединений (StaticPool)."""
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(engine)
-    yield engine
-    engine.dispose()
-
-
-@pytest.fixture
-def db_session(engine):
-    """Прямая сессия — для seed демо-пользователей с реальными хешами."""
-    SessionLocal = sessionmaker(bind=engine)
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-@pytest.fixture
-def client(engine, db_session, monkeypatch):
-    """TestClient на тестовой БД; auth НЕ патчится — проверяем реальный флоу."""
-    # LLM-автоанализ и реагирование не нужны в auth-тестах
-    monkeypatch.setattr(settings, "auto_analysis", False)
-    monkeypatch.setattr(settings, "auto_response", False)
-
-    def override_get_db():
-        db = sessionmaker(bind=engine)()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    yield TestClient(app)
-    app.dependency_overrides.clear()
 
 
 def seed_users(db_session):
