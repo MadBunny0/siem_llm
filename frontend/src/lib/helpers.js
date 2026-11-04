@@ -1,7 +1,7 @@
 // Чистые хелперы UI (stage-13) — вынесены из main.jsx для тестируемости.
 // Никакого React и обращений к DOM/localStorage — только функции над данными.
 
-export const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
+const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
 
 export const STATUS_LABELS = { new: 'Новый', in_progress: 'В работе', closed: 'Закрыт' };
 
@@ -90,7 +90,7 @@ export function resultExecutionBadge(result) {
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
 // («auto_analysis» — автоанализ при создании инцидента уровней из
 // AUTO_ANALYSIS_LEVELS (теперь только low), «manual» — запуск вручную).
-export const INITIATED_BY_META = {
+const INITIATED_BY_META = {
   auto_analysis: {
     cls: 'auto',
     text: 'авто (LLM)',
@@ -118,7 +118,7 @@ export function initiatedByBadge(analysis) {
 /* ==================== Stage 14: русские описания действий, восстановление из истории ==================== */
 
 // Русские описания действий реагирования — для кнопок, списков и подсказок.
-export const ACTION_RU = {
+const ACTION_RU = {
   block_ip: 'Блокировка IP-адреса источника атаки на межсетевом экране',
   disable_account: 'Временная блокировка учётной записи в IdM',
   isolate_host: 'Изоляция узла от сети — карантин EDR',
@@ -196,7 +196,7 @@ export function criteriaCountLabel(count) {
 /* ==================== Stage 15: ручной запуск действий, шаги playbook ==================== */
 
 // Режимы исполнения (execution.mode) — русские подписи для тостов и бейджей.
-export const EXECUTION_MODE_RU = {
+const EXECUTION_MODE_RU = {
   simulation: 'dry run — симуляция, инфраструктура не изменялась',
   controlled: 'реальное выполнение',
   pending_confirmation: 'ожидает подтверждения администратора',
@@ -335,7 +335,7 @@ export const MITRE_TACTIC_RU = {
 /* ==================== Stage 18: вердикт LLM, краткие подписи действий, структурированный анализ ==================== */
 
 // [18] Бейдж вердикта LLM (фидбек: «на этапе анализа LLM пишет свой вердикт»).
-export const VERDICT_META = {
+const VERDICT_META = {
   tp: { cls: 'badge-verdict-tp', text: 'TRUE POSITIVE', title: 'Вердикт LLM: подтверждённая угроза' },
   fp: { cls: 'badge-verdict-fp', text: 'FALSE POSITIVE', title: 'Вердикт LLM: ложное срабатывание' },
   pending: { cls: 'badge-verdict-pending', text: 'PENDING', title: 'Вердикт LLM: требуется дополнительный анализ' },
@@ -352,7 +352,7 @@ export function verdictBadge(verdict) {
 
 // [18] Короткие русские подписи действий для кнопок — кнопка не должна быть
 // перегружена текстом: полное описание показывается рядом строкой и в tooltip.
-export const ACTION_SHORT_RU = {
+const ACTION_SHORT_RU = {
   monitor: 'Мониторинг',
   collect_evidence: 'Сбор артефактов',
   isolate_host: 'Изолировать узел',
