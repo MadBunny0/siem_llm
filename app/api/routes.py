@@ -472,7 +472,8 @@ def update_incident_status(
     """Смена статуса инцидента оператором (журналируется в аудит).
 
     Закрепляет инцидент за пользователем, если он свободен; чужой инцидент
-    аналитику недоступен (stage-14).
+    аналитику недоступен (stage-14). Закрытый инцидент допускает только
+    возврат в работу (stage-16).
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -480,6 +481,14 @@ def update_incident_status(
     _ensure_incident_access(incident, user, assign=True)
     if payload.status not in ALLOWED_INCIDENT_STATUSES:
         raise HTTPException(status_code=422, detail=f"Недопустимый статус: {payload.status}")
+    # инцидент закрыт — операции запрещены, доступен только возврат в работу
+    # (stage-16, фидбек); проверка после access-чека: reopen — только владелец
+    # или админ, чужой аналитик на чужом закрытом инциденте получает 403
+    if incident.status == "closed" and payload.status != "in_progress":
+        raise HTTPException(
+            status_code=409,
+            detail="Инцидент закрыт — доступен только возврат в работу",
+        )
 
     previous = incident.status
     incident.status = payload.status
@@ -501,9 +510,15 @@ def _ensure_incident_access(incident: Incident, user: User, assign: bool = False
 
     assign=True — незакреплённый инцидент закрепляется за текущим пользователем
     (первым, кто взял его в работу). Чужой незакреплённый/чужой закреплённый для
-    аналитика → 403; админ работает с любым.
+    аналитика → 403; админ работает с любым и свободный инцидент тоже закрепляет
+    за собой (stage-16) — иначе бейдж «Назначен» остаётся пустым. Закреплённый
+    за аналитиком инцидент админ не перехватывает.
     """
     if user.role == "admin":
+        # свободный инцидент закрепляется и за админом (stage-16);
+        # чужое владение не перехватывается (философия stage-14)
+        if assign and incident.analyst_id is None:
+            incident.analyst_id = user.id
         return
     if incident.analyst_id is None:
         if assign:
@@ -528,11 +543,19 @@ async def analyze(
     """Ручной запуск интеллектуального анализа инцидента (§3.3.4, §3.4).
 
     Закрепляет инцидент за аналитиком (если свободен); чужой инцидент
-    аналитику недоступен (stage-14).
+    аналитику недоступен (stage-14). Закрытый инцидент анализу недоступен
+    (stage-16).
     """
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    # инцидент закрыт — операции реагирования запрещены, доступен только
+    # возврат в работу (stage-16, фидбек)
+    if incident.status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="Инцидент закрыт — анализ недоступен. Верните инцидент в работу",
+        )
     _ensure_incident_access(incident, user, assign=True)
     return await _run_incident_analysis(db, incident, initiated_by="manual")
 
@@ -547,11 +570,19 @@ def confirm_action(
 
     Выполняет ВСЕ действия из последней рекомендации по инциденту, которые
     разрешены политикой уровня риска (из БД) и для которых зарегистрирован
-    playbook. Ответ — список результатов по каждому действию.
+    playbook. Ответ — список результатов по каждому действию. Закрытый
+    инцидент подтверждению недоступен (stage-16).
     """
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    # инцидент закрыт — операции реагирования запрещены, доступен только
+    # возврат в работу (stage-16, фидбек)
+    if incident.status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="Инцидент закрыт — подтверждение действий недоступно. Верните инцидент в работу",
+        )
 
     analysis = db.scalar(
         select(Analysis)
@@ -898,6 +929,7 @@ def execute_action(
 
     Запуск действия — работа с инцидентом: свободный инцидент закрепляется за
     исполнителем, чужой аналитику недоступен (403), админ — без ограничений.
+    Закрытый инцидент действиям недоступен (stage-16).
     DVE проверяет действие; требование подтверждения критического актива
     снимает только администратор (admin_confirmed по роли): аналитик на
     критическом активе получает pending_confirmation (§3.4, p:102).
@@ -907,6 +939,13 @@ def execute_action(
     incident = db.get(Incident, incident_id)
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
+    # инцидент закрыт — операции реагирования запрещены, доступен только
+    # возврат в работу (stage-16, фидбек)
+    if incident.status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="Инцидент закрыт — выполнение действий недоступно. Верните инцидент в работу",
+        )
     _ensure_incident_access(incident, user, assign=True)
 
     action = payload.action.strip()
