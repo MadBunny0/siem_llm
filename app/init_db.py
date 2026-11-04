@@ -33,6 +33,9 @@ def _ensure_schema_updates() -> None:
         "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS escalated_by_vendor BOOLEAN NOT NULL DEFAULT FALSE",
         # критерии успешного завершения сценария (§3.4 ВКР, p:105)
         "ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS success_criteria JSON",
+        # карта ручных запусков playbook-действий (stage-18, фидбек) —
+        # состояние кнопок действий видно всем операторам
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS manual_actions JSON",
         # индексы под корреляцию (stage-11: окно + совпадение атрибутов в SQL)
         "CREATE INDEX IF NOT EXISTS ix_events_timestamp ON events (timestamp)",
         "CREATE INDEX IF NOT EXISTS ix_events_src_ip ON events (src_ip)",

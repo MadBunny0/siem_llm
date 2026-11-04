@@ -16,8 +16,8 @@
 | Диск | **15 ГБ** свободно | **20 ГБ** |
 | Интернет | нужен для первичной загрузки образов и модели LLM (~4 ГБ) | то же |
 
-GPU не обязателен: `qwen2.5:3b` в Ollama работает на CPU (секунды–десятки секунд на
-анализ). Как включить GPU — см. раздел 7.
+GPU не используется: `qwen2.5:3b` в Ollama работает на CPU; ускорение инференса —
+раздел 7 (конфигурация без GPU).
 
 ## 2. Установка ПО (Windows; для Linux/macOS — проще, см. примечания)
 
@@ -167,9 +167,11 @@ docker compose --profile tests run --rm frontend-tests
 
 **Вариант A — локально (для разработчиков):**
 
+Виртуальное окружение `.venv` в репо не используется и в git не входит — тесты
+запускаются только в контейнерах (Docker — единственная среда исполнения проекта).
+Локальный прогон возможен при отдельно установленном Python 3.12 / Node 20:
+
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate            # Windows; в bash: source .venv/bin/activate
 pip install -r requirements.txt pytest
 pytest
 
@@ -179,26 +181,27 @@ cd frontend && npm install && npm test
 Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`;
 вручную: `cd frontend && npm install && npm run build`.
 
-## 7. GPU для LLM (опционально)
+## 7. Производительность LLM
 
-По умолчанию Ollama работает на CPU. Если на машине NVIDIA GPU с последним драйвером
-(Docker Desktop + WSL2 пробрасывает его автоматически), можно создать
-`docker-compose.gpu.yml`:
+По умолчанию Ollama работает на CPU — инференс qwen2.5:3b на большой JSON-схеме
+(stage-18) занимает 1–3 минуты на анализ. Оптимизации, встроенные в проект:
 
-```yaml
-services:
-  ollama:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-```
+| Рычаг | Где | Что даёт |
+|---|---|---|
+| `OLLAMA_NUM_CTX=8192` | `.env` / compose | Дефолт Ollama **2048 меньше нашего промпта** (система ~1100 токенов + ECS-JSON) — модель теряла контекст и «сдвигала» окно. 8192 вмещает промпт целиком: качество выше, нет накладных расходов на сдвиг |
+| `OLLAMA_NUM_PREDICT=2048` | `.env` / compose | Потолок генерации — защита от «расползающегося» ответа (реальный ответ укладывается) |
+| `OLLAMA_KEEP_ALIVE=30m` | `.env` / compose | Модель остаётся в памяти 30 минут после запроса — повторные анализы не платят ~20–40с за загрузку с диска |
+| `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE=q8_0` | compose (ollama) | Ускорение генерации + вдвое меньше памяти под KV-кэш |
+| Обрезка контекста | `routes.py` | Последние 12 событий, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
+| Сериализация запросов | `llm.py` (`LLM_INFERENCE_LOCK`) | CPU-модель обрабатывает запросы по одному — параллельные только трешат CPU |
 
-и запускать `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build`.
-Проверить, что модель видит GPU: `docker compose exec ollama ollama ps`.
+Быстрая демонстрация (если скорость важнее качества): `OLLAMA_MODEL=qwen2.5:1.5b`
+в compose — генерация в ~2–3 раза быстрее, качество анализа ниже.
+
+Диагностика скорости: `docker compose exec ollama ollama run qwen2.5:3b "тест" --verbose`
+показывает `eval rate` (токенов/с) и `load duration` (холодная загрузка модели).
+Замер на этой конфигурации: eval rate 12.6–15 токенов/с — полный анализ занимает
+~1.5–2 минуты, это предел CPU для 3B-модели (GPU-ускорение не используется).
 
 ## 8. Полезные команды
 

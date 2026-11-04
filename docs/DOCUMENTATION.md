@@ -65,7 +65,7 @@
 1. Wazuh шлёт алерты → система **нормализует** их в единую структуру.
 2. **Корреляция**: находит 9 похожих событий от того же IP за 5 минут → создаёт **один инцидент** из 10 событий.
 3. **Оценка риска**: уровень 10 из событий + бонус за серию (+20) + критичность сервера → **риск = 90, severity = critical**.
-4. **LLM** получает контекст → предлагает `recommended_action: "block_ip"` с объяснением.
+4. **LLM** получает контекст (включая исходный JSON событий с парсингом ECS) → возвращает вердикт (True Positive / False Positive / Pending), подробный разбор и `recommended_action: "block_ip"` с объяснением.
 5. **Decision Validation Engine**: для `critical` действие `block_ip` **разрешено политикой** → одобряет.
 6. **Playbook** загружает сценарий `block_ip` → шаг «выполнить `iptables -A INPUT -s 192.0.2.10 -j DROP`».
 7. **Audit Log** фиксирует: кто/что инициировал, когда, почему, какое действие выполнено.
@@ -99,7 +99,7 @@
 | **`notification_logs`** | **ITSM-уведомления аналитикам SOC** (уведомление специалисту, глава 3.4): привязка к инциденту, тип события (`incident_created`, `incident_analyzed`, `action_executed`, `correlation_triggered`), получатель (email аналитика / Slack-канал), канал связи, тело сообщения, полезная нагрузка, статус отправки (`pending`/`sent`/`failed`). Автоматически создаются при создании, анализе инцидента, регистрации в ITSM и выполнении ответных действий. |
 | **`events`** | Нормализованные события из Wazuh: `timestamp`, `source`, `event_type`, `user`, `src_ip`, `asset_id`, `criticality_level`, `raw_message`, `raw_data` (полный исходный JSON для расследований). Связь «многие ко многим» с инцидентами. |
 | **`incidents`** | Инциденты: `title`, `description`, `severity` (low/medium/high/critical), `status`, `asset_id`, `attack_type`, `risk_score`, `analyst_id`, связь с событиями/анализами/ответными действиями. API возвращает дополнительно `asset` (с критичностью) для каждого инцидента. |
-| **`analyses`** | Результаты анализа LLM (LLMAnalysis): `incident_id`, `model`, `prompt`, `description` (описание), `attack_type` (предполагаемый тип атаки), `confidence` (уровень достоверности 0.0–1.0), `explanation` (обоснование), `recommended_action`, `response_raw` (полный ответ JSON для расследований). Поля позволяют формировать статистику качества работы интеллектуального модуля (Таблица 3.1, глава 3.2). |
+| **`analyses`** | Результаты анализа LLM (LLMAnalysis): `incident_id`, `model`, `prompt`, `description` (описание), `attack_type` (предполагаемый тип атаки), `confidence` (уровень достоверности 0.0–1.0), `explanation` (обоснование), `recommended_action`, `response_raw` (полный ответ JSON для расследований). Поля позволяют формировать статистику качества работы интеллектуального модуля (Таблица 3.1, глава 3.2). С stage-18 системный промпт требует вердикт (True Positive / False Positive / Pending), разбор команд, подозрительные фрагменты, дерево процессов и рекомендации — всё это сохраняется в `response_raw.recommendation` и выводится в панели «Результат анализа». |
 | **`correlation_rules`** | **Правила корреляции из БД** (ключевое нововведение): `name`, `conditions` (JSON: поле, оператор `eq/neq/in/like`, значение), `time_window_minutes`, `priority`, `is_active`. Раньше корреляция была жёсткой (`src_ip` + `dstuser`), теперь — **настраиваемая без изменения кода**. |
 | **`playbooks`** | Сценарии автоматизированного реагирования: `name`, `description`, `trigger_conditions`, `allowed_actions`, `steps` (порядок операций, например блокировка IP через фаервол), `priority`, `is_active`. |
 | **`response_actions`** | Выполненные ответные действия: привязка к инциденту, playbook, тип действия (`block_ip`, `disable_account`…), результат, кто инициировал (`playbook`/`validation`/`manual`), метаданные. |
@@ -190,7 +190,4 @@ siem_llm/
 1. Завершить `stage-03-tests`: дописать недостающие тесты (например, `test_llm.py` с мокнутым Ollama, интеграционные тесты маршрутов `routes.py`).
 2. Прогнать полный тестовый прогон `pytest`, исправить падения.
 3. Закоммитить `stage-03-tests` и слить в `main`.
-4. Восстановить локальную среду:
-   - Выбрать `.venv (Python 3.12)` как интерпретатор в VS Code (чтобы исчезли предупреждения Pylance).
-   - Исправить сломанный symlink `.venv/bin/python` (сейчас указывает на несуществующий `/usr/local/bin/python3`) — пересоздать venv или поправить ссылку.
-5. (Опционально) Развернуть Docker-стенд с Wazuh на VirtualBox для тестирования end-to-end.
+4. (Опционально) Развернуть Docker-стенд с Wazuh на VirtualBox для тестирования end-to-end.

@@ -34,6 +34,11 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      # оптимизация инференса (stage-18, фидбек про скорость): flash attention
+      # и сжатый KV-кэш q8_0 ускоряют генерацию и вдвое экономят память под кэш
+      OLLAMA_FLASH_ATTENTION: "true"
+      OLLAMA_KV_CACHE_TYPE: q8_0
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 5s
@@ -62,6 +67,13 @@ services:
       CORRELATION_WINDOW_MINUTES: 5
       AUTO_RESPONSE: "false"
       AUTO_ANALYSIS: "true"
+      # stage-18 (фидбек): автоанализ и автоконвейер — только для low
+      AUTO_ANALYSIS_LEVELS: "low"
+      # производительность инференса (stage-18, фидбек про скорость):
+      # окно контекста / потолок генерации / удержание модели в памяти
+      OLLAMA_NUM_CTX: "8192"
+      OLLAMA_NUM_PREDICT: "2048"
+      OLLAMA_KEEP_ALIVE: "30m"
     ports:
       - "8000:8000"
     depends_on:

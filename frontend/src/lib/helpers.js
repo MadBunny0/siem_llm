@@ -89,12 +89,12 @@ export function resultExecutionBadge(result) {
 
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
 // («auto_analysis» — автоанализ при создании инцидента уровней из
-// AUTO_ANALYSIS_LEVELS (critical, low), «manual» — запуск вручную).
+// AUTO_ANALYSIS_LEVELS (теперь только low), «manual» — запуск вручную).
 export const INITIATED_BY_META = {
   auto_analysis: {
     cls: 'auto',
     text: 'авто (LLM)',
-    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (critical, low); LLM недетерминирована — повторный анализ может дать другой результат',
+    title: 'Автоматический анализ при создании инцидента уровней из AUTO_ANALYSIS_LEVELS (по умолчанию low); LLM недетерминирована — повторный анализ может дать другой результат',
   },
   manual: {
     cls: 'manual',
@@ -331,3 +331,97 @@ export const MITRE_TACTIC_RU = {
   exfiltration: 'Exfiltration — кража данных',
   impact: 'Impact — воздействие',
 };
+
+/* ==================== Stage 18: вердикт LLM, краткие подписи действий, структурированный анализ ==================== */
+
+// [18] Бейдж вердикта LLM (фидбек: «на этапе анализа LLM пишет свой вердикт»).
+export const VERDICT_META = {
+  tp: { cls: 'badge-verdict-tp', text: 'TRUE POSITIVE', title: 'Вердикт LLM: подтверждённая угроза' },
+  fp: { cls: 'badge-verdict-fp', text: 'FALSE POSITIVE', title: 'Вердикт LLM: ложное срабатывание' },
+  pending: { cls: 'badge-verdict-pending', text: 'PENDING', title: 'Вердикт LLM: требуется дополнительный анализ' },
+};
+
+// verdict → метаданные бейджа: «true positive»/«tp» (любой регистр) → TP,
+// «false positive»/«fp» → FP, пустое/неизвестное/мусор → PENDING.
+export function verdictBadge(verdict) {
+  const normalized = String(verdict ?? '').trim().toLowerCase();
+  if (normalized === 'true positive' || normalized === 'tp') return VERDICT_META.tp;
+  if (normalized === 'false positive' || normalized === 'fp') return VERDICT_META.fp;
+  return VERDICT_META.pending;
+}
+
+// [18] Короткие русские подписи действий для кнопок — кнопка не должна быть
+// перегружена текстом: полное описание показывается рядом строкой и в tooltip.
+export const ACTION_SHORT_RU = {
+  monitor: 'Мониторинг',
+  collect_evidence: 'Сбор артефактов',
+  isolate_host: 'Изолировать узел',
+  block_ip: 'Блокировать IP',
+  disable_account: 'Отключить учётную запись',
+};
+
+export function actionShortLabel(action) {
+  return ACTION_SHORT_RU[action] || String(action ?? '');
+}
+
+// [18] Структурированные поля ответа LLM: свежий analyze кладёт их в recommendation,
+// для панелей, восстановленных из истории, — в response_raw.recommendation
+// (response_raw может прийти строкой JSON — парсим, как в parseResponseRaw).
+const STRUCTURED_LIST_FIELDS = [
+  'command_explanation',
+  'suspicious_fragments',
+  'possible_legitimate_indicators',
+  'affected_entities',
+  'missing_data',
+  'process_tree',
+  'recommendations',
+];
+
+// Список → массив непустых строк: не-массивы → [], элементы приводятся к строке,
+// пустые/состоящие из пробелов отбрасываются. Содержимое не трим — отступы важны
+// для process_tree (дерево рисуется строками).
+function stringList(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => item !== null && item !== undefined && String(item).trim() !== '')
+    .map(item => String(item));
+}
+
+// Структурированный разбор ответа анализа: { verdict, summary, ...списки } с
+// безопасными дефолтами (verdict/summary '', списки []). Чистая функция — только
+// данные, без DOM/localStorage. Вердикт берётся из analysis.recommendation, если
+// там есть вердикт/summary, иначе из response_raw.recommendation (запись истории).
+export function structuredAnalysis(analysis) {
+  const structured = {
+    verdict: '',
+    summary: '',
+    command_explanation: [],
+    suspicious_fragments: [],
+    possible_legitimate_indicators: [],
+    affected_entities: [],
+    missing_data: [],
+    process_tree: [],
+    recommendations: [],
+  };
+  let source = analysis?.recommendation;
+  if (!source || typeof source !== 'object' || (!source.verdict && !source.summary)) {
+    let raw = analysis?.response_raw ?? null;
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch (e) {
+        raw = null;
+      }
+    }
+    if (raw && typeof raw === 'object' && raw.recommendation && typeof raw.recommendation === 'object') {
+      source = raw.recommendation;
+    }
+  }
+  if (!source || typeof source !== 'object') return structured;
+  structured.verdict = source.verdict ? String(source.verdict).trim() : '';
+  structured.summary = source.summary ? String(source.summary).trim() : '';
+  for (const field of STRUCTURED_LIST_FIELDS) {
+    structured[field] = stringList(source[field]);
+  }
+  return structured;
+}

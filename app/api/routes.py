@@ -8,6 +8,12 @@
 (процедура PDF v3.1, docs/CRITICALITY_MATRIX.md); при тактике без матричного
 правила — числовая модель §3.3.3. Low-инциденты после успешного автоанализа
 закрываются автоматически (AUTO_CLOSE_LEVELS) — без участия человека.
+
+Stage-18 (фидбек): автоанализ и автоконвейер реагирования — только для low
+(AUTO_ANALYSIS_LEVELS); critical/high/medium обрабатывает оператор. Ручной
+POST /incidents/{id}/analyze выполняется в фоне (ответ scheduled) — синхронный
+CPU-инференс упирался в таймаут nginx (504); инференс LLM сериализуется
+(LLM_INFERENCE_LOCK) — пачка анализов не душит модель.
 """
 
 import random
@@ -277,12 +283,14 @@ def _ingest_alert(db: Session, alert_payload: dict) -> dict:
     return result
 
 
-async def run_auto_analysis(incident_id: int) -> None:
-    """Фоновый автоанализ (stage-12): собственная сессия БД, после ответа API.
+async def run_auto_analysis(incident_id: int, initiated_by: str = "auto_analysis") -> None:
+    """Фоновый LLM-анализ инцидента (stage-12): собственная сессия БД, после ответа API.
 
-    После успешного анализа (stage-17) инциденты из AUTO_CLOSE_LEVELS
-    закрываются автоматически (_maybe_auto_close) — low обрабатывается
-    без участия человека.
+    Запускается и автоконвейером (ingest, demo — initiated_by="auto_analysis"),
+    и ручным POST /incidents/{id}/analyze (stage-18: анализ выполняется в фоне,
+    чтобы синхронный CPU-инференс не упирался в таймаут nginx). Автозакрытие
+    (_maybe_auto_close, stage-17) — только для автоконвейера: ручной анализ
+    никогда не закрывает инцидент автоматически.
     """
     from app.db import SessionLocal
     import logging
@@ -295,10 +303,11 @@ async def run_auto_analysis(incident_id: int) -> None:
             logger.warning("auto_analysis: incident %s not found", incident_id)
             return
         result = await _run_incident_analysis(
-            db, incident, raise_on_error=False, initiated_by="auto_analysis"
+            db, incident, raise_on_error=False, initiated_by=initiated_by
         )
         if "error" not in result:
-            _maybe_auto_close(db, incident, result)
+            if initiated_by == "auto_analysis":
+                _maybe_auto_close(db, incident, result)
         db.commit()
         logger.info("auto_analysis: incident %s analyzed", incident_id)
     except Exception as exc:  # фон не должен ронять приложение
@@ -312,7 +321,7 @@ def _auto_analysis_levels() -> set[str]:
     """Уровни риска, анализируемые LLM автоматически (AUTO_ANALYSIS_LEVELS)."""
     return {
         level.strip().lower()
-        for level in (settings.auto_analysis_levels or "critical").split(",")
+        for level in (settings.auto_analysis_levels or "low").split(",")
         if level.strip()
     }
 
@@ -342,17 +351,41 @@ def _maybe_auto_close(db: Session, incident: Incident, analysis_result: dict) ->
     ВАЖНО (грабль проекта): мутация JSON-колонки не отслеживается SQLAlchemy —
     только полное переприсвоение словаря. Изменения сохраняются коммитом
     вызывающего (run_auto_analysis).
+
+    Диагностируемость (stage-18, фидбек): если критичность инцидента входит
+    в AUTO_CLOSE_LEVELS, но закрытие пропущено по причине (инцидент закреплён
+    за аналитиком или действие ждёт подтверждения) — в аудит пишется
+    incident_auto_close_skipped с reason/detail. Не применимые случаи
+    (severity вне уровней, инцидент уже закрыт) проходят тихо.
     """
     if incident.severity not in _auto_close_levels():
         return False
     if incident.status == "closed":
         return False
     if incident.analyst_id is not None:
+        audit(
+            "incident_auto_close_skipped",
+            {
+                "reason": "assigned_to_analyst",
+                "detail": incident.analyst.username if incident.analyst else None,
+            },
+            db=db,
+            incident_id=incident.id,
+        )
         return False
     for r in analysis_result.get("results") or []:
         validation = r.get("validation") or {}
         execution = r.get("execution") or {}
         if validation.get("requires_confirmation") or execution.get("mode") == "pending_confirmation":
+            audit(
+                "incident_auto_close_skipped",
+                {
+                    "reason": "action_pending_confirmation",
+                    "detail": r.get("action") or execution.get("action"),
+                },
+                db=db,
+                incident_id=incident.id,
+            )
             return False
 
     incident.status = "closed"
@@ -405,6 +438,53 @@ def _get_asset_criticality(db: Session, asset_id: int | None) -> str | None:
         return None
     asset = db.get(Asset, asset_id)
     return asset.criticality if asset else None
+
+
+# Ограничение объёма ECS-контекста: маленькой локальной модели (qwen2.5:3b)
+# достаточно 800 символов на строковое значение и 6 уровней вложенности.
+# Чем меньше промпт, тем быстрее prefill на CPU (stage-18, фидбек про скорость)
+_ECS_MAX_DEPTH = 6
+
+
+def _trim_ecs(raw: dict, max_str: int = 800) -> dict | None:
+    """Глубокая копия ECS-JSON события с обрезкой длинных строк (контекст LLM).
+
+    Исходный JSON Wazuh/Elastic (rule, agent, data, full_log) может содержать
+    очень длинные значения — для промпта они обрезаются до max_str символов;
+    структуры глубже _ECS_MAX_DEPTH уровней отбрасываются. None/не-dict → None.
+    """
+    def trim(value, depth: int):
+        if depth >= _ECS_MAX_DEPTH:
+            return None
+        if isinstance(value, dict):
+            return {key: trim(val, depth + 1) for key, val in value.items()}
+        if isinstance(value, list):
+            return [trim(item, depth + 1) for item in value]
+        if isinstance(value, str):
+            return value[:max_str]
+        return value
+
+    if not isinstance(raw, dict):
+        return None
+    return trim(raw, 0)
+
+
+def _event_recommendations(events) -> list[str]:
+    """Рекомендации, имеющиеся в самих событиях, в плоский список строк.
+
+    В raw_data событий ключ "recommendations" — список или строка; пустые и
+    отсутствующие значения пропускаются. Подаётся отдельным верхнеуровневым
+    ключом контекста: системный промпт LLM просит использовать «рекомендации,
+    имеющиеся в самом событии».
+    """
+    collected: list[str] = []
+    for event in events:
+        raw = (event.raw_data or {}).get("recommendations")
+        if isinstance(raw, list):
+            collected.extend(str(item).strip() for item in raw if str(item).strip())
+        elif isinstance(raw, str) and raw.strip():
+            collected.append(raw.strip())
+    return collected
 
 
 # ---------------------------------------------------------------------------
@@ -634,6 +714,7 @@ def _ensure_incident_access(incident: Incident, user: User, assign: bool = False
 @router.post("/incidents/{incident_id}/analyze")
 async def analyze(
     incident_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -642,6 +723,12 @@ async def analyze(
     Закрепляет инцидент за аналитиком (если свободен); чужой инцидент
     аналитику недоступен (stage-14). Закрытый инцидент анализу недоступен
     (stage-16).
+
+    Stage-18 (фидбек): анализ выполняется В ФОНЕ — синхронный CPU-инференс
+    упирался в таймаут nginx (504). Синхронными остаются только проверки
+    (404/409/права), затем анализ уходит в BackgroundTasks (run_auto_analysis
+    с initiated_by="manual" — ручной анализ не закрывает инцидент автоматически).
+    Ответ отдаётся сразу: {"analysis": {"scheduled": True}} — как у ingest.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -654,7 +741,16 @@ async def analyze(
             detail="Инцидент закрыт — анализ недоступен. Верните инцидент в работу",
         )
     _ensure_incident_access(incident, user, assign=True)
-    return await _run_incident_analysis(db, incident, initiated_by="manual")
+    background_tasks.add_task(run_auto_analysis, incident.id, "manual")
+    audit(
+        "incident_analysis_scheduled",
+        {"initiated_by": "manual", "by": user.username},
+        db=db,
+        incident_id=incident.id,
+        user_id=user.id,
+    )
+    db.commit()
+    return {"incident_id": incident.id, "analysis": {"scheduled": True}}
 
 
 @router.post("/incidents/{incident_id}/confirm-action")
@@ -715,6 +811,34 @@ def confirm_action(
         )
         results.append({"action": action, "validation": validation, "execution": execution})
 
+    # Перезапись сохранённого анализа (stage-18, фидбек): состояние
+    # «подтверждено и исполнено» должно быть видно всем операторам после
+    # перезагрузки — плашка «Требуется подтверждение» не должна возвращаться.
+    # ВАЖНО (грабль проекта): мутация JSON-колонки не отслеживается SQLAlchemy —
+    # только полное переприсвоение словаря
+    raw = dict(analysis.response_raw or {})
+    if isinstance(raw.get("results"), list):
+        confirm_by_action = {r["action"]: r for r in results}
+        raw["results"] = [
+            {
+                **item,
+                "validation": confirm_by_action[item["action"]]["validation"],
+                # confirmed_by — кто снял pending_confirmation (аудит в UI)
+                "execution": {
+                    **confirm_by_action[item["action"]]["execution"],
+                    "confirmed_by": admin.username,
+                },
+            }
+            if isinstance(item, dict) and item.get("action") in confirm_by_action
+            else item
+            for item in raw["results"]
+        ]
+    # верхнеуровневые compat-ключи — валидация/исполнение первого
+    # confirm-результата (как в ответе endpoint'а)
+    raw["validation"] = results[0]["validation"]
+    raw["execution"] = results[0]["execution"]
+    analysis.response_raw = raw
+
     db.commit()
     return {
         "incident_id": incident.id,
@@ -741,8 +865,16 @@ async def _run_incident_analysis(
     AUTO_CLOSE_LEVELS (автоконвейер) — одобренные DVE действия исполняются
     сразу; остальные уровни — только рекомендация (execution.mode =
     "manual_run"), playbook запускает оператор через POST /execute-action.
+    Заблокированные DVE действия не исполняются ни в автоконвейере, ни
+    вручную (stage-18), отложенные до подтверждения ждут администратора
+    (POST /confirm-action).
     """
     asset = incident.asset
+    # контекст ограничен последними 12 событиями (хронологический порядок):
+    # промпт должен целиком помещаться в num_ctx (8192) — переполнение окна
+    # приводит к потере контекста и «сдвигу», что бьёт и по качеству, и по
+    # скорости инференса (stage-18, фидбек про скорость)
+    context_events = sorted(incident.events, key=lambda x: x.timestamp)[-12:]
     context = {
         "incident_id": incident.id,
         "id": incident.id,
@@ -767,9 +899,16 @@ async def _run_incident_analysis(
                 "user": e.user,
                 "src_ip": e.src_ip,
                 "message": (e.raw_message or "")[:500],
+                # исходный JSON Wazuh/Elastic с парсингом ECS (rule, agent,
+                # data, full_log) — системный промпт LLM ожидает «json из
+                # Elastic Security Solution»; длинные строки обрезаются
+                "ecs": _trim_ecs(e.raw_data),
             }
-            for e in sorted(incident.events, key=lambda x: x.timestamp)
+            for e in context_events
         ],
+        # рекомендации из самих событий (raw_data) — промпт просит учитывать
+        # их в рекомендациях для дальнейших действий
+        "recommendations": _event_recommendations(context_events),
     }
     prompt_text = render_full_prompt(context)
 
@@ -830,14 +969,12 @@ async def _run_incident_analysis(
                 "playbook_steps": playbook.steps if playbook else None,
             }
             pending_any = True
-        elif incident.severity in _auto_close_levels():
-            # Автоконвейер (stage-17): low-инциденты обрабатываются от начала
-            # до конца без человека — одобренное DVE действие исполняется сразу
-            # (при AUTO_RESPONSE=false — dry run симуляция)
-            execution = execute_playbook(validation["action"], context, db)
         elif not validation["approved"]:
-            # Ручной режим, DVE заблокировал действие (заменил на monitor):
-            # ничего не исполняем — оператор видит блокировку и причину
+            # DVE заблокировал действие (заменил на monitor): ничего не
+            # исполняем. Проверка ДО ветки автоконвейера (stage-18, фидбек):
+            # заблокированное действие не исполняется и в автоконвейере —
+            # иначе low-инцидент исполнял playbook monitor'а вместо
+            # заблокированного действия. Оператор видит блокировку и причину
             execution = {
                 "executed": False,
                 "mode": "blocked",
@@ -847,6 +984,11 @@ async def _run_incident_analysis(
                 "playbook_description": playbook.description if playbook else None,
                 "playbook_steps": playbook.steps if playbook else None,
             }
+        elif incident.severity in _auto_close_levels():
+            # Автоконвейер (stage-17): low-инциденты обрабатываются от начала
+            # до конца без человека — одобренное DVE действие исполняется сразу
+            # (при AUTO_RESPONSE=false — dry run симуляция)
+            execution = execute_playbook(validation["action"], context, db)
         else:
             # Ручной режим (stage-17, фидбек): для medium/high/critical playbook
             # выполняет ОПЕРАТОР кнопкой «▶ Выполнить» (владелец инцидента или
@@ -1073,6 +1215,9 @@ def execute_action(
     критическом активе получает pending_confirmation (§3.4, p:102).
     Исполнение — через execute_playbook: при AUTO_RESPONSE=false это dry run
     (симуляция, без изменения инфраструктуры), иначе — контролируемое выполнение.
+    Успешный запуск (simulation/controlled) сохраняет отметку в
+    incident.manual_actions (stage-18, фидбек) — состояние кнопок действий
+    видно всем операторам с сервера, а не из localStorage.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -1118,6 +1263,20 @@ def execute_action(
             "action": action,
             "reason": validation["reason"],
         }
+    if execution.get("mode") in ("simulation", "controlled"):
+        # Отметка ручного запуска в карте инцидента — состояние кнопок видно
+        # всем операторам (stage-18, фидбек). Отметка ставится ТОЛЬКО при
+        # фактическом исполнении: pending_confirmation/blocked её не пишут.
+        # ВАЖНО (грабль проекта): мутация JSON-колонки не отслеживается
+        # SQLAlchemy — только полное переприсвоение словаря
+        incident.manual_actions = {
+            **(incident.manual_actions or {}),
+            action: {
+                "mode": execution["mode"],
+                "at": datetime.now(timezone.utc).isoformat(),
+                "by": user.username,
+            },
+        }
     audit(
         "action_executed_manually",
         {
@@ -1137,6 +1296,46 @@ def execute_action(
         "validation": validation,
         "execution": execution,
     }
+
+
+@router.post("/incidents/{incident_id}/reset-actions")
+def reset_actions(
+    incident_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Сброс отметок ручных запусков playbook-действий (stage-18, фидбек).
+
+    Очищает incident.manual_actions: оператор может переиграть реакцию
+    заново, состояние кнопок сбрасывается у ВСЕХ пользователей (отметки
+    хранятся на сервере). Права — как у операций реагирования без захвата
+    владения: владелец или админ; свободный инцидент доступен любому
+    аналитику, analyst_id не изменяется. Закрытый инцидент — 409 (как у
+    остальных операций реагирования, stage-16).
+    """
+    incident = db.get(Incident, incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    # инцидент закрыт — операции реагирования запрещены, доступен только
+    # возврат в работу (stage-16, фидбек)
+    if incident.status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail="Инцидент закрыт — сброс действий недоступен. Верните инцидент в работу",
+        )
+    _ensure_incident_access(incident, user, assign=False)
+    # полное переприсвоение (грабль проекта: мутация JSON-колонки не
+    # отслеживается SQLAlchemy); NULL → {}
+    incident.manual_actions = {}
+    audit(
+        "incident_actions_reset",
+        {"by": user.username},
+        db=db,
+        incident_id=incident.id,
+        user_id=user.id,
+    )
+    db.commit()
+    return {"incident_id": incident.id, "reset": True, "manual_actions": {}}
 
 
 @router.post("/demo/populate")

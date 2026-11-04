@@ -7,7 +7,10 @@
 - settings.auto_response=False — реагирование выполняется в режиме simulation;
 - app.api.routes.analyze_incident подменяется фейковой async-функцией;
 - get_current_user подменяется фейковым админом (механика JWT тестируется
-  отдельно в test_auth.py).
+  отдельно в test_auth.py);
+- app.db.SessionLocal подменяется сессией тестовой БД — фоновые задачи
+  (run_auto_analysis: автоанализ и ручной POST /analyze, stage-18) пишут
+  в ту же базу.
 """
 
 from datetime import datetime, timezone
@@ -170,8 +173,8 @@ def test_health(client):
     data = resp.json()
     assert data["status"] == "ok"
     assert data["database"] == "ok"
-    # stage-17: уровни автоанализа и «фильтр автоматического закрытия»
-    assert data["auto_analysis_levels"] == ["critical", "low"]
+    # stage-18: автоанализ и автоконвейер — только low; «фильтр автозакрытия»
+    assert data["auto_analysis_levels"] == ["low"]
     assert data["auto_close_levels"] == ["low"]
 
 
@@ -261,8 +264,14 @@ def test_patch_incident_status(client, db_session):
     assert missing.status_code == 404
 
 
-def test_analyze_incident_success(client, db_session, monkeypatch):
-    """POST /api/v1/incidents/{id}/analyze — LLM-анализ, валидация, manual_run."""
+def test_analyze_incident_success(client, db_session, engine, monkeypatch):
+    """POST /api/v1/incidents/{id}/analyze — анализ уходит в ФОН (stage-18):
+    ответ мгновенный (scheduled), фоновая задача доводит до Analysis с
+    initiated_by="manual"; инцидент закреплён и переведён в работу."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis, Incident
+
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -278,23 +287,43 @@ def test_analyze_incident_success(client, db_session, monkeypatch):
         }
 
     monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    # фоновая задача создаёт свою сессию — направляем её в тестовую БД
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     resp = client.post(f"{API}/incidents/{incident_id}/analyze")
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["validation"]["approved"] is True
-    # stage-17: инцидент high (не из AUTO_CLOSE_LEVELS) — playbook НЕ исполняется
+    assert resp.json() == {"incident_id": incident_id, "analysis": {"scheduled": True}}
+
+    # TestClient выполняет фоновые задачи сразу после ответа — анализ в БД
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    raw = analyses[0].response_raw
+    assert raw["initiated_by"] == "manual"
+    assert raw["recommendation"]["attack_type"] == "brute_force"
+    assert raw["recommendation"]["recommended_action"] == "monitor"
+
+    # инцидент закреплён за вызвавшим пользователем и в работе;
+    # stage-17: high (не из AUTO_CLOSE_LEVELS) — playbook НЕ исполняется
     # автоматически, действие ждёт ручного запуска оператором
-    assert data["execution"]["mode"] == "manual_run"
-    assert data["execution"]["executed"] is False
-    assert data["recommendation"]["attack_type"] == "brute_force"
+    incident = db_session.get(Incident, incident_id)
+    assert incident.analyst_id == 1  # фейковый админ из фикстуры client
+    assert incident.status == "in_progress"
+    assert raw["results"][0]["execution"]["mode"] == "manual_run"
+    assert raw["results"][0]["execution"]["executed"] is False
 
     # результаты анализа доступны в общей статистике качества LLM-модуля
-    analyses = client.get(f"{API}/analyses").json()
-    assert any(a["attack_type"] == "brute_force" for a in analyses)
+    analyses_api = client.get(f"{API}/analyses").json()
+    assert any(a["attack_type"] == "brute_force" for a in analyses_api)
 
-    # аудит: действие зафиксировано как ожидающее ручного запуска
+    # аудит: планирование зафиксировано, действие — как ожидающее ручного запуска
     logs = client.get(f"{API}/audit-logs").json()
+    assert any(
+        a["event_type"] == "incident_analysis_scheduled"
+        and a["incident_id"] == incident_id
+        and a["details"]["initiated_by"] == "manual"
+        and a["details"]["by"] == "tester"
+        for a in logs
+    )
     assert any(
         a["event_type"] == "action_awaiting_manual_run"
         and a["incident_id"] == incident_id
@@ -303,10 +332,15 @@ def test_analyze_incident_success(client, db_session, monkeypatch):
     )
 
 
-def test_manual_playbook_execution_for_high(client, db_session, monkeypatch):
+def test_manual_playbook_execution_for_high(client, db_session, engine, monkeypatch):
     """stage-17, фидбек: для инцидента high анализ только рекомендует
     (manual_run), playbook выполняет оператор через POST /execute-action —
-    при AUTO_RESPONSE=false это dry run (simulation)."""
+    при AUTO_RESPONSE=false это dry run (simulation). Анализ выполняется
+    в фоне (stage-18): POST /analyze отвечает scheduled, результат — в БД."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -320,9 +354,14 @@ def test_manual_playbook_execution_for_high(client, db_session, monkeypatch):
         }
 
     monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
-    analysis = client.post(f"{API}/incidents/{incident_id}/analyze").json()
-    assert analysis["execution"]["mode"] == "manual_run"
+    resp = client.post(f"{API}/incidents/{incident_id}/analyze")
+    assert resp.status_code == 200
+    assert resp.json()["analysis"] == {"scheduled": True}
+
+    raw = db_session.query(Analysis).filter_by(incident_id=incident_id).one().response_raw
+    assert raw["results"][0]["execution"]["mode"] == "manual_run"
 
     run = client.post(
         f"{API}/incidents/{incident_id}/execute-action",
@@ -335,8 +374,14 @@ def test_manual_playbook_execution_for_high(client, db_session, monkeypatch):
     assert body["execution"]["mode"] == "simulation"
 
 
-def test_analyze_incident_llm_unavailable(client, db_session, monkeypatch):
-    """POST /analyze — 404 без инцидента и 503 при недоступности LLM."""
+def test_analyze_incident_llm_unavailable(client, db_session, engine, monkeypatch):
+    """POST /analyze — 404 без инцидента; для существующего анализ уходит в
+    фон (scheduled, stage-18), фоновая задача фиксирует недоступность LLM в
+    аудите (llm_analysis_failed) — сам Analysis не создаётся."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -344,13 +389,22 @@ def test_analyze_incident_llm_unavailable(client, db_session, monkeypatch):
         raise RuntimeError("connection refused")
 
     monkeypatch.setattr("app.api.routes.analyze_incident", failing_analyze)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     missing = client.post(f"{API}/incidents/99999/analyze")
     assert missing.status_code == 404
 
     resp = client.post(f"{API}/incidents/{incident_id}/analyze")
-    assert resp.status_code == 503
-    assert "LLM" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert resp.json()["analysis"] == {"scheduled": True}
+
+    # фоновая задача отработала: анализа нет (LLM недоступен), ошибка — в аудите
+    assert db_session.query(Analysis).filter_by(incident_id=incident_id).count() == 0
+    logs = client.get(f"{API}/audit-logs").json()
+    assert any(
+        a["event_type"] == "llm_analysis_failed" and a["incident_id"] == incident_id
+        for a in logs
+    )
 
 
 def test_confirm_action_without_analysis(client, db_session):
@@ -364,6 +418,67 @@ def test_confirm_action_without_analysis(client, db_session):
     # инцидент существует, но LLM-анализ ещё не выполнялся
     resp = client.post(f"{API}/incidents/{incident_id}/confirm-action")
     assert resp.status_code == 404
+
+
+def test_confirm_action_updates_saved_analysis(client, db_session, engine, monkeypatch):
+    """POST /confirm-action (stage-18, фидбек): подтверждение администратором
+    перезаписывает response_raw сохранённого анализа — в results появляются
+    свежие validation/execution с confirmed_by; плашка «Требуется
+    подтверждение» не возвращается после перезагрузки у ЛЮБОГО оператора."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis, Asset, Incident
+
+    seed_rule(db_session)
+    db_session.add(Asset(name="crit-host", type="server", criticality="critical"))
+    db_session.commit()
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+    incident = db_session.get(Incident, incident_id)
+    incident.asset_id = db_session.query(Asset).filter_by(name="crit-host").one().id
+    db_session.commit()
+    client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
+
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "block_ip",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    # ручной анализ (stage-18 — в фоне): block_ip на критическом активе
+    # отложен до подтверждения администратора
+    resp = client.post(f"{API}/incidents/{incident_id}/analyze")
+    assert resp.status_code == 200
+    assert resp.json()["analysis"] == {"scheduled": True}
+    raw = db_session.query(Analysis).filter_by(incident_id=incident_id).one().response_raw
+    assert raw["results"][0]["execution"]["mode"] == "pending_confirmation"
+
+    # админ подтверждает — действие исполняется (simulation)
+    confirm = client.post(f"{API}/incidents/{incident_id}/confirm-action")
+    assert confirm.status_code == 200
+    assert confirm.json()["results"][0]["execution"]["mode"] == "simulation"
+
+    # сохранённый анализ перезаписан: pending больше нет, есть confirmed_by
+    db_session.expire_all()  # объект закэширован сессией — перечитать из БД
+    updated = db_session.query(Analysis).filter_by(incident_id=incident_id).one()
+    results = updated.response_raw["results"]
+    assert results[0]["execution"]["mode"] == "simulation"
+    assert results[0]["execution"]["confirmed_by"] == "tester"
+    # верхнеуровневые compat-ключи — от первого confirm-результата
+    assert updated.response_raw["validation"]["approved"] is True
+    assert updated.response_raw["execution"]["mode"] == "simulation"
+    # условие resultsNeedConfirmation больше не срабатывает
+    assert not any(
+        r["validation"].get("requires_confirmation")
+        or r["execution"].get("mode") == "pending_confirmation"
+        for r in results
+    )
 
 
 def test_correlation_rules_crud(client):
@@ -490,8 +605,13 @@ def test_correlation_rule_mitre_fields(client):
     assert bad.status_code == 422
 
 
-def test_analyze_multiple_actions(client, db_session, monkeypatch):
-    """Перечень действий LLM: каждое проходит DVE, ответ — список results (stage-11)."""
+def test_analyze_multiple_actions(client, db_session, engine, monkeypatch):
+    """Перечень действий LLM: каждое проходит DVE, в сохранённом анализе —
+    список results (stage-11). Анализ выполняется в фоне (stage-18)."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
@@ -505,24 +625,28 @@ def test_analyze_multiple_actions(client, db_session, monkeypatch):
         }
 
     monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     resp = client.post(f"{API}/incidents/{incident_id}/analyze")
     assert resp.status_code == 200
-    data = resp.json()
-    assert len(data["results"]) == 2
-    assert [r["action"] for r in data["results"]] == ["monitor", "collect_evidence"]
-    assert all(r["validation"]["approved"] for r in data["results"])
+    assert resp.json()["analysis"] == {"scheduled": True}
+
+    # TestClient выполнил фоновую задачу после ответа — проверяем БД
+    raw = db_session.query(Analysis).filter_by(incident_id=incident_id).one().response_raw
+    results = raw["results"]
+    assert len(results) == 2
+    assert [r["action"] for r in results] == ["monitor", "collect_evidence"]
+    assert all(r["validation"]["approved"] for r in results)
     # перечень сохранён целиком (§3.4, p:15), а не первое действие
-    assert data["recommendation"]["recommended_action"] == "monitor, collect_evidence"
+    assert raw["recommendation"]["recommended_action"] == "monitor, collect_evidence"
     analyses = client.get(f"{API}/analyses").json()
     assert any(a["recommended_action"] == "monitor, collect_evidence" for a in analyses)
 
 
-def test_planned_mode_default_critical_and_low(client, db_session, engine, monkeypatch):
-    """Плановый режим (stage-17): новый дефолт AUTO_ANALYSIS_LEVELS="critical,low" —
-    анализируются critical и low (low — без участия человека); medium/high — нет."""
-    from sqlalchemy.orm import sessionmaker
-
+def test_planned_mode_default_low(client, db_session, monkeypatch):
+    """Плановый режим (stage-18, фидбек): дефолт AUTO_ANALYSIS_LEVELS="low" —
+    автоанализ и автоконвейер ТОЛЬКО для low; medium/high/critical обрабатывает
+    оператор (анализ не планируется вовсе)."""
     from app.models import Asset
 
     seed_rule(db_session)  # правило без тактики — severity по числовой модели
@@ -534,11 +658,11 @@ def test_planned_mode_default_critical_and_low(client, db_session, engine, monke
         conditions=[{"field": "event_type", "operator": "like", "value": "web"}],
     )
     db_session.commit()
-    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels = "critical,low"
-    # фоновая задача создаёт свою сессию — направляем её в тестовую БД
-    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels = "low"
 
     async def fake_analyze(context):
+        # подстраховка: если что-то unexpectedly уйдёт в автоанализ, тест не
+        # должен ходить в реальную сеть
         return {
             "description": "d",
             "attack_type": "brute_force",
@@ -565,7 +689,8 @@ def test_planned_mode_default_critical_and_low(client, db_session, engine, monke
     assert resp_med.json()["severity"] == "medium"
     assert "analysis" not in resp_med.json()
 
-    # critical (правило credential_access: high +1 за критичный актив) — анализируется
+    # critical (правило credential_access: high +1 за критичный актив) —
+    # stage-18: тоже не анализируется, анализ и playbook делает оператор
     crit_alert = make_alert(
         rule={"level": 10, "description": "test", "groups": ["web"]},
         agent={"id": "003", "name": "crit-host"},
@@ -574,10 +699,11 @@ def test_planned_mode_default_critical_and_low(client, db_session, engine, monke
     resp_crit = client.post(f"{API}/ingest/wazuh", json=crit_alert)
     data_crit = resp_crit.json()
     assert data_crit["severity"] == "critical"
-    assert data_crit["analysis"] == {"scheduled": True, "severity": "critical"}
-    # stage-17: critical не входит в auto_close_levels ("low") — автозакрытия нет
+    assert "analysis" not in data_crit
+    # инцидент остаётся новым: ничего не анализировалось и не исполнялось
     crit_detail = client.get(f"{API}/incidents/{data_crit['incident_id']}").json()
-    assert crit_detail["status"] == "in_progress"
+    assert crit_detail["status"] == "new"
+    assert crit_detail["analyses"] == []
 
 
 def test_planned_mode_levels_include_high(client, db_session, engine, monkeypatch):
@@ -641,14 +767,14 @@ def _seed_low_rule(db_session):
 
 
 def test_auto_analysis_closes_low_incident(client, db_session, engine, monkeypatch):
-    """Автообработка low (stage-17): автоанализ → автозакрытие — статус closed,
-    пометка auto_closed в последнем Analysis, аудит и уведомление."""
+    """Автообработка low (stage-17/18): автоанализ → автозакрытие — статус
+    closed, пометка auto_closed в последнем Analysis, аудит и уведомление."""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import Analysis
 
     _seed_low_rule(db_session)
-    monkeypatch.setattr(settings, "auto_analysis", True)  # levels: critical,low
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels: low (stage-18)
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     async def fake_analyze(context):
@@ -753,9 +879,61 @@ def test_auto_close_skipped_on_pending_confirmation(client, db_session, engine, 
     assert "auto_closed" not in analyses[0].response_raw
     # действие действительно отложено до подтверждения администратора
     assert analyses[0].response_raw["execution"]["mode"] == "pending_confirmation"
-    # аудита автозакрытия нет
+    # аудита автозакрытия нет, но причина скипа диагностируется в аудите
+    # (incident_auto_close_skipped, stage-18)
     logs = client.get(f"{API}/audit-logs").json()
     assert not any(a["event_type"] == "incident_auto_closed" for a in logs)
+    skipped = next(a for a in logs if a["event_type"] == "incident_auto_close_skipped")
+    assert skipped["incident_id"] == incident_id
+    assert skipped["details"]["reason"] == "action_pending_confirmation"
+    assert skipped["details"]["detail"] == "block_ip"
+
+
+def test_auto_close_skipped_on_assigned_analyst(client, db_session, engine, monkeypatch):
+    """Автозакрытие не выполняется, если инцидент уже взял аналитик
+    (analyst_id заполнен) — инцидент остаётся в работе, причина скипа видна
+    в аудите (incident_auto_close_skipped, reason=assigned_to_analyst)."""
+    import asyncio
+
+    from sqlalchemy.orm import sessionmaker
+
+    from app.api.routes import run_auto_analysis
+    from app.models import Incident, User
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", False)  # анализ запускаем вручную ниже
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    data = client.post(f"{API}/ingest/wazuh", json=_low_alert()).json()
+    incident_id = data["incident_id"]
+    # аналитик взял инцидент в работу до анализа
+    db_session.add(User(id=5, username="analyst5", role="analyst", password_hash="x"))
+    incident = db_session.get(Incident, incident_id)
+    incident.analyst_id = 5
+    db_session.commit()
+
+    # фоновая задача автоанализа запускается напрямую (как из BackgroundTasks)
+    asyncio.run(run_auto_analysis(incident_id))
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["status"] == "in_progress"  # анализ прошёл, закрытия нет
+
+    logs = client.get(f"{API}/audit-logs").json()
+    assert not any(a["event_type"] == "incident_auto_closed" for a in logs)
+    skipped = next(a for a in logs if a["event_type"] == "incident_auto_close_skipped")
+    assert skipped["details"]["reason"] == "assigned_to_analyst"
+    assert skipped["details"]["detail"] == "analyst5"  # username аналитика
 
 
 def test_auto_close_disabled_by_empty_levels(client, db_session, engine, monkeypatch):
@@ -789,6 +967,92 @@ def test_auto_close_disabled_by_empty_levels(client, db_session, engine, monkeyp
     assert detail["status"] == "in_progress"
     analyses = db_session.query(Analysis).filter_by(incident_id=data["incident_id"]).all()
     assert len(analyses) == 1
+    assert "auto_closed" not in analyses[0].response_raw
+
+
+def test_auto_pipeline_low_blocked_action_still_closes(client, db_session, engine, monkeypatch):
+    """Автоконвейер low с действием НЕ по политике (stage-18, фидбек): DVE
+    блокирует block_ip для low — ЗАБЛОКИРОВАННОЕ действие не исполняется
+    (execution.mode == "blocked", а не simulation playbook'а monitor'а),
+    но инцидент после успешного анализа всё равно закрывается автоматически."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels: low
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        # block_ip не входит в политику low → DVE заменяет его на monitor
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "block_ip",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["severity"] == "low"
+    incident_id = data["incident_id"]
+
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    result = analyses[0].response_raw["results"][0]
+    assert result["validation"]["approved"] is False
+    assert result["execution"]["mode"] == "blocked"  # не simulation!
+    # инцидент всё равно закрыт автоконвейером (pending-действий нет)
+    assert analyses[0].response_raw["auto_closed"] is True
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["status"] == "closed"
+
+
+def test_manual_analysis_does_not_auto_close(client, db_session, engine, monkeypatch):
+    """Ручной анализ (POST /analyze → initiated_by="manual") НИКОГДА не
+    закрывает инцидент автоматически (stage-17/18): даже low из
+    AUTO_CLOSE_LEVELS остаётся in_progress."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
+    _seed_low_rule(db_session)
+    # автоконвейер выключен: ингест low-алерта НЕ планирует автоанализ
+    # (иначе инцидент закрылся бы автоматически ещё до ручного запуска);
+    # POST /analyze планирует анализ независимо от этой настройки
+    monkeypatch.setattr(settings, "auto_analysis", False)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    incident_id = resp.json()["incident_id"]
+
+    # POST /analyze планирует фоновый РУЧНОЙ анализ (TestClient отработал его
+    # сразу после ответа)
+    resp = client.post(f"{API}/incidents/{incident_id}/analyze")
+    assert resp.status_code == 200
+    assert resp.json()["analysis"] == {"scheduled": True}
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["status"] == "in_progress"  # НЕ closed
+
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    assert analyses[0].response_raw["initiated_by"] == "manual"
     assert "auto_closed" not in analyses[0].response_raw
 
 
@@ -919,12 +1183,13 @@ def test_demo_populate(client, db_session):
 
 
 def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatch):
-    """Мок-сценарии + автоконвейер (stage-17, фидбек): populate запускает
-    фоновый автоанализ для уровней из AUTO_ANALYSIS_LEVELS; low проходит
-    конвейер до конца (анализ → исполнение → автозакрытие), critical
-    анализируется, но остаётся открытым — playbook выполняет оператор."""
+    """Мок-сценарии + автоконвейер (stage-18, фидбек): populate запускает
+    фоновый автоанализ ТОЛЬКО для low (AUTO_ANALYSIS_LEVELS="low"); low
+    проходит конвейер до конца (анализ → исполнение → автозакрытие),
+    critical/high/medium остаются открытыми БЕЗ анализов — анализ и playbook
+    выполняет оператор."""
     seed_demo_rules_and_assets(db_session)
-    monkeypatch.setattr(settings, "auto_analysis", True)  # levels: critical,low
+    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels: low
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
     async def fake_analyze(context):
@@ -941,9 +1206,9 @@ def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatc
     resp = client.post(f"{API}/demo/populate")
     assert resp.status_code == 200
     data = resp.json()
-    # мок-набор: 3 critical (brute/spraying/privilege) + 1 low (фоновый шум);
-    # high/medium в автоанализ не попадают
-    assert data["auto_analysis_scheduled"] == 4
+    # мок-набор: 1 low (фоновый шум) — только он уходит в автоанализ;
+    # critical/high/medium не планируются вовсе (stage-18)
+    assert data["auto_analysis_scheduled"] == 1
 
     by_severity: dict[str, list[int]] = {}
     for inc in data["incidents"]:
@@ -956,17 +1221,16 @@ def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatc
         assert detail["status"] == "closed"
         assert len(detail["analyses"]) == 1
         assert detail["analyses"][-1]["response_raw"]["auto_closed"] is True
+        assert detail["analyses"][-1]["response_raw"]["initiated_by"] == "auto_analysis"
 
-    # critical: автоанализ выполнен, инцидент открыт — действие ждёт оператора
+    # critical/high/medium: анализов нет, инциденты остались новыми —
+    # за оператором (stage-18)
     assert by_severity.get("critical"), "в мок-наборе должны быть critical-инциденты"
-    for inc_id in by_severity["critical"]:
-        detail = client.get(f"{API}/incidents/{inc_id}").json()
-        assert detail["status"] == "in_progress"
-        assert len(detail["analyses"]) == 1
-        raw = detail["analyses"][-1]["response_raw"]
-        assert raw["initiated_by"] == "auto_analysis"
-        assert "auto_closed" not in raw
-        assert raw["results"][0]["execution"]["mode"] == "manual_run"
+    for severity in ("critical", "high", "medium"):
+        for inc_id in by_severity.get(severity, []):
+            detail = client.get(f"{API}/incidents/{inc_id}").json()
+            assert detail["status"] == "new"
+            assert detail["analyses"] == []
 
 
 # ---------------------------------------------------------------------------
@@ -1219,17 +1483,168 @@ def test_execute_action_manual(client, db_session):
 
 
 # ---------------------------------------------------------------------------
+# Состояние ручных запусков действий на сервере (stage-18, фидбек):
+# incident.manual_actions + POST /reset-actions — состояние кнопок видно
+# всем операторам
+# ---------------------------------------------------------------------------
+def test_execute_action_records_manual_state(client, db_session):
+    """Успешный ручной запуск действия (simulation) сохраняет отметку в
+    incident.manual_actions: {mode, at, by} — доступно всем операторам
+    через GET /incidents/{id}."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+    client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
+
+    resp = client.post(
+        f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["execution"]["mode"] == "simulation"
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    mark = detail["manual_actions"]["block_ip"]
+    assert mark["mode"] == "simulation"
+    assert mark["by"] == "tester"  # фейковый пользователь из фикстуры client
+    assert mark["at"]  # момент запуска зафиксирован
+
+
+def test_execute_action_blocked_and_pending_do_not_record(client, db_session):
+    """Заблокированное DVE действие и отложенное до подтверждения
+    НЕ сохраняют отметку в manual_actions — она пишется только при
+    фактическом исполнении (simulation/controlled)."""
+    from app.models import Asset, Incident, Playbook
+
+    seed_rule(db_session)
+
+    # blocked: disable_account не входит в политику high
+    blocked_id = client.post(
+        f"{API}/ingest/wazuh", json=make_alert(data={"srcip": "192.0.2.21", "dstuser": "b"})
+    ).json()["incident_id"]
+    blocked = client.post(
+        f"{API}/incidents/{blocked_id}/execute-action", json={"action": "disable_account"}
+    )
+    assert blocked.json()["execution"]["mode"] == "blocked"
+    assert not client.get(f"{API}/incidents/{blocked_id}").json()["manual_actions"]
+
+    # pending_confirmation: аналитик + критический актив + block_ip
+    db_session.add(Playbook(
+        name="block_ip", description="d", trigger_conditions={},
+        allowed_actions=["block_ip"], steps=[],
+    ))
+    asset = Asset(name="crit-db", type="server", criticality="critical")
+    db_session.add(asset)
+    db_session.commit()
+    pending_id = client.post(
+        f"{API}/ingest/wazuh", json=make_alert(data={"srcip": "192.0.2.22", "dstuser": "p"})
+    ).json()["incident_id"]
+    incident = db_session.get(Incident, pending_id)
+    incident.asset_id = asset.id
+    db_session.commit()
+
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=2, username="analyst1", role="analyst"
+    )
+    pending = client.post(
+        f"{API}/incidents/{pending_id}/execute-action", json={"action": "block_ip"}
+    )
+    assert pending.json()["execution"]["mode"] == "pending_confirmation"
+    assert not client.get(f"{API}/incidents/{pending_id}").json()["manual_actions"]
+
+
+def test_reset_actions_clears_manual_state_and_audits(client, db_session):
+    """POST /incidents/{id}/reset-actions (stage-18): сброс отметок
+    manual_actions с аудитом; повторный сброс работает и на пустых
+    отметках (NULL → {})."""
+    from app.models import Incident
+
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+    client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
+    client.post(f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"})
+
+    resp = client.post(f"{API}/incidents/{incident_id}/reset-actions")
+    assert resp.status_code == 200
+    assert resp.json() == {"incident_id": incident_id, "reset": True, "manual_actions": {}}
+
+    # состояние в БД очищено (полное переприсвоение JSON-колонки)
+    assert db_session.get(Incident, incident_id).manual_actions == {}
+
+    logs = client.get(f"{API}/audit-logs").json()
+    entry = next(a for a in logs if a["event_type"] == "incident_actions_reset")
+    assert entry["incident_id"] == incident_id
+    assert entry["details"]["by"] == "tester"
+
+    # повторный сброс на пустых отметках тоже успешен
+    assert client.post(f"{API}/incidents/{incident_id}/reset-actions").status_code == 200
+
+
+def test_reset_actions_permissions(client, db_session):
+    """Права reset-actions (stage-18): свободный инцидент — любой аналитик,
+    владение НЕ захватывается; чужой закреплённый — 403; админ — без
+    ограничений; закрытый инцидент — 409 (как у операций реагирования)."""
+    from app.models import Incident
+
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    # аналитик берёт инцидент в работу (execute-action закрепляет)
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=2, username="analyst1", role="analyst"
+    )
+    assert client.post(
+        f"{API}/incidents/{incident_id}/execute-action", json={"action": "monitor"}
+    ).status_code == 200
+    assert db_session.get(Incident, incident_id).analyst_id == 2
+
+    # чужой закреплённый инцидент: другой аналитик → 403
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=3, username="analyst2", role="analyst"
+    )
+    assert client.post(f"{API}/incidents/{incident_id}/reset-actions").status_code == 403
+
+    # админ работает с любым инцидентом
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, username="tester", role="admin"
+    )
+    assert client.post(f"{API}/incidents/{incident_id}/reset-actions").status_code == 200
+
+    # свободный инцидент: сброс доступен любому аналитику, analyst_id не
+    # заполняется (assign=False)
+    free_id = client.post(
+        f"{API}/ingest/wazuh",
+        json=make_alert(data={"srcip": "192.0.2.99", "dstuser": "free"}),
+    ).json()["incident_id"]
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=3, username="analyst2", role="analyst"
+    )
+    assert client.post(f"{API}/incidents/{free_id}/reset-actions").status_code == 200
+    assert db_session.get(Incident, free_id).analyst_id is None
+
+    # закрытый инцидент — 409
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id=1, username="tester", role="admin"
+    )
+    assert client.patch(
+        f"{API}/incidents/{free_id}/status", json={"status": "closed"}
+    ).status_code == 200
+    assert client.post(f"{API}/incidents/{free_id}/reset-actions").status_code == 409
+
+
+# ---------------------------------------------------------------------------
 # Закрытый инцидент — операции реагирования запрещены, доступен только
 # возврат в работу (stage-16, фидбек)
 # ---------------------------------------------------------------------------
-def test_closed_incident_allows_only_reopen(client, db_session, monkeypatch):
-    """Закрытый инцидент: анализ/действие/подтверждение → 409; из статусов
-    доступен только переход в in_progress; после reopen анализ работает."""
+def test_closed_incident_allows_only_reopen(client, db_session, engine, monkeypatch):
+    """Закрытый инцидент: анализ/действие/подтверждение/сброс действий → 409;
+    из статусов доступен только переход в in_progress; после reopen анализ
+    работает (в фоне — scheduled)."""
     seed_rule(db_session)
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
     # рекомендация с действием — чтобы confirm-action доходил до проверки
     # закрытия, а не падал раньше на «No pending recommendation found» (404)
+    from sqlalchemy.orm import sessionmaker
+
     from app.models import Analysis
 
     db_session.add(Analysis(
@@ -1260,7 +1675,8 @@ def test_closed_incident_allows_only_reopen(client, db_session, monkeypatch):
     assert client.patch(f"{base}/status", json={"status": "closed"}).status_code == 409
     assert client.patch(f"{base}/status", json={"status": "in_progress"}).status_code == 200
 
-    # после возврата в работу анализ снова доступен (LLM замокан — без сети)
+    # после возврата в работу анализ снова доступен (LLM замокан — без сети);
+    # фоновая задача (stage-18) направляется в тестовую БД
     async def fake_analyze(context):
         return {
             "description": "Подбор пароля",
@@ -1271,4 +1687,7 @@ def test_closed_incident_allows_only_reopen(client, db_session, monkeypatch):
         }
 
     monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
-    assert client.post(f"{base}/analyze").status_code == 200
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+    resp = client.post(f"{base}/analyze")
+    assert resp.status_code == 200
+    assert resp.json()["analysis"] == {"scheduled": True}
