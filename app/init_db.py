@@ -422,7 +422,7 @@ def _parse_execution_targets(raw: str) -> list[dict]:
 def _seed_execution_targets() -> None:
     """Seed реестра целей реального исполнения (stage-20, docs/REAL_EXECUTION.md).
 
-    Источник — env EXECUTION_TARGETS (name=url:token,...): в compose это три
+    Источник — env EXECUTION_TARGETS (name=url|token,...): в compose это три
     агента-«ВМ» (wks-finance-12, app-web-01, mail-prod-01 — имена совпадают
     с активами). Цель не из env не создаётся; существующая — обновляется
     (url/токен), чтобы смена конфигурации подхватывалась рестартом.
