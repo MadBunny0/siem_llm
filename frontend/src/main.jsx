@@ -2,11 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-import { actionRuDescription, analysisFromHistory, analysisResults, confPct, criteriaCountLabel,
-         detailToMessage, formatDate, initiatedByBadge, pendingReasonText, PLAYBOOK_ACTIONS,
-         priorityLabel, PRIORITY_LABELS, recommendedActionCodes, resultExecutionBadge,
-         resultNeedsConfirmation, resultValidationBadge, resultsNeedConfirmation, severityOrder,
-         STATUS_LABELS }
+import { actionRuDescription, analysisFromHistory, analysisResults, applyIncidentFilters,
+         canConfirmAction, canRunAction, confPct, criteriaCountLabel, detailToMessage,
+         executionModeRu, formatDate, formatPlaybookSteps, initiatedByBadge, pendingReasonText,
+         PLAYBOOK_ACTIONS, priorityLabel, PRIORITY_LABELS, recommendedActionCodes,
+         resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
+         resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS, STATUS_LABELS }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
 
@@ -37,6 +38,37 @@ const NOTIFICATION_STATUS_CLASS = {
   pending: 'badge-status-pending',
   failed: 'badge-status-failed',
 };
+// [15] Дефолты формы «Добавить событие Wazuh»: агент — seed-актив mail-prod-01,
+// чтобы событие сразу привязывалось к активу (критичность влияет на риск/DVE).
+function emptyEventForm() {
+  return {
+    timestamp: new Date().toISOString().replace('Z', ''),
+    rule_id: '5710',
+    rule_level: '10',
+    rule_description: 'sshd: Multiple authentication failures',
+    rule_groups: 'authentication_failed,sshd',
+    agent_id: '001',
+    agent_name: 'mail-prod-01',
+    srcip: '192.0.2.10',
+    dstuser: 'root',
+    full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2',
+  };
+}
+
+// [15] Выбор шаблона из справочника /ingest/reference: заполняет только поля
+// правила (группы — через запятую без пробелов, как их парсит createCustomEvent);
+// ввод пользователя (IP, агент, время) не перетирается. Пустой выбор
+// («— заполнить вручную —») ничего не заполняет, поля остаются правиться свободно.
+function applyRuleTemplate(rule, formData) {
+  if (!rule) return formData;
+  return {
+    ...formData,
+    rule_id: String(rule.id),
+    rule_level: rule.level === null || rule.level === undefined ? formData.rule_level : String(rule.level),
+    rule_description: rule.description || formData.rule_description,
+    rule_groups: (rule.groups || []).join(','),
+  };
+}
 
 /* ==================== Авторизация (JWT) ==================== */
 
@@ -1218,7 +1250,10 @@ function App({ user, onLogout }) {
   const [refreshing, setRefreshing] = useState(false);
   const [executeBusy, setExecuteBusy] = useState(null);
   const [error, setError] = useState('');
-  const [filter, setFilter] = useState('all');
+  // [15] Мультиселект-фильтры ленты: пустой массив = показывать все значения
+  // группы (семантика «Все» без отдельной кнопки); группы сочетаются через AND.
+  const [statusFilter, setStatusFilter] = useState([]);
+  const [severityFilter, setSeverityFilter] = useState([]);
   const [search, setSearch] = useState('');
   const [toast, setToast] = useState('');
   const [errorToast, setErrorToast] = useState('');
@@ -1233,18 +1268,12 @@ function App({ user, onLogout }) {
   // Защита от гонки при быстрой смене инцидентов: устаревшие ответы detail игнорируются.
   const detailReqRef = useRef(0);
 
-  const [formData, setFormData] = useState({
-    timestamp: new Date().toISOString().replace('Z', ''),
-    rule_id: '5710',
-    rule_level: '10',
-    rule_description: 'sshd: Multiple authentication failures',
-    rule_groups: 'authentication_failed,sshd',
-    agent_id: '001',
-    agent_name: 'test-linux',
-    srcip: '192.0.2.10',
-    dstuser: 'root',
-    full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2'
-  });
+  const [formData, setFormData] = useState(() => emptyEventForm());
+
+  // [15] Справочник подсказок формы «Добавить событие Wazuh» (GET /ingest/reference):
+  // правила Wazuh, группы, агенты, активы инвентаря, пользователи, IP-адреса.
+  const [reference, setReference] = useState(null);
+  const [templateId, setTemplateId] = useState('');
 
   // Хотя бы один запрос в полёте — блокируем связанные кнопки, чтобы не плодить дубли.
   const anyBusy = analyzing || demoBusy || formBusy || populateBusy;
@@ -1257,6 +1286,12 @@ function App({ user, onLogout }) {
   function showErrorToast(message) {
     setErrorToast(message);
     setTimeout(() => setErrorToast(''), 4500);
+  }
+
+  // [15] Клик по чипу мультиселект-фильтра: toggle значения; можно выбрано
+  // несколько в каждой группе, пустой набор = показывать все значения группы.
+  function toggleFilterValue(setter, value) {
+    setter(prev => (prev.includes(value) ? prev.filter(v => v !== value) : [...prev, value]));
   }
 
   async function loadIncidentDetail(id) {
@@ -1304,6 +1339,28 @@ function App({ user, onLogout }) {
 
   useEffect(() => { load(); const timer = setInterval(load, 10000); return () => clearInterval(timer); }, []);
 
+  // [15] Справочник подсказок грузим при каждом открытии модалки (данные должны
+  // быть достаточно свежими); ошибка загрузки глотается — форма остаётся
+  // полностью ручной, подсказки просто не появляются.
+  useEffect(() => {
+    if (!showForm) return;
+    let cancelled = false;
+    setTemplateId('');
+    request('/ingest/reference')
+      .then(data => { if (!cancelled) setReference(data || null); })
+      .catch(() => { /* справочник не критичен для формы */ });
+    return () => { cancelled = true; };
+  }, [showForm]);
+
+  // [15] Подсказка «Имя агента»: объединение имён активов инвентаря и агентов
+  // Wazuh — известное имя привязывает событие к активу (влияет на оценку риска).
+  const agentNameHints = useMemo(() => {
+    const names = [];
+    for (const a of reference?.assets || []) if (a?.name && !names.includes(a.name)) names.push(a.name);
+    for (const a of reference?.agents || []) if (a?.name && !names.includes(a.name)) names.push(a.name);
+    return names;
+  }, [reference]);
+
   // [5в] Ручное обновление — спиннер на кнопке «Обновить».
   // Автообновление раз в 10с идёт через load() без индикатора, чтобы кнопка не мигала.
   async function refreshAll() {
@@ -1316,10 +1373,12 @@ function App({ user, onLogout }) {
     }
   }
 
-  const filtered = useMemo(() => incidents
-    .filter(i => filter === 'all' || i.severity === filter)
-    .filter(i => !search || `${i.id} ${i.title} ${i.description}`.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => (severityOrder[b.severity] - severityOrder[a.severity]) || (new Date(b.created_at) - new Date(a.created_at))), [incidents, filter, search]);
+  // [15] Фильтрация ленты вынесена в чистую функцию applyIncidentFilters (тестируется в vitest).
+  const filtered = useMemo(() => applyIncidentFilters(incidents, {
+    statuses: statusFilter,
+    severities: severityFilter,
+    search,
+  }), [incidents, statusFilter, severityFilter, search]);
 
   const stats = useMemo(() => ({
     total: incidents.length,
@@ -1329,6 +1388,12 @@ function App({ user, onLogout }) {
   }), [incidents]);
 
   const lastDetailAnalysis = useMemo(() => latestAnalysis(incidentDetail?.analyses), [incidentDetail]);
+
+  // [15] Инцидент закреплён за другим аналитиком: кнопки статуса неактивны
+  // (бэкенд всё равно вернул бы 403 — stage-14), подсказка объясняет, кто владелец.
+  const foreignOwner = !isAdmin &&
+    !!incidentDetail?.analyst?.username &&
+    incidentDetail.analyst.username !== user?.username;
 
   const pendingConfirmation = !!(
     !confirmedAction && (
@@ -1424,10 +1489,12 @@ function App({ user, onLogout }) {
         body: JSON.stringify({ action }),
       });
       if (result?.execution?.executed) {
-        showToast(`Действие ${action} выполнено (режим: ${result.execution.mode || '—'})`);
+        showToast(`Действие выполнено (${executionModeRu(result.execution.mode) || 'готово'}): ${actionRuDescription(action)}`);
+      } else if (result?.execution?.mode === 'pending_confirmation') {
+        showErrorToast(`Действие отложено: ${result?.execution?.reason || 'требуется подтверждение администратора'}`);
       } else {
         const reason = result?.execution?.reason || result?.validation?.reason || 'действие не выполнено';
-        showErrorToast(`Заблокировано: ${reason}`);
+        showErrorToast(`Не выполнено: ${reason}`);
       }
       // Обновляем бейджи у соответствующего результата (validation/execution из ответа).
       setAnalysis(prev => {
@@ -1494,24 +1561,20 @@ function App({ user, onLogout }) {
     } catch (e) { setError(e.message); }
   }
 
+  // [15] Тестовое событие: бэкенд сам генерирует сценарий (POST /demo/test-event)
+  // и возвращает результат корреляции; тост называет сценарий и исход.
   async function createDemo() {
     if (demoBusy) return;
     setDemoBusy(true); setError('');
-    const demo = {
-      timestamp: new Date().toISOString(),
-      rule: { id: '5710', level: 10, description: 'sshd: Multiple authentication failures' },
-      // [11а] seed-актив: по имени агента проставляются Актив и Критичность
-      agent: { id: '001', name: 'mail-prod-01' },
-      data: { srcip: '192.0.2.10', dstuser: 'root', ssh: { auth: { failure: true } } },
-      full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2'
-    };
     try {
-      const result = await request('/ingest/wazuh', { method: 'POST', body: JSON.stringify(demo) });
+      const data = await request('/demo/test-event', { method: 'POST' });
       await load();
-      setToast(result.incident_id
-        ? `Событие принято: инцидент #${result.incident_id}`
-        : 'Событие сохранено: правила корреляции не сработали');
-    } catch (e) { setError(e.message); }
+      const result = data?.result || {};
+      const scenarioTitle = data?.scenario_title || data?.scenario || 'событие';
+      setToast(result.correlated
+        ? `🎲 Событие: ${scenarioTitle} → инцидент #${result.incident_id} (${result.severity})`
+        : `🎲 Событие: ${scenarioTitle} → правила корреляции не сработали`);
+    } catch (e) { showErrorToast(e.message); }
     finally { setDemoBusy(false); setTimeout(() => setToast(''), 3500); }
   }
 
@@ -1545,18 +1608,8 @@ function App({ user, onLogout }) {
         ? `Событие создано: инцидент #${result.incident_id}`
         : 'Событие сохранено: правила корреляции не сработали');
       setShowForm(false);
-      setFormData({
-        timestamp: new Date().toISOString().replace('Z', ''),
-        rule_id: '5710',
-        rule_level: '10',
-        rule_description: 'sshd: Multiple authentication failures',
-        rule_groups: 'authentication_failed,sshd',
-        agent_id: '001',
-        agent_name: 'test-linux',
-        srcip: '192.0.2.10',
-        dstuser: 'root',
-        full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2'
-      });
+      setFormData(emptyEventForm());
+      setTemplateId('');
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1624,8 +1677,13 @@ function App({ user, onLogout }) {
               <div><h2>Лента инцидентов</h2><p>События, нормализованные и объединённые корреляцией</p></div>
               <div className="panel-head-actions">
                 <button className="primary" onClick={() => setShowForm(true)} disabled={anyBusy}>＋ Добавить событие</button>
-                <button className="primary" onClick={createDemo} disabled={anyBusy}>
-                  {demoBusy ? <><span className="spinner"></span> Отправка...</> : '＋ Тестовое событие'}
+                <button
+                  className="primary"
+                  onClick={createDemo}
+                  disabled={anyBusy}
+                  title="Случайный мок-сценарий из набора событий: брутфорс, распыление паролей, сканирование, SQLi, вредоносное ПО и др."
+                >
+                  {demoBusy ? <><span className="spinner"></span> Отправка...</> : '🎲 Тестовое событие'}
                 </button>
                 {isAdmin && (
                   <button
@@ -1639,7 +1697,9 @@ function App({ user, onLogout }) {
                 )}
               </div>
             </div>
-            <div className="filters"><div className="search">⌕<input placeholder="Поиск по инцидентам..." value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filter-tabs">{['all','critical','high','medium','low'].map(x => <button key={x} className={filter === x ? 'selected' : ''} onClick={() => setFilter(x)}>{x === 'all' ? 'Все' : x}</button>)}</div></div>
+            {/* [15] Мультиселект-фильтры: клик по чипу — toggle, можно несколько в группе;
+                пустой выбор группы = показывать все значения (семантика «Все» без кнопки) */}
+            <div className="filters"><div className="search">⌕<input placeholder="Поиск по инцидентам..." value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filter-group"><span className="filter-group-label">Статус</span><div className="filter-tabs">{Object.entries(STATUS_LABELS).map(([value, label]) => <button key={value} className={statusFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setStatusFilter, value)}>{label}</button>)}</div></div><div className="filter-group"><span className="filter-group-label">Критичность</span><div className="filter-tabs">{Object.entries(SEVERITY_LABELS).map(([value, label]) => <button key={value} className={severityFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setSeverityFilter, value)}>{label}</button>)}</div></div></div>
             {loading ? <div className="empty">Загрузка данных...</div> : filtered.length === 0 ? <div className="empty"><div className="empty-icon">✓</div><h3>Инцидентов пока нет</h3><p>Нажмите «Тестовое событие», чтобы проверить весь конвейер.</p></div> : <div className="incident-list">{filtered.map(i => <button className={`incident-row ${selected?.id === i.id ? 'selected-row' : ''}`} key={i.id} onClick={() => handleSelectIncident(i)}><div className={`risk-dot ${i.severity}`}></div><div className="incident-main"><div className="incident-title"><strong>#{i.id} · {i.title}</strong><Severity value={i.severity}/></div><p>{i.description || 'Описание отсутствует'}{i.attack_type ? ` · ${i.attack_type}` : ''}</p><span>Риск: {i.risk_score}{i.asset?.criticality ? ` · ${i.asset.criticality}` : ''} · {formatDate(i.created_at)}</span></div><Status value={i.status}/><span className="chevron">›</span></button>)}</div>}
           </div>
           <div className="panel detail-panel">
@@ -1667,12 +1727,18 @@ function App({ user, onLogout }) {
                       key={s}
                       className={`status-btn ${selected.status === s ? 'current' : ''}`}
                       onClick={() => changeStatus(s)}
-                      disabled={statusBusy || selected.status === s}
+                      disabled={statusBusy || selected.status === s || foreignOwner}
                     >
                       {STATUS_LABELS[s]}
                     </button>
                   ))}
                 </div>
+                {foreignOwner && (
+                  <small className="status-hint">
+                    Инцидент закреплён за {incidentDetail.analyst.username} — статус
+                    может менять владелец или администратор.
+                  </small>
+                )}
               </div>
 
               <div className="section"><label>Описание</label><div className="description">{selected.description || 'Описание отсутствует.'}</div></div>
@@ -1758,8 +1824,16 @@ function App({ user, onLogout }) {
                     // «Подтвердить и выполнить», одобрено → «Выполнить: <русское описание>»,
                     // заблокировано → кнопки нет (виден reason).
                     const needsConfirm = resultNeedsConfirmation(r);
-                    const canConfirm = isAdmin && r.action && needsConfirm;
-                    const canExecute = isAdmin && r.action && !needsConfirm && r.validation?.approved === true;
+                    // [15] Подтверждение отложенного — только админ; ручной запуск
+                    // одобренного — админ или владелец инцидента (незакреплённый
+                    // закрепляется при запуске). DVE-политика всё равно проверяется
+                    // на бэкенде, при AUTO_RESPONSE=false исполнение — dry run.
+                    const canConfirm = canConfirmAction(r, isAdmin);
+                    const canExecute = canRunAction(r, {
+                      isAdmin,
+                      username: user?.username || null,
+                      ownerUsername: incidentDetail?.analyst?.username || null,
+                    });
                     return (
                       <div className="result-item" key={`${r.action || 'result'}-${index}`}>
                         <div className="result-head-row">
@@ -1778,13 +1852,13 @@ function App({ user, onLogout }) {
                                 : '✓ Подтвердить и выполнить'}
                             </button>
                           )}
-                          {/* Ручной запуск одобренного DVE действия — только администратор */}
+                          {/* Ручной запуск одобренного DVE действия — владелец инцидента или администратор */}
                           {canExecute && (
                             <button
                               className="exec-btn exec-run"
                               onClick={() => executeAction(r.action)}
                               disabled={!!executeBusy}
-                              title={`Запустить действие playbook вручную (только администратор): ${actionRuDescription(r.action)}`}
+                              title={`Запустить действие playbook вручную (при симуляции — dry run): ${actionRuDescription(r.action)}`}
                             >
                               {executeBusy === r.action
                                 ? <><span className="spinner spinner-sm"></span> Выполняется...</>
@@ -1798,13 +1872,37 @@ function App({ user, onLogout }) {
                         {r.execution?.playbook_description && (
                           <small className="playbook-desc">Сценарий: {r.execution.playbook_description}</small>
                         )}
+                        {/* [15] Шаги сценария — «команды» действия: при симуляции показываем,
+                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено */}
+                        {formatPlaybookSteps(r.execution?.playbook_steps).length > 0 && (
+                          <div className="result-steps">
+                            <label>
+                              {r.execution?.mode === 'simulation'
+                                ? 'Что было бы выполнено (симуляция):'
+                                : r.execution?.mode === 'controlled'
+                                  ? 'Шаги сценария (выполнено):'
+                                  : 'Шаги сценария:'}
+                            </label>
+                            <ol>
+                              {formatPlaybookSteps(r.execution.playbook_steps).map((line, i) => (
+                                <li key={i}>{line}</li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
                         {(r.validation?.reason || r.execution?.reason) && (
                           <small className="result-reason">{r.validation?.reason || r.execution?.reason}</small>
                         )}
                       </div>
                     );
                   })}
-                  <pre>{JSON.stringify(analysis.results ?? analysis.execution, null, 2)}</pre>
+                  {/* [15] Сырой JSON убран под сворачиваемый блок: технические данные
+                      не должны сбивать с толку — человекочитаемая часть (бейджи DVE,
+                      русские описания, reason) остаётся сверху */}
+                  <details className="result-raw">
+                    <summary>Технические данные (JSON)</summary>
+                    <pre>{JSON.stringify(analysis.results ?? analysis.execution, null, 2)}</pre>
+                  </details>
                 </div>
               )}
 
@@ -1891,8 +1989,27 @@ function App({ user, onLogout }) {
         <div className="modal" onClick={e => e.stopPropagation()}>
           <h3>Добавить событие Wazuh</h3>
           <p className="modal-subtitle">
-            Заполните поля для создания нового инцидента
+            Выбери шаблон атаки — технические поля заполнятся автоматически. От критичности
+            актива зависит оценка риска и требования подтверждения (DVE)
           </p>
+
+          {/* [15] Шаблон события — варианты из справочника /ingest/reference (правила Wazuh);
+              выбор заполняет поля правила, но не блокирует дальнейшую правку */}
+          <div className="form-group">
+            <label>Шаблон события</label>
+            <select
+              value={templateId}
+              onChange={e => {
+                const id = e.target.value;
+                setTemplateId(id);
+                const rule = (reference?.rules || []).find(r => String(r.id) === id) || null;
+                setFormData(f => applyRuleTemplate(rule, f));
+              }}
+            >
+              <option value="">— заполнить вручную —</option>
+              {(reference?.rules || []).map(r => <option key={r.id} value={String(r.id)}>{ruleTemplateLabel(r)}</option>)}
+            </select>
+          </div>
 
           <div className="form-group">
             <label>Описание правила</label>
@@ -1905,15 +2022,16 @@ function App({ user, onLogout }) {
 
           <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
             <div className="form-group">
-              <label>ID правила</label>
+              <label>ID правила Wazuh</label>
               <input
                 value={formData.rule_id}
                 onChange={e => setFormData({...formData, rule_id: e.target.value})}
                 placeholder="5710"
+                list="ref-rule-ids"
               />
             </div>
             <div className="form-group">
-              <label>Уровень (1-15)</label>
+              <label>Уровень правила (1–15)</label>
               <input
                 type="number"
                 min="1"
@@ -1925,40 +2043,56 @@ function App({ user, onLogout }) {
           </div>
 
           <div className="form-group">
-            <label>Группы (через запятую)</label>
+            <label>Группы события (через запятую)</label>
             <input
               value={formData.rule_groups}
               onChange={e => setFormData({...formData, rule_groups: e.target.value})}
               placeholder="authentication_failed,sshd"
+              list="ref-groups"
+            />
+            <small className="form-hint">По группам правила корреляции распознают тип атаки — значения можно выбрать из списка</small>
+          </div>
+
+          <div className="form-group">
+            <label>Имя агента</label>
+            <small className="form-hint">Известное имя агента привязывает событие к активу из инвентаря — критичность актива влияет на оценку риска</small>
+            <input
+              value={formData.agent_name}
+              onChange={e => setFormData({...formData, agent_name: e.target.value})}
+              placeholder="mail-prod-01"
+              list="ref-agent-names"
+              title="Известное имя агента привязывает событие к активу из инвентаря (влияет на оценку риска)"
             />
           </div>
 
           <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
             <div className="form-group">
-              <label>ID агента</label>
+              <label>ID агента Wazuh</label>
               <input
                 value={formData.agent_id}
                 onChange={e => setFormData({...formData, agent_id: e.target.value})}
                 placeholder="001"
+                list="ref-agent-ids"
               />
             </div>
             <div className="form-group">
-              <label>Имя агента</label>
+              <label>Время (ISO)</label>
               <input
-                value={formData.agent_name}
-                onChange={e => setFormData({...formData, agent_name: e.target.value})}
-                placeholder="server-01"
+                type="datetime-local"
+                value={formData.timestamp}
+                onChange={e => setFormData({...formData, timestamp: e.target.value})}
               />
             </div>
           </div>
 
           <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
             <div className="form-group">
-              <label>Source IP</label>
+              <label>Source IP (источник)</label>
               <input
                 value={formData.srcip}
                 onChange={e => setFormData({...formData, srcip: e.target.value})}
-                placeholder="192.168.1.100"
+                placeholder="198.51.100.7"
+                list="ref-src-ips"
               />
             </div>
             <div className="form-group">
@@ -1967,18 +2101,31 @@ function App({ user, onLogout }) {
                 value={formData.dstuser}
                 onChange={e => setFormData({...formData, dstuser: e.target.value})}
                 placeholder="root"
+                list="ref-users"
               />
             </div>
           </div>
 
-          <div className="form-group">
-            <label>Время (ISO)</label>
-            <input
-              type="datetime-local"
-              value={formData.timestamp}
-              onChange={e => setFormData({...formData, timestamp: e.target.value})}
-            />
-          </div>
+          {/* [15] Справочные подсказки (datalist не ограничивает свободный ввод);
+              id уникальны, источники — справочник /ingest/reference */}
+          <datalist id="ref-rule-ids">
+            {(reference?.rules || []).map(r => <option key={r.id} value={String(r.id)} />)}
+          </datalist>
+          <datalist id="ref-groups">
+            {(reference?.groups || []).map(g => <option key={g} value={g} />)}
+          </datalist>
+          <datalist id="ref-agent-names">
+            {agentNameHints.map(name => <option key={name} value={name} />)}
+          </datalist>
+          <datalist id="ref-agent-ids">
+            {(reference?.agents || []).map(a => <option key={a.id} value={String(a.id)} />)}
+          </datalist>
+          <datalist id="ref-users">
+            {(reference?.users || []).map(u => <option key={u} value={u} />)}
+          </datalist>
+          <datalist id="ref-src-ips">
+            {(reference?.src_ips || []).map(ip => <option key={ip} value={ip} />)}
+          </datalist>
 
           <div className="form-group">
             <label>Полный лог</label>
@@ -1994,7 +2141,7 @@ function App({ user, onLogout }) {
           <div className="form-actions">
             <button className="ghost" onClick={() => setShowForm(false)}>Отмена</button>
             <button className="primary" onClick={createCustomEvent} disabled={formBusy}>
-              {formBusy ? <><span className="spinner"></span> Отправка...</> : 'Создать инцидент'}
+              {formBusy ? <><span className="spinner"></span> Отправка...</> : 'Отправить событие'}
             </button>
           </div>
         </div>

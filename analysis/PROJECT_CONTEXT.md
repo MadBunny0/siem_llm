@@ -24,7 +24,7 @@
 | `analysis/GAP_ANALYSIS_CH3.md` | **Главный рабочий документ**: детальная таблица «требование → статус → код → что доработать», список багов, приоритеты P0/P1/P2 | — |
 | `analysis/PROJECT_CONTEXT.md` | Этот файл | — |
 | `docs/DOCUMENTATION.md` | Самоописание проекта (этапы, таблицы БД, пайплайн) — местами устарело | — |
-| `app/api/routes.py` | Все эндпоинты: `POST /api/v1/ingest/wazuh`, `GET /incidents`, `POST /incidents/{id}/analyze`, `GET /notifications`, `GET /analyses`, `GET /health` | модули 1,5,6,7 (§3.1) |
+| `app/api/routes.py` | Все эндпоинты: `POST /api/v1/ingest/wazuh`, `GET /incidents` (мультифильтры status/severity, stage-15), `POST /incidents/{id}/analyze`, `POST /incidents/{id}/execute-action` (владелец/админ, stage-15), `GET /notifications`, `GET /analyses`, `GET /health`, `POST /demo/populate` + `POST /demo/test-event` (stage-15), `GET /ingest/reference` (stage-15), `GET /assets` | модули 1,5,6,7 (§3.1) |
 | `app/services/normalization.py` | `normalize_wazuh()` — единый шаблон Wazuh | §3.3.1 |
 | `app/services/correlation.py` | правила из БД, `find_related_events`, `create_or_update_incident` | §3.3.2 |
 | `app/services/risk.py` | `calculate_risk(events, p_implement)`, `score_to_severity` (low/medium/high/critical) | §3.3.3 |
@@ -33,6 +33,7 @@
 | `app/services/playbook.py` | playbook из БД, `ResponseAction`, `ITSMClient.create_ticket` (заглушка) | §3.4 |
 | `app/services/notification.py` | `notify_analyst()` → `notification_logs` (email/slack имитация) | §3.4 |
 | `app/services/audit.py` | `audit()` → `AuditLog` + лог | §3.1 (модуль 8) |
+| `app/services/demo_events.py` | Мок-сценарии демо: `MockScenario{key,title,events}`, `build_mock_scenarios(now)` — общий пул для /demo/populate и /demo/test-event (stage-15) | — |
 | `app/models.py` | 10 моделей: User, Event, Incident, Analysis(=LLMAnalysis), Asset, Notification, CorrelationRule, Playbook, ResponseAction, AuditLog | §3.2, таблица 3.1 — все 8 сущностей есть |
 | `app/schemas.py` | Pydantic: AssetOut, NotificationOut, AnalysisOut, WazuhAlert, IncidentOut | — |
 | `app/init_db.py` | `create_all` + seed: 3 пользователя, 5 активов, 2 правила корреляции, 2 playbook | — |
@@ -48,11 +49,14 @@
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (после stage-14)
+## 4. Статус на 2026-11-04 (после stage-15)
 
-- **stage-12/13 влиты** (PR #10/#11); **stage-14 (`stage-14-ownership-action-ux`) — на ревью** (4 пункта фидбека пользователя).
-- **stage-14 backend:** `_ensure_incident_access` — владение инцидентом (analyst_id закрепляется при analyze/status; чужой аналитик 403 «закреплён за другим аналитиком»; админ — исключение); `Incident.analyst` relationship + `analyst` (id/username/role) в GET /incidents и detail; `playbook_description` в execution всех режимов (включая simulation); тестов 89 (+3 владение/описания).
-- **stage-14 frontend:** result-item — одна главная кнопка по состоянию (pending → «✓ Подтвердить и выполнить» → confirm-action; approved → «▶ Выполнить: <RU>» → execute-action; blocked — только reason); панель последнего анализа восстанавливается из истории (`analysisFromHistory`, бейдж «из истории», защита от гонок detailReqRef, повторный клик по инциденту не сбрасывает панель); RU-расшифровки (ACTION_RU) в результатах, истории и playbooks; бейдж «Назначен: username» (+ «твой»); 60 фронт-тестов.
+- **stage-12/13 влиты** (PR #10/#11); **stage-14 (`stage-14-ownership-action-ux`) — запушен, ждёт PR**; **stage-15 (`stage-15-ux-logic-fixes`, стековая от stage-14) — сделан двумя параллельными сессиями, сведён ревью-сессией, закоммичен и запушен, ждёт PR**.
+- **stage-15 backend** (фидбек пользователя: случайное тестовое событие, справочник для формы, мультифильтры; + сохранены правки параллельной сессии): мок-сценарии вынесены в `app/services/demo_events.py` (`MockScenario{key,title,events}`, `build_mock_scenarios(now)`; demo_populate переведён, поведение идентично); `POST /demo/test-event` — random сценарий → random событие → `_ingest_alert` → фоновый автоанализ critical как в ingest; аудит `test_event_generated`; `GET /incidents?status=&severity=` — мультивыбор через запятую (`_parse_multiselect`, 422 на недопустимое, пустой = без фильтра); `GET /ingest/reference` — справочник (rules из raw_data событий, groups из событий + условий правил корреляции, agents, assets, users, src_ips); `GET /assets`; `execute-action` — владелец инцидента или админ (`admin_confirmed=user.role=="admin"`; аналитик на критическом активе получает pending_confirmation); `playbook_steps` в execution всех режимов. Тестов 98 (+9; ревью-сессия добавила test_execute_action_permissions в test_auth.py: владелец может, чужой 403, critical-актив → pending, админ снимает).
+- **stage-15 frontend:** кнопка «🎲 Тестовое событие» → `/demo/test-event` (тост называет сценарий и исход); форма «Добавить событие Wazuh»: select «Шаблон события» из `reference.rules` + datalist-подсказки на всех полях (ID правила, группы, имя/ID агента, пользователь, IP — свободный ввод сохранён, справочник грузится при открытии модалки, ошибка глотается); мультиселект-фильтры ленты — две группы чипов «Статус»/«Критичность» (пусто = все, AND между группами; чистая `applyIncidentFilters` в helpers.js); шаги playbook в результатах («Что было бы выполнено (симуляция)»); сырой JSON → `<details class="result-raw">`; тосты executionModeRu; disabled-кнопки статуса + подсказка при чужом владении (foreignOwner). Тестов 86 (+26: после ревью удалены 6 тестов мёртвых хелперов).
+- **Урок stage-15:** две параллельные сессии правили одно дерево одновременно — правки ревью-сессии (random-event, EVENT_PRESETS, GET /assets, foreignOwner) сводились к фиксированным контрактам, её мёртвые после сведения экспорты (EVENT_PRESETS/applyEventPreset/buildGroupsOptions/SAMPLE_*) удалены при ревью. Две сессии на одно дерево — плохая практика: сначала остановить параллельную.
+- **stage-14 backend:** `_ensure_incident_access` — владение инцидентом (analyst_id закрепляется при analyze/status; чужой аналитик 403 «закреплён за другим аналитиком»; админ — исключение); `Incident.analyst` relationship + `analyst` (id/username/role) в GET /incidents и detail; `playbook_description` в execution всех режимов (включая simulation).
+- **stage-14 frontend:** result-item — одна главная кнопка по состоянию (pending → «✓ Подтвердить и выполнить» → confirm-action; approved → «▶ Выполнить: <RU>» → execute-action; blocked — только reason); панель последнего анализа восстанавливается из истории (`analysisFromHistory`, бейдж «из истории», защита от гонок detailReqRef, повторный клик по инциденту не сбрасывает панель); RU-расшифровки (ACTION_RU) в результатах, истории и playbooks; бейдж «Назначен: username» (+ «твой»).
 - **Пайплайн разработки (от пользователя, обязателен):** Анализ → код → тесты → исправление → тесты → готово. Субагентам запрещены tmp-скрипты вне репо (D:\tmp чистить) и сетевые вызовы из тестов — только штатный vitest/pytest-набор; нехватку зависимостей сообщать в отчёте (добавляются в package.json/requirements).
 - Урок: субагент может упасть фатально (SSL к localhost API) — его частичную работу в рабочем дереве дочищать самостоятельно по его diff; мусор за ним чистить (D:\tmp).
 
@@ -110,6 +114,7 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 
 ## 7. История обновлений файла
 
+- 2026-11-04 — stage-15: random test-event (/demo/test-event + demo_events.py), /ingest/reference + datalists/шаблон в форме, мультифильтры status/severity (API+UI-чипы), execute-action владельцу (+ тесты прав), playbook_steps, JSON под details; тесты 98+86; правки параллельной сессии сведены к контрактам, мёртвые экспорты удалены; ветка stage-15-ux-logic-fixes запушена.
 - 2026-11-03 — создан: первичный gap-анализ Главы 3, баги P0, roadmap.
 - 2026-11-03 — stage-07: реализованы P0-фиксы и основная часть P1 (см. раздел 4); обновлён статус, roadmap сокращён до P2.
 - 2026-11-03 — stage-08: P2 выполнен (тесты, CRUD API, UI-вкладки) силами субагентов + ревью; ветка `stage-08-p2-tests-ui-crud`, ожидает PR.

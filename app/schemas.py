@@ -6,12 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class AssetOut(BaseModel):
-    """Ответ о защищаемом активе (для инцидентов)."""
+    """Ответ о защищаемом активе (для инцидентов и справочника /assets)."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: int
     name: str
+    type: str | None = None
     criticality: str
     network_segment: str | None = None
 
@@ -131,7 +132,7 @@ class IncidentStatusIn(BaseModel):
 
 
 class ExecuteActionIn(BaseModel):
-    """Ручной запуск playbook-действия администратором (stage-12)."""
+    """Ручной запуск playbook-действия (stage-12; stage-15: владелец или админ)."""
 
     action: str = Field(min_length=1)
 
@@ -214,3 +215,44 @@ class ValidationPolicyOut(BaseModel):
     id: int
     severity: str
     allowed_actions: list[str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Справочник для формы добавления события Wazuh (GET /ingest/reference, stage-15):
+# поля формы — выпадающие списки из фактических данных БД, а не ручной ввод ID
+# ---------------------------------------------------------------------------
+class IngestReferenceRule(BaseModel):
+    """Правило Wazuh, встреченное в принятых событиях."""
+
+    id: str
+    level: int | None = None
+    description: str | None = None
+    groups: list[str] = Field(default_factory=list)
+
+
+class IngestReferenceAgent(BaseModel):
+    """Агент Wazuh, встреченный в принятых событиях."""
+
+    id: str
+    name: str
+
+
+class IngestReferenceAsset(BaseModel):
+    """Защищаемый актив (инвентарь, §3.2)."""
+
+    name: str
+    type: str | None = None
+    criticality: str | None = None
+    network_segment: str | None = None
+    ip_addresses: str | None = None
+
+
+class IngestReferenceOut(BaseModel):
+    """Справочные данные для формы добавления события Wazuh."""
+
+    rules: list[IngestReferenceRule] = Field(default_factory=list)
+    groups: list[str] = Field(default_factory=list)
+    agents: list[IngestReferenceAgent] = Field(default_factory=list)
+    assets: list[IngestReferenceAsset] = Field(default_factory=list)
+    users: list[str] = Field(default_factory=list)
+    src_ips: list[str] = Field(default_factory=list)

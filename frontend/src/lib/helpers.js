@@ -188,6 +188,69 @@ export function criteriaCountLabel(count) {
   return `${count} критериев`;
 }
 
+/* ==================== Stage 15: ручной запуск действий, шаги playbook ==================== */
+
+// Режимы исполнения (execution.mode) — русские подписи для тостов и бейджей.
+export const EXECUTION_MODE_RU = {
+  simulation: 'dry run — симуляция, инфраструктура не изменялась',
+  controlled: 'реальное выполнение',
+  pending_confirmation: 'ожидает подтверждения администратора',
+  blocked: 'заблокировано политикой DVE',
+};
+
+export function executionModeRu(mode) {
+  return EXECUTION_MODE_RU[mode] || mode || '';
+}
+
+// Может ли текущий пользователь вручную запустить одобренное DVE действие:
+// админ — на любом инциденте; аналитик — владелец инцидента (незакреплённый
+// инцидент закрепляется при запуске, поэтому доступен любому аналитику).
+// Отложенное (pending) и заблокированное действие запустить нельзя.
+export function canRunAction(result, { isAdmin = false, username = null, ownerUsername = null } = {}) {
+  if (!result?.action) return false;
+  if (resultNeedsConfirmation(result)) return false;
+  if (result?.validation?.approved !== true) return false;
+  if (isAdmin) return true;
+  if (!username) return false;
+  return !ownerUsername || username === ownerUsername;
+}
+
+// Может ли подтвердить отложенное действие — только администратор (§3.4, p:102).
+export function canConfirmAction(result, isAdmin) {
+  return !!isAdmin && resultNeedsConfirmation(result);
+}
+
+// Русские подписи плейсхолдеров playbook-шагов ({{src_ip}} и т.п.).
+const STEP_PLACEHOLDER_RU = {
+  src_ip: 'IP-адрес источника',
+  user: 'учётная запись нарушителя',
+  asset: 'скомпрометированный актив',
+  incident: 'инцидент',
+};
+
+function stepPlaceholderRu(raw) {
+  const key = String(raw).replace(/[{}]/g, '').trim();
+  return STEP_PLACEHOLDER_RU[key] || key;
+}
+
+// Один шаг playbook → строка на русском: приоритет — description из БД,
+// иначе русское описание действия + цель и инструмент.
+export function formatPlaybookStep(step) {
+  if (!step || typeof step !== 'object') return '';
+  if (step.description) return String(step.description);
+  const parts = [];
+  parts.push(step.action ? actionRuDescription(step.action) : 'Шаг сценария');
+  if (step.target) parts.push(`цель: ${stepPlaceholderRu(step.target)}`);
+  if (step.tool && step.tool !== 'none') parts.push(`инструмент: ${step.tool}`);
+  return parts.join(' — ');
+}
+
+// Шаги playbook → список строк (не-массивы и пустые шаги отбрасываются).
+export function formatPlaybookSteps(steps) {
+  if (!Array.isArray(steps)) return [];
+  return steps.map(formatPlaybookStep).filter(Boolean);
+}
+
 // Строковое представление detail из ответа FastAPI (422 отдаёт detail массивом).
 export function detailToMessage(detail, fallback) {
   if (typeof detail === 'string' && detail) return detail;
@@ -200,4 +263,32 @@ export function detailToMessage(detail, fallback) {
     }
   }
   return fallback;
+}
+
+/* ==================== Stage 15: мультиселект-фильтры, шаблоны из справочника ==================== */
+
+// Русские подписи критичности — для чипов мультиселект-фильтра инцидентов.
+export const SEVERITY_LABELS = { critical: 'Критический', high: 'Высокий', medium: 'Средний', low: 'Низкий' };
+
+// Мультиселект-фильтр ленты инцидентов. statuses/severities — массивы выбранных
+// чипов (пустой массив = показывать все значения этой группы); группы сочетаются
+// через AND. Поиск — подстрока по id/title/description без учёта регистра.
+// Сортировка прежняя: severityOrder по убыванию, затем created_at по убыванию.
+export function applyIncidentFilters(incidents, { statuses, severities, search } = {}) {
+  const statusSet = new Set(statuses || []);
+  const severitySet = new Set(severities || []);
+  const needle = (search || '').toLowerCase();
+  return (Array.isArray(incidents) ? incidents : [])
+    .filter(incident => !statusSet.size || statusSet.has(incident.status))
+    .filter(incident => !severitySet.size || severitySet.has(incident.severity))
+    .filter(incident => !needle || `${incident.id} ${incident.title} ${incident.description}`.toLowerCase().includes(needle))
+    .sort((a, b) => (severityOrder[b.severity] - severityOrder[a.severity]) ||
+      (new Date(b.created_at) - new Date(a.created_at)));
+}
+
+// «5710 — sshd: Multiple authentication failures» — подпись варианта шаблона
+// события в select и datalist формы (справочник GET /ingest/reference).
+export function ruleTemplateLabel(rule) {
+  if (!rule) return '';
+  return `${rule.id} — ${rule.description}`;
 }
