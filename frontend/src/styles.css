@@ -1859,6 +1859,25 @@ button:focus-visible {
   color: #ffbd67;
 }
 
+/* ---------- Строка кнопки анализа: основная кнопка + повторный запуск ---------- */
+
+.analyze-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* кнопка внутри строки: flex вместо width:100% (иначе ссылка не помещается) */
+.analyze-row .analyze {
+  width: auto;
+  flex: 1;
+}
+
+.analyze-rerun {
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 /* ---------- Строка вердикта под шапкой панели результата ---------- */
 
 .verdict-row {

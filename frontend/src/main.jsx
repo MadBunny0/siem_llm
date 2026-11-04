@@ -1521,6 +1521,10 @@ function App({ user, onLogout }) {
   const freshBadge = initiatedByBadge(analysis);
   // [2] панель, восстановленная из истории, не блокирует повторный запуск анализа
   const hasFreshAnalysis = !!analysis && !analysis.fromHistory;
+  // [18] Статус «анализ выполнен» — серверный: инцидент с непустой историей
+  // анализов считается проанализированным. Переживает смену таски и
+  // перезагрузку, виден другим операторам; повторный запуск — ссылкой рядом.
+  const analysisDone = hasFreshAnalysis || (incidentDetail?.analyses || []).length > 0;
 
   // [18] Фоновый анализ (фидбек: синхронный POST /analyze падал 504 на долгом
   // инференсе Ollama): POST мгновенно возвращает { analysis: { scheduled: true } },
@@ -1953,14 +1957,29 @@ function App({ user, onLogout }) {
                 </div>
               )}
 
-              {/* [2] восстановленная из истории панель не мешает запустить свежий анализ;
+              {/* [2]/[18] Статус кнопки анализа — СЕРВЕРНЫЙ (история анализов инцидента):
+                  «✓ Анализ выполнен» не сбрасывается при смене таски и перезагрузке и
+                  виден другим операторам; повторный запуск — ссылкой «↻ Повторить анализ»
+                  (LLM недетерминирована, повторный анализ — нормальное действие оператора);
                   [16] на закрытом инциденте анализ недоступен до возврата в работу */}
-              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || hasFreshAnalysis || incidentClosed}>
-                {analyzing ? <><span className="spinner"></span> Выполняется анализ...</> :
-                 hasFreshAnalysis ? '✓ Анализ выполнен' :
-                 incidentClosed ? 'Инцидент закрыт — верните в работу' :
-                 '✦ Запустить интеллектуальный анализ'}
-              </button>
+              <div className="analyze-row">
+                <button className="analyze" onClick={runAnalysis} disabled={anyBusy || analysisDone || incidentClosed}>
+                  {analyzing ? <><span className="spinner"></span> Выполняется анализ...</> :
+                   incidentClosed ? 'Инцидент закрыт — верните в работу' :
+                   analysisDone ? '✓ Анализ выполнен' :
+                   '✦ Запустить интеллектуальный анализ'}
+                </button>
+                {analysisDone && !analyzing && !incidentClosed && (
+                  <button
+                    className="link-btn analyze-rerun"
+                    onClick={runAnalysis}
+                    disabled={anyBusy}
+                    title="Запустить повторный LLM-анализ — модель недетерминирована, результат может отличаться"
+                  >
+                    ↻ Повторить анализ
+                  </button>
+                )}
+              </div>
 
               {analysis && (
                 <div className={`analysis-result${analyzing ? ' busy-dim' : ''}`}>
