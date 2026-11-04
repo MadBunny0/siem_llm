@@ -13,7 +13,7 @@
 обработки инцидентов ИБ. Конвейер:
 `Wazuh-алерт → нормализация → корреляция (правила из БД) → оценка риска → LLM-анализ → Decision Validation Engine → Playbook → Аудит → React-дашборд`.
 
-**Эталонная документация — Глава 3 `vkr.docx`** (путь от корня: `vkr.docx`; урезанная копия текста: `vkr.txt` — использовать только если docx не читается).
+**Эталонная документация — Глава 3 `vkr.docx`** (путь от корня: `vkr.docx`; урезанная копия текста: `vkr.txt` — использовать только если docx не читается). ⚠ stage-19: файла `vkr.txt` в репо больше нет, только `vkr.docx`.
 Глава 4 пока **не** рассматривается.
 
 ## 2. Ключевые файлы (routing)
@@ -24,32 +24,35 @@
 | `analysis/GAP_ANALYSIS_CH3.md` | **Главный рабочий документ**: детальная таблица «требование → статус → код → что доработать», список багов, приоритеты P0/P1/P2 | — |
 | `analysis/PROJECT_CONTEXT.md` | Этот файл | — |
 | `docs/DOCUMENTATION.md` | Самоописание проекта (этапы, таблицы БД, пайплайн) — местами устарело | — |
-| `app/api/routes.py` | Все эндпоинты: `POST /api/v1/ingest/wazuh`, `GET /incidents` (мультифильтры status/severity, stage-15), `POST /incidents/{id}/analyze`, `POST /incidents/{id}/execute-action` (владелец/админ, stage-15), `GET /notifications`, `GET /analyses`, `GET /health`, `POST /demo/populate` + `POST /demo/test-event` (stage-15), `GET /ingest/reference` (stage-15), `GET /assets` | модули 1,5,6,7 (§3.1) |
+| `app/api/routes.py` | **(stage-19)** агрегатор роутеров: монолит разрезан на `common.py` (общие хелперы) + `auth_routes.py`, `ingest_routes.py`, `incident_routes.py`, `catalog_routes.py`, `demo_routes.py`, `system_routes.py`; реэкспорт `run_auto_analysis` для тестов. **27 эндпоинтов** (stage-19 удалил неиспользуемый `GET /assets` — 0 вызовов фронта/тестов/доков); канонический список — Swagger `/docs` | модули 1,5,6,7 (§3.1) |
 | `app/services/normalization.py` | `normalize_wazuh()` — единый шаблон Wazuh | §3.3.1 |
-| `app/services/correlation.py` | правила из БД, `find_related_events`, `create_or_update_incident` | §3.3.2 |
+| `app/services/correlation.py` | правила из БД, `evaluate_correlation`, `create_or_update_incident` (stage-19: легаси `find_related_events`/`match_attribute` удалены) | §3.3.2 |
 | `app/services/risk.py` | `calculate_risk(events, p_implement)`, `score_to_severity` (low/medium/high/critical) | §3.3.3 |
 | `app/services/llm.py` | `analyze_incident(context)` → Ollama `/api/chat`, JSON-ответ | §3.3.4 |
 | `app/services/validation.py` | DVE: `ALLOWED_ACTIONS` по severity | §3.4 |
 | `app/services/playbook.py` | playbook из БД, `ResponseAction`, `ITSMClient.create_ticket` (заглушка) | §3.4 |
 | `app/services/notification.py` | `notify_analyst()` → `notification_logs` (email/slack имитация) | §3.4 |
 | `app/services/audit.py` | `audit()` → `AuditLog` + лог | §3.1 (модуль 8) |
+| `app/services/ingest.py`, `app/services/auto_analysis.py` | **(stage-19)** конвейер приёма `ingest_alert()` (нормализация → актив → корреляция → риск → критичность → инцидент; возвращает `(incident, should_auto_analyze)`) и оркестрация анализа `run_auto_analysis()` / `_run_incident_analysis()` / `_maybe_auto_close()` / `_trim_ecs()` — вынесены из routes.py | §3.1–3.4 (те же этапы) |
 | `app/services/demo_events.py` | Мок-сценарии демо: `MockScenario{key,title,events}`, `build_mock_scenarios(now)` — общий пул для /demo/populate и /demo/test-event (stage-15) | — |
-| `app/models.py` | 10 моделей: User, Event, Incident, Analysis(=LLMAnalysis), Asset, Notification, CorrelationRule, Playbook, ResponseAction, AuditLog | §3.2, таблица 3.1 — все 8 сущностей есть |
+| `app/models.py` | 11 моделей: User, Event, Incident, Analysis(=LLMAnalysis), Asset, Notification, CorrelationRule, Playbook, ResponseAction, AuditLog, ValidationPolicy (stage-11) | §3.2, таблица 3.1 — все 8 сущностей есть |
 | `app/schemas.py` | Pydantic: AssetOut, NotificationOut, AnalysisOut, WazuhAlert, IncidentOut | — |
-| `app/init_db.py` | `create_all` + seed: 3 пользователя, 5 активов, 2 правила корреляции, 2 playbook | — |
-| `app/config.py` | Settings: DATABASE_URL, OLLAMA_URL/MODEL, CORRELATION_WINDOW_MINUTES, AUTO_RESPONSE | — |
+| `app/init_db.py` | `create_all` + ALTER-миграции + seed: 3 пользователя, 5 активов, 7 правил корреляции, 5 playbook, политика DVE (stage-19: SessionLocal вместо Session(engine), logging вместо print) | — |
+| `app/config.py` | Settings: DATABASE_URL, OLLAMA_URL/MODEL/NUM_CTX/NUM_PREDICT/KEEP_ALIVE, CORRELATION_WINDOW_MINUTES, AUTO_RESPONSE, AUTO_ANALYSIS(_LEVELS), AUTO_CLOSE_LEVELS, JWT_SECRET/ALGORITHM, TOKEN_EXPIRE_MINUTES | — |
 | `app/main.py`, `app/db.py` | FastAPI app; engine/session | — |
-| `frontend/src/main.jsx` | Весь UI одним файлом: статистика, лента инцидентов, фильтры, формы создания события, ручной анализ, визуализация конвейера | §3.5 (веб-интерфейс) |
+| `frontend/src/main.jsx` | **(stage-19)** точка входа (6 строк) — монолит разрезан: `App.jsx` (логика UI: статистика, лента, фильтры, форма события, ручной анализ, конвейер), `api.js` (JWT-сессия + `request`), `constants.js`, `components/` (Badges, LoginScreen, AuthGate, AnalysesView, NotificationsView, AuditView, RulesView, PlaybooksView, PipelineStatus) | §3.5 (веб-интерфейс) |
 | `docker-compose.yml` | db → db-init → ollama(+ollama-init) → api → frontend | §3.5 (Docker) |
-| `tests/` | 30 тестов: risk(7), correlation(9), normalization(2), validation(7), playbook(2), audit(3). Нет test_llm и тестов routes | — |
-| `samples/sample_wazuh_alert.json`, `samples/test_incident_{low,high,critical}.json` | тестовые данные | — |
+| `tests/` | **138 backend-тестов**, 11 файлов (routes 46, auth 21, correlation 12, criticality 19, llm 10, assets 6, validation 9, risk 8, audit 3, playbook 2, normalization 2); общие фикстуры — `conftest.py` (stage-19). Фронтенд отдельно: **111 тестов** Vitest+RTL | — |
+| `samples/sample_wazuh_alert.json`, `samples/test_incident_{low,high,critical}.json` | тестовые данные. ⚠ stage-19: `test_incident_{low,high,critical}.json` — сироты (не используются кодом/тестами/доками), кандидаты на удаление; **НЕ удаляются** по директиве пользователя (2026-11-05) | — |
 
 ## 3. Стек (совпадает с таблицей 3.2 ВКР)
 
 Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + qwen2.5:3b · Docker Compose · React 19 + Vite + Nginx.
 Отсутствуют в репо (по Главе 3.5 заявлены): контейнер Wazuh, стенд VirtualBox.
 
-## 4. Статус на 2026-11-04 (stage-18 влит PR #16, main = d1fbdff; ветки почищены, стенд пересобран)
+## 4. Статус на 2026-11-05 (stage-19 рефакторинг на ветке `stage-19-legacy-cleanup`, работа в worktree `D:\VScodeProjects\siem_llm-stage19`; PR не создан — ассистент создаст его, когда всё готово; main = 04fd4cc)
+
+- **stage-19 (рефакторинг-очистка, функционал байт-в-байт):** монолит `app/api/routes.py` (1465 строк) → агрегатор + 6 доменных роутеров + `common.py`; конвейер инжеста → `app/services/ingest.py` (`ingest_alert` возвращает `(incident, should_auto_analyze)` — глобальный флаг устранён), оркестрация анализа → `app/services/auto_analysis.py`; дедупликация: execution-словарь ×4→1, playbook+DVE ×3→1, CSV-парсер уровней ×2→1; удалены (коммиты ДО директивы) неиспользуемый `GET /assets` и легаси `find_related_events`/`match_attribute`; `llm.py` — промпт одним `render_full_prompt`; `init_db.py` — SessionLocal + logging; `tests/conftest.py` (−~150 строк дублей из 6 файлов). Фронтенд: `main.jsx` (2463) → `App.jsx` + `api.js` + `constants.js` + 9 компонентов, точка входа 6 строк; `styles.css` — побайтовый дубликат, мёртвые классы и минифицированный легаси-слой устранены (−9.6% байт). Инфраструктура: env api доставляются из `.env` (`JWT_SECRET` и др., дефолты прежние), `npm ci` по lock, frontend-tests node:22-alpine, nginx `proxy_read/send_timeout 300s` (первопричина 504 stage-18), `.env.example` порт 5433. Тесты: **138 backend (−1 тест удалённой функции) + 111 frontend**, vite build зелёные. **Директивы пользователя 2026-11-05:** артефакты не удалять — помечать к удалению (кандидаты: `samples/test_incident_*.json`, неиспользуемые колонки models.py); PR создаёт ассистент в последний момент; stage-20 ведёт параллельная сессия (её ветка от main, не вмешиваться). Детали — analysis/DEVIATIONS.md §4.
 
 - **stage-18, оптимизация LLM (фидбек «qwen очень долго отрабатывает»):** num_ctx=8192 (был дефолт Ollama **2048 — меньше промпта**, модель теряла контекст), num_predict=2048, keep_alive=30m (нет холодной загрузки между запросами), flash attention + KV q8_0 в compose, контекст ужат (12 событий, ECS-строки 800 симв.). Замер CPU: eval rate 12.6–15 ток/с → анализ ≈ 1.5–2 мин — предел CPU для 3B. **GPU-ускорение отклонено пользователем** (на машине RTX 4060 Ti, но Docker GPU не видит; docker-compose.gpu.yml и раздел DEPLOYMENT.md про GPU откачены — проект CPU-only). Быстрая альтернатива — OLLAMA_MODEL=qwen2.5:1.5b. Тесты 139 backend, api/ollama пересобраны на стенде.
 
@@ -123,11 +126,14 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 - Код проекта менять **только по явному запросу** пользователя (этот файл и GAP-анализ — исключение, они созданы по запросу).
 - Главу 4 ВКР пока не трогать.
 - На этом ПК **не запускать** проект и **не выполнять** тесты (нет окружения).
-- Эталон: `vkr.docx` Глава 3. Если docx недоступен — резерв `vkr.txt`.
+- Эталон: `vkr.docx` Глава 3. Если docx недоступен — резерв `vkr.txt`. (⚠ stage-19: `vkr.txt` в репо нет.)
+- **Директивы пользователя (2026-11-05):** артефакты проекта НЕ удалять — оставлять пометку на удаление (маркер в коде/доке + запись в DEVIATIONS.md); физическое удаление — только по явной команде. PR создаёт ассистент сам — в последний момент, когда вся работа готова и проверена. Параллельные сессии пользователя (stage-20) не трогать: работать в отдельном worktree, чужие ветки и untracked-файлы не изменять.
 - В `vkr.docx` есть артефакт на p:39 (забытый текст ИИ-ассистента) — напомнить пользователю удалить перед сдачей.
 - Изменения в коде коммитить по образцу существующих: `stage-NN: <описание>` или `fix(scope): <описание>` (но только по запросу пользователя).
 
 ## 7. История обновлений файла
+
+- 2026-11-05 — stage-19: рефакторинг-очистка (сплит routes.py и main.jsx, services/ingest.py + auto_analysis.py, conftest.py, dead-code, CSS, инфра-фиксы env/npm ci/node 22/nginx 300s); карта файлов §2 переписана; директивы пользователя (не удалять — помечать; PR ассистентом в конце) в §6; работа в worktree из-за параллельной сессии stage-20; тесты 138+111.
 
 - 2026-11-04 — stage-18 (итерация 2): 504 на /analyze → фоновый анализ + опрос + LLM_INFERENCE_LOCK; AUTO_ANALYSIS_LEVELS → low (critical — оператор); состояние кнопок — серверное (Incident.manual_actions + reset-actions + confirm-action перезапись response_raw); фикс blocked-исполнения в автоконвейере + аудит скипа автозакрытия; тесты 139+111.
 

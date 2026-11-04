@@ -37,10 +37,16 @@ Docker Compose специально разделяет подготовку за
 
 ```
 siem_llm/
-├── app/                  # Бэкенд: FastAPI (api/, services/, models, init_db)
-├── frontend/             # React-дашборд (src/lib — хелперы, src/components — компоненты)
-├── tests/                # pytest-тесты бэкенда (86, запускаются в контейнере)
-├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION
+├── app/                  # Бэкенд: FastAPI
+│   ├── api/              # HTTP-маршруты: routes.py — агрегатор; под-роутеры по доменам
+│   │                     # (auth/ingest/incident/catalog/demo/system_routes.py) + common.py
+│   ├── services/         # Логика конвейера (normalization, correlation, risk, llm, ...)
+│   │                     # + ingest.py (приём события) и auto_analysis.py (оркестрация анализа)
+│   └── models.py, schemas.py, config.py, db.py, init_db.py, main.py
+├── frontend/             # React-дашборд: src/App.jsx (логика UI), src/api.js, src/constants.js,
+│                         # src/components/* (вкладки, логин), src/lib — хелперы
+├── tests/                # pytest-тесты бэкенда (138, запускаются в контейнере; общие фикстуры — conftest.py)
+├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX
 ├── samples/              # Примеры алертов Wazuh (JSON)
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
 ├── wazuh/                # Файлы интеграции с Wazuh (integrator, фрагмент ossec.conf)
@@ -49,7 +55,7 @@ siem_llm/
 └── requirements.txt, pytest.ini, .env.example
 ```
 
-Тесты: 86 backend (pytest) + 49 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 138 backend (pytest) + 111 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---
@@ -155,7 +161,7 @@ TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
 curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
 ```
 
-Секрет подписи токена задаётся переменной `JWT_SECRET` (см. `.env.example`) — смените его для окружения, отличного от локального.
+Секрет подписи токена задаётся переменной `JWT_SECRET` (см. `.env.example`) — смените его для окружения, отличного от локального. С stage-19 тюнируемые переменные сервиса api (`JWT_SECRET`, `JWT_ALGORITHM`, `TOKEN_EXPIRE_MINUTES`, `AUTO_*`, `CORRELATION_WINDOW_MINUTES`) доставляются в контейнер из `.env`; значения по умолчанию — в `docker-compose.yml`.
 
 ## Wazuh (§3.5 ВКР)
 

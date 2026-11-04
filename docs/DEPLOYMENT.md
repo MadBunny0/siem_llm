@@ -56,7 +56,7 @@ cd siem_llm
 Работа стенда от них не зависит — всё собирается в контейнерах.
 
 - Python 3.12: https://www.python.org/downloads/ (при установке отметить **Add python.exe to PATH**)
-- Node.js 20 LTS: https://nodejs.org/
+- Node.js 22 LTS: https://nodejs.org/
 
 ## 3. Настройка окружения
 
@@ -69,11 +69,20 @@ cd siem_llm
    | Переменная | По умолчанию | Смысл |
    |---|---|---|
    | `JWT_SECRET` | `dev-secret-change-me-in-production` | секрет JWT — **смени** для машины, доступной другим |
+   | `JWT_ALGORITHM` | `HS256` | алгоритм подписи JWT |
+   | `TOKEN_EXPIRE_MINUTES` | `480` | время жизни access-токена (минуты) |
    | `AUTO_RESPONSE` | `false` | безопасный демо-режим реагирования (симуляция) |
    | `AUTO_ANALYSIS` | `true` | главный выключатель автоанализа LLM |
-   | `AUTO_ANALYSIS_LEVELS` | `critical` | уровни риска для автоанализа (плановый режим: `low,medium,high,critical`) |
+   | `AUTO_ANALYSIS_LEVELS` | `low` | уровни риска для автоанализа (плановый режим: `low,medium,high,critical`) |
+   | `AUTO_CLOSE_LEVELS` | `low` | уровни полного автоконвейера (анализ → исполнение → автозакрытие); пусто = выключен |
    | `CORRELATION_WINDOW_MINUTES` | `5` | окно корреляции по умолчанию |
    | `OLLAMA_MODEL` | `qwen2.5:3b` | модель интеллектуального анализа |
+
+   Все тюнируемые переменные сервиса api из таблицы выше (`JWT_SECRET`, `JWT_ALGORITHM`,
+   `TOKEN_EXPIRE_MINUTES`, `AUTO_RESPONSE`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
+   `AUTO_CLOSE_LEVELS`, `CORRELATION_WINDOW_MINUTES`) с stage-19 **пробрасываются в контейнер
+   api из `.env`**; значения по умолчанию в `docker-compose.yml` совпадают с прежними —
+   совет «смените `JWT_SECRET` в `.env`» теперь реально работает.
 
 ## 4. Запуск стенда
 
@@ -143,7 +152,7 @@ docker compose --profile wazuh up --build
 
 ## 6. Автотесты — только Docker, локальный Python/Node не нужны
 
-**Бэкенд (86 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
+**Бэкенд (138 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
 `base` — прод, `dev` — прод + тесты):
 
 ```bash
@@ -155,7 +164,7 @@ docker compose --profile tests run --rm tests   # прогнать pytest
 Повторный прогон после правок: та же команда `run` (кэш сборки обновит только слои
 с изменившимися файлами — это секунды).
 
-**Фронтенд (49 тестов, Vitest + React Testing Library):**
+**Фронтенд (111 тестов, Vitest + React Testing Library):**
 
 ```bash
 docker compose --profile tests run --rm frontend-tests
@@ -169,17 +178,18 @@ docker compose --profile tests run --rm frontend-tests
 
 Виртуальное окружение `.venv` в репо не используется и в git не входит — тесты
 запускаются только в контейнерах (Docker — единственная среда исполнения проекта).
-Локальный прогон возможен при отдельно установленном Python 3.12 / Node 20:
+Локальный прогон возможен при отдельно установленном Python 3.12 / Node 22:
 
 ```powershell
 pip install -r requirements.txt pytest
 pytest
 
-cd frontend && npm install && npm test
+cd frontend && npm ci && npm test
 ```
 
-Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`;
-вручную: `cd frontend && npm install && npm run build`.
+Сборка фронтенда (проверка UI) выполняется сама при `docker compose up --build`
+(в образе — `npm ci` по `package-lock.json`, воспроизводимая сборка);
+вручную: `cd frontend && npm ci && npm run build`.
 
 ## 7. Производительность LLM
 
@@ -192,7 +202,7 @@ cd frontend && npm install && npm test
 | `OLLAMA_NUM_PREDICT=2048` | `.env` / compose | Потолок генерации — защита от «расползающегося» ответа (реальный ответ укладывается) |
 | `OLLAMA_KEEP_ALIVE=30m` | `.env` / compose | Модель остаётся в памяти 30 минут после запроса — повторные анализы не платят ~20–40с за загрузку с диска |
 | `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE=q8_0` | compose (ollama) | Ускорение генерации + вдвое меньше памяти под KV-кэш |
-| Обрезка контекста | `routes.py` | Последние 12 событий, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
+| Обрезка контекста | `auto_analysis.py` (`_trim_ecs`) | Последние 12 событий, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
 | Сериализация запросов | `llm.py` (`LLM_INFERENCE_LOCK`) | CPU-модель обрабатывает запросы по одному — параллельные только трешат CPU |
 
 Быстрая демонстрация (если скорость важнее качества): `OLLAMA_MODEL=qwen2.5:1.5b`
