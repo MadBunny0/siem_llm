@@ -766,3 +766,59 @@ def test_execute_action_manual(client, db_session):
     assert body["validation"]["approved"] is True
     assert body["execution"]["mode"] == "simulation"
     assert body["action"] == "block_ip"
+
+
+# ---------------------------------------------------------------------------
+# Закрытый инцидент — операции реагирования запрещены, доступен только
+# возврат в работу (stage-16, фидбек)
+# ---------------------------------------------------------------------------
+def test_closed_incident_allows_only_reopen(client, db_session, monkeypatch):
+    """Закрытый инцидент: анализ/действие/подтверждение → 409; из статусов
+    доступен только переход в in_progress; после reopen анализ работает."""
+    seed_rule(db_session)
+    incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
+
+    # рекомендация с действием — чтобы confirm-action доходил до проверки
+    # закрытия, а не падал раньше на «No pending recommendation found» (404)
+    from app.models import Analysis
+
+    db_session.add(Analysis(
+        incident_id=incident_id, model="test-model", prompt="p", description="d",
+        recommended_action="monitor",
+    ))
+    db_session.commit()
+
+    assert client.patch(
+        f"{API}/incidents/{incident_id}/status", json={"status": "closed"}
+    ).status_code == 200
+
+    base = f"{API}/incidents/{incident_id}"
+
+    # манипуляции с закрытым инцидентом запрещены
+    blocked = client.post(f"{base}/analyze")
+    assert blocked.status_code == 409
+    assert "закрыт" in blocked.json()["detail"]
+    blocked = client.post(f"{base}/execute-action", json={"action": "monitor"})
+    assert blocked.status_code == 409
+    assert "закрыт" in blocked.json()["detail"]
+    blocked = client.post(f"{base}/confirm-action")
+    assert blocked.status_code == 409
+    assert "закрыт" in blocked.json()["detail"]
+
+    # из закрытого статуса разрешён только возврат в работу
+    assert client.patch(f"{base}/status", json={"status": "new"}).status_code == 409
+    assert client.patch(f"{base}/status", json={"status": "closed"}).status_code == 409
+    assert client.patch(f"{base}/status", json={"status": "in_progress"}).status_code == 200
+
+    # после возврата в работу анализ снова доступен (LLM замокан — без сети)
+    async def fake_analyze(context):
+        return {
+            "description": "Подбор пароля",
+            "attack_type": "brute_force",
+            "confidence": 0.9,
+            "explanation": "Много неудачных попыток входа",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    assert client.post(f"{base}/analyze").status_code == 200

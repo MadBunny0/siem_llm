@@ -1380,6 +1380,10 @@ function App({ user, onLogout }) {
     search,
   }), [incidents, statusFilter, severityFilter, search]);
 
+  // [16] Фильтры активны (выбран чип хотя бы в одной группе или непустой поиск) —
+  // рядом с группами показываем счётчик «из N» и кнопку сброса.
+  const filtersActive = statusFilter.length > 0 || severityFilter.length > 0 || search.trim() !== '';
+
   const stats = useMemo(() => ({
     total: incidents.length,
     critical: incidents.filter(i => i.severity === 'critical').length,
@@ -1394,6 +1398,10 @@ function App({ user, onLogout }) {
   const foreignOwner = !isAdmin &&
     !!incidentDetail?.analyst?.username &&
     incidentDetail.analyst.username !== user?.username;
+
+  // [16] Инцидент закрыт: запрещены все манипуляции, кроме возврата в работу —
+  // смена статуса, повторный анализ, запуск и подтверждение действий.
+  const incidentClosed = selected?.status === 'closed';
 
   const pendingConfirmation = !!(
     !confirmedAction && (
@@ -1488,7 +1496,10 @@ function App({ user, onLogout }) {
         method: 'POST',
         body: JSON.stringify({ action }),
       });
-      if (result?.execution?.executed) {
+      // [16] Успех = симуляция (dry run при AUTO_RESPONSE=false) или реальное
+      // исполнение; reason при симуляции — текст одобрения DVE, а не ошибка.
+      const success = result?.execution?.mode === 'simulation' || result?.execution?.executed === true;
+      if (success) {
         showToast(`Действие выполнено (${executionModeRu(result.execution.mode) || 'готово'}): ${actionRuDescription(action)}`);
       } else if (result?.execution?.mode === 'pending_confirmation') {
         showErrorToast(`Действие отложено: ${result?.execution?.reason || 'требуется подтверждение администратора'}`);
@@ -1497,10 +1508,16 @@ function App({ user, onLogout }) {
         showErrorToast(`Не выполнено: ${reason}`);
       }
       // Обновляем бейджи у соответствующего результата (validation/execution из ответа).
+      // [16] При успехе помечаем совпавший результат run_manually: кнопка «Выполнить»
+      // сменяется отметкой «Выполнено». Метка живёт в React-состоянии (переживает
+      // обновление detail, сбрасывается при смене инцидента) — сухой run повторяем.
+      const executionPatch = success
+        ? { ...result.execution, run_manually: true }
+        : (result?.execution ?? null);
       setAnalysis(prev => {
         if (!prev) return prev;
         const patch = r => (r.action === action
-          ? { ...r, validation: result?.validation ?? r.validation, execution: result?.execution ?? r.execution }
+          ? { ...r, validation: result?.validation ?? r.validation, execution: executionPatch ?? r.execution }
           : r);
         if (Array.isArray(prev.results) && prev.results.length) {
           return { ...prev, results: prev.results.map(patch) };
@@ -1508,7 +1525,7 @@ function App({ user, onLogout }) {
         return {
           ...prev,
           validation: result?.validation ?? prev.validation,
-          execution: result?.execution ?? prev.execution,
+          execution: executionPatch ?? prev.execution,
         };
       });
       await loadIncidentDetail(selected.id);
@@ -1699,7 +1716,13 @@ function App({ user, onLogout }) {
             </div>
             {/* [15] Мультиселект-фильтры: клик по чипу — toggle, можно несколько в группе;
                 пустой выбор группы = показывать все значения (семантика «Все» без кнопки) */}
-            <div className="filters"><div className="search">⌕<input placeholder="Поиск по инцидентам..." value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filter-group"><span className="filter-group-label">Статус</span><div className="filter-tabs">{Object.entries(STATUS_LABELS).map(([value, label]) => <button key={value} className={statusFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setStatusFilter, value)}>{label}</button>)}</div></div><div className="filter-group"><span className="filter-group-label">Критичность</span><div className="filter-tabs">{Object.entries(SEVERITY_LABELS).map(([value, label]) => <button key={value} className={severityFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setSeverityFilter, value)}>{label}</button>)}</div></div></div>
+            <div className="filters"><div className="search">⌕<input placeholder="Поиск по инцидентам..." value={search} onChange={e => setSearch(e.target.value)} /></div><div className="filter-group"><span className="filter-group-label">Статус</span><div className="filter-tabs">{Object.entries(STATUS_LABELS).map(([value, label]) => <button key={value} className={statusFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setStatusFilter, value)}>{label}</button>)}</div></div><div className="filter-group"><span className="filter-group-label">Критичность</span><div className="filter-tabs">{Object.entries(SEVERITY_LABELS).map(([value, label]) => <button key={value} className={severityFilter.includes(value) ? 'selected' : ''} onClick={() => toggleFilterValue(setSeverityFilter, value)}>{label}</button>)}</div></div>
+              {/* [16] Счётчик и сброс — делают мультиселект-фильтры заметнее */}
+              <span className="filter-count">Показано: {filtered.length}{filtersActive ? ` из ${incidents.length}` : ''}</span>
+              {filtersActive && (
+                <button className="filter-reset" title="Сбросить статус, критичность и поиск" onClick={() => { setStatusFilter([]); setSeverityFilter([]); setSearch(''); }}>✕ Сбросить</button>
+              )}
+            </div>
             {loading ? <div className="empty">Загрузка данных...</div> : filtered.length === 0 ? <div className="empty"><div className="empty-icon">✓</div><h3>Инцидентов пока нет</h3><p>Нажмите «Тестовое событие», чтобы проверить весь конвейер.</p></div> : <div className="incident-list">{filtered.map(i => <button className={`incident-row ${selected?.id === i.id ? 'selected-row' : ''}`} key={i.id} onClick={() => handleSelectIncident(i)}><div className={`risk-dot ${i.severity}`}></div><div className="incident-main"><div className="incident-title"><strong>#{i.id} · {i.title}</strong><Severity value={i.severity}/></div><p>{i.description || 'Описание отсутствует'}{i.attack_type ? ` · ${i.attack_type}` : ''}</p><span>Риск: {i.risk_score}{i.asset?.criticality ? ` · ${i.asset.criticality}` : ''} · {formatDate(i.created_at)}</span></div><Status value={i.status}/><span className="chevron">›</span></button>)}</div>}
           </div>
           <div className="panel detail-panel">
@@ -1727,7 +1750,8 @@ function App({ user, onLogout }) {
                       key={s}
                       className={`status-btn ${selected.status === s ? 'current' : ''}`}
                       onClick={() => changeStatus(s)}
-                      disabled={statusBusy || selected.status === s || foreignOwner}
+                      // [16] из closed доступен только возврат в работу
+                      disabled={statusBusy || selected.status === s || foreignOwner || (incidentClosed && s !== 'in_progress')}
                     >
                       {STATUS_LABELS[s]}
                     </button>
@@ -1737,6 +1761,11 @@ function App({ user, onLogout }) {
                   <small className="status-hint">
                     Инцидент закреплён за {incidentDetail.analyst.username} — статус
                     может менять владелец или администратор.
+                  </small>
+                )}
+                {incidentClosed && (
+                  <small className="status-hint">
+                    Инцидент закрыт — доступен возврат в работу.
                   </small>
                 )}
               </div>
@@ -1761,7 +1790,7 @@ function App({ user, onLogout }) {
                     </span>
                   </div>
                   {isAdmin ? (
-                    <button className="primary" onClick={confirmPendingAction} disabled={confirmBusy}>
+                    <button className="primary" onClick={confirmPendingAction} disabled={confirmBusy || incidentClosed}>
                       {confirmBusy ? '◌ Выполняется...' : '✓ Подтвердить и выполнить'}
                     </button>
                   ) : (
@@ -1770,10 +1799,12 @@ function App({ user, onLogout }) {
                 </div>
               )}
 
-              {/* [2] восстановленная из истории панель не мешает запустить свежий анализ */}
-              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || hasFreshAnalysis}>
+              {/* [2] восстановленная из истории панель не мешает запустить свежий анализ;
+                  [16] на закрытом инциденте анализ недоступен до возврата в работу */}
+              <button className="analyze" onClick={runAnalysis} disabled={anyBusy || hasFreshAnalysis || incidentClosed}>
                 {analyzing ? <><span className="spinner"></span> Выполняется анализ...</> :
                  hasFreshAnalysis ? '✓ Анализ выполнен' :
+                 incidentClosed ? 'Инцидент закрыт — верните в работу' :
                  '✦ Запустить интеллектуальный анализ'}
               </button>
 
@@ -1828,11 +1859,13 @@ function App({ user, onLogout }) {
                     // одобренного — админ или владелец инцидента (незакреплённый
                     // закрепляется при запуске). DVE-политика всё равно проверяется
                     // на бэкенде, при AUTO_RESPONSE=false исполнение — dry run.
-                    const canConfirm = canConfirmAction(r, isAdmin);
+                    // [16] На закрытом инциденте обе кнопки недоступны.
+                    const canConfirm = canConfirmAction(r, isAdmin, incidentClosed);
                     const canExecute = canRunAction(r, {
                       isAdmin,
                       username: user?.username || null,
                       ownerUsername: incidentDetail?.analyst?.username || null,
+                      incidentClosed,
                     });
                     return (
                       <div className="result-item" key={`${r.action || 'result'}-${index}`}>
@@ -1852,8 +1885,18 @@ function App({ user, onLogout }) {
                                 : '✓ Подтвердить и выполнить'}
                             </button>
                           )}
-                          {/* Ручной запуск одобренного DVE действия — владелец инцидента или администратор */}
-                          {canExecute && (
+                          {/* [16] Действие уже запускали вручную в этой сессии: кнопка
+                              сменяется отметкой «Выполнено» (для симуляции — dry run) */}
+                          {r.execution?.run_manually === true ? (
+                            <button
+                              className="exec-btn exec-run"
+                              disabled
+                              title="Действие уже запускали вручную; повторный запуск — после нового анализа (сухой run повторяем)"
+                            >
+                              ✓ Выполнено{r.execution?.mode === 'simulation' ? ' (dry run)' : ''}
+                            </button>
+                          ) : canExecute && (
+                            /* Ручной запуск одобренного DVE действия — владелец инцидента или администратор */
                             <button
                               className="exec-btn exec-run"
                               onClick={() => executeAction(r.action)}

@@ -1785,3 +1785,37 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+/* ---------- [16] Счётчик и сброс мультиселект-фильтров инцидентов ---------- */
+
+/* Мелкий приглушённый текст в тон подписи группы (.filter-group-label) */
+.filter-count {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: #69758c;
+  white-space: nowrap;
+}
+
+/* Маленькая ghost-кнопка сброса в духе существующих (.ghost) */
+.filter-reset {
+  border: 1px solid #263149;
+  background: #111827;
+  color: #aab4c7;
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 4px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.filter-reset:hover {
+  border-color: #3d4f73;
+  background: #141d31;
+  color: #aeb9cf;
+}
+
+.filter-reset:active {
+  background: #0d1626;
+}
+

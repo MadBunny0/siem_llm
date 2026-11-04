@@ -351,6 +351,89 @@ def test_unassigned_incident_self_assign_on_status(client, db_session):
     assert detail["analyst"]["username"] == "analyst1"
 
 
+# ---------------------------------------------------------------------------
+# Владение инцидентом и админ (stage-16): свободный инцидент закрепляется
+# и за админом, но чужое владение не перехватывается
+# ---------------------------------------------------------------------------
+def test_admin_self_assigns_unassigned_incident(client, db_session):
+    """Админ (soc_lead) берёт свободный инцидент в работу — назначение на нём (stage-16)."""
+    from app.models import CorrelationRule
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.commit()
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 5, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "test-host"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+    resp = client.patch(
+        f"{API}/incidents/1/status", json={"status": "in_progress"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["analyst"]["username"] == "soc_lead"
+    assert resp.json()["analyst"]["role"] == "admin"
+
+    # закрепление сохранилось: повторный GET показывает того же владельца
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"]["username"] == "soc_lead"
+
+
+def test_admin_works_with_assigned_incident_without_takeover(client, db_session):
+    """Админ работает с инцидентом, закреплённым за аналитиком, но владение
+    не перехватывает (stage-14): операция проходит, analyst_id не меняется."""
+    from app.models import CorrelationRule
+
+    seed_users(db_session)
+    db_session.add(
+        CorrelationRule(
+            name="brute_rule", description="t",
+            conditions=[{"field": "event_type", "operator": "like", "value": "auth"}],
+            time_window_minutes=5, min_events=1, is_active=True,
+        )
+    )
+    db_session.commit()
+    client.post(f"{API}/ingest/wazuh", json={
+        "timestamp": "2026-11-04T10:00:00Z",
+        "rule": {"level": 5, "description": "test", "groups": ["authentication_failed"]},
+        "agent": {"id": "001", "name": "test-host"},
+        "data": {"srcip": "192.0.2.10", "dstuser": "root"},
+        "full_log": "Failed password",
+    })
+
+    # аналитик-1 берёт инцидент в работу
+    analyst_token = login(client, "analyst1", "analyst123").json()["access_token"]
+    assert client.patch(
+        f"{API}/incidents/1/status", json={"status": "in_progress"},
+        headers=auth_header(analyst_token),
+    ).status_code == 200
+
+    # админ меняет статус чужого инцидента — операция разрешена,
+    # инцидент остаётся закреплённым за аналитиком
+    admin_token = login(client, "soc_lead", "soclead123").json()["access_token"]
+    resp = client.patch(
+        f"{API}/incidents/1/status", json={"status": "closed"},
+        headers=auth_header(admin_token),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["analyst"]["username"] == "analyst1"
+
+    detail = client.get(f"{API}/incidents/1", headers=auth_header(admin_token)).json()
+    assert detail["analyst"]["id"] == 1  # analyst1, а не soc_lead
+    assert detail["analyst"]["username"] == "analyst1"
+
+
 def test_playbook_description_in_results(client, db_session, monkeypatch):
     """Результаты анализа содержат русское описание сценария (stage-14)."""
     from app.models import CorrelationRule, Playbook
