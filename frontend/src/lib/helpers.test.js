@@ -4,9 +4,15 @@ import {
   actionRuDescription,
   analysisFromHistory,
   analysisResults,
+  applyIncidentFilters,
+  canConfirmAction,
+  canRunAction,
   confPct,
   criteriaCountLabel,
   detailToMessage,
+  executionModeRu,
+  formatPlaybookStep,
+  formatPlaybookSteps,
   initiatedByBadge,
   pendingReasonText,
   priorityLabel,
@@ -15,6 +21,7 @@ import {
   resultNeedsConfirmation,
   resultValidationBadge,
   resultsNeedConfirmation,
+  ruleTemplateLabel,
 } from './helpers.js';
 
 describe('analysisResults — нормализация форматов ответа анализа', () => {
@@ -299,5 +306,166 @@ describe('stage-14: analysisFromHistory — восстановление пан�
 
   it('null → null (нечего показывать)', () => {
     expect(analysisFromHistory(null)).toBeNull();
+  });
+});
+
+/* ==================== Stage 15: запуск действий, шаги playbook ==================== */
+
+describe('canRunAction — кому доступен ручной запуск действия', () => {
+  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'simulation' } };
+  const pending = { action: 'block_ip', validation: { approved: false, requires_confirmation: true }, execution: { mode: 'pending_confirmation' } };
+  const blocked = { action: 'monitor', validation: { approved: false }, execution: { mode: 'blocked' } };
+
+  it('админ — на любом инциденте', () => {
+    expect(canRunAction(approved, { isAdmin: true })).toBe(true);
+    expect(canRunAction(approved, { isAdmin: true, username: 'soc_lead', ownerUsername: 'analyst1' })).toBe(true);
+  });
+
+  it('владелец инцидента — может запустить', () => {
+    expect(canRunAction(approved, { isAdmin: false, username: 'analyst1', ownerUsername: 'analyst1' })).toBe(true);
+  });
+
+  it('чужой аналитик — не может', () => {
+    expect(canRunAction(approved, { isAdmin: false, username: 'analyst2', ownerUsername: 'analyst1' })).toBe(false);
+  });
+
+  it('незакреплённый инцидент — доступен любому аналитику (закрепится при запуске)', () => {
+    expect(canRunAction(approved, { isAdmin: false, username: 'analyst2', ownerUsername: null })).toBe(true);
+  });
+
+  it('отложенное (pending) и заблокированное действие запустить нельзя', () => {
+    expect(canRunAction(pending, { isAdmin: true })).toBe(false);
+    expect(canRunAction(blocked, { isAdmin: true })).toBe(false);
+  });
+
+  it('нет действия/нет пользователя — false', () => {
+    expect(canRunAction(null, { isAdmin: true })).toBe(false);
+    expect(canRunAction(approved, { isAdmin: false, username: null })).toBe(false);
+  });
+});
+
+describe('canConfirmAction — подтверждение отложенного действия (только админ)', () => {
+  const pending = { action: 'block_ip', validation: { requires_confirmation: true } };
+  const approved = { action: 'monitor', validation: { approved: true } };
+
+  it('админ подтверждает отложенное', () => {
+    expect(canConfirmAction(pending, true)).toBe(true);
+  });
+
+  it('аналитик подтверждать не может (§3.4 p:102)', () => {
+    expect(canConfirmAction(pending, false)).toBe(false);
+  });
+
+  it('одобренное действие подтверждения не требует', () => {
+    expect(canConfirmAction(approved, true)).toBe(false);
+  });
+});
+
+describe('executionModeRu — русские подписи режимов исполнения', () => {
+  it('известные режимы', () => {
+    expect(executionModeRu('simulation')).toContain('симуляция');
+    expect(executionModeRu('controlled')).toContain('реальное');
+    expect(executionModeRu('pending_confirmation')).toContain('подтверждения');
+    expect(executionModeRu('blocked')).toContain('заблокировано');
+  });
+
+  it('неизвестный — как есть, пустой → пусто', () => {
+    expect(executionModeRu('mystery')).toBe('mystery');
+    expect(executionModeRu(undefined)).toBe('');
+  });
+});
+
+describe('formatPlaybookSteps — «команды» действия на русском', () => {
+  it('шаг из seed: русское описание + цель + инструмент', () => {
+    const line = formatPlaybookStep({ action: 'block_ip', target: '{{src_ip}}', tool: 'firewall' });
+    expect(line).toContain('Блокировка IP-адреса');
+    expect(line).toContain('IP-адрес источника');
+    expect(line).toContain('firewall');
+  });
+
+  it('description из БД приоритетнее', () => {
+    const line = formatPlaybookStep({ action: 'block_ip', description: 'Кастомный шаг из playbook' });
+    expect(line).toBe('Кастомный шаг из playbook');
+  });
+
+  it('плейсхолдеры расшифровываются по-русски, неизвестный — как есть', () => {
+    expect(formatPlaybookStep({ action: 'isolate_host', target: '{{asset}}' })).toContain('скомпрометированный актив');
+    expect(formatPlaybookStep({ action: 'monitor', target: '{{weird}}' })).toContain('weird');
+  });
+
+  it('tool=none не отображается', () => {
+    expect(formatPlaybookStep({ action: 'monitor', target: '{{incident}}', tool: 'none' })).not.toContain('инструмент');
+  });
+
+  it('не-объект → пустая строка; не-массив → пустой список', () => {
+    expect(formatPlaybookStep(null)).toBe('');
+    expect(formatPlaybookSteps(undefined)).toEqual([]);
+    expect(formatPlaybookSteps([{ action: 'block_ip' }, null, '']).length).toBe(1);
+  });
+});
+
+describe('applyIncidentFilters — мультиселект-фильтры ленты инцидентов', () => {
+  // 2 critical (разное время), 1 high, 1 medium — статусы new/new/in_progress/closed.
+  const incidents = [
+    { id: 1, title: 'Brute force SSH', description: 'Перебор пароля', severity: 'critical', status: 'new', created_at: '2026-11-04T10:00:00Z' },
+    { id: 2, title: 'Malware on host', description: 'Вредоносный файл', severity: 'high', status: 'in_progress', created_at: '2026-11-04T11:00:00Z' },
+    { id: 3, title: 'Port scan', description: 'Сканирование портов', severity: 'medium', status: 'closed', created_at: '2026-11-04T09:00:00Z' },
+    { id: 4, title: 'Brute force RDP', description: 'Перебор пароля RDP', severity: 'critical', status: 'new', created_at: '2026-11-04T12:00:00Z' },
+  ];
+  const ids = list => list.map(i => i.id);
+
+  it('обе группы пусты → видно всё, сортировка не сломана (severity desc, затем created_at desc)', () => {
+    expect(ids(applyIncidentFilters(incidents, {}))).toEqual([4, 1, 2, 3]);
+    expect(ids(applyIncidentFilters(incidents, { statuses: [], severities: [], search: '' }))).toEqual([4, 1, 2, 3]);
+    // исходный массив не мутируется сортировкой
+    expect(ids(incidents)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('только статусы: несколько выбранных, критичность не фильтруется', () => {
+    expect(ids(applyIncidentFilters(incidents, { statuses: ['new'] }))).toEqual([4, 1]);
+    expect(ids(applyIncidentFilters(incidents, { statuses: ['new', 'closed'] }))).toEqual([4, 1, 3]);
+  });
+
+  it('только критичности: несколько выбранных, статус не фильтруется', () => {
+    expect(ids(applyIncidentFilters(incidents, { severities: ['high', 'medium'] }))).toEqual([2, 3]);
+  });
+
+  it('обе группы вместе → пересечение (AND)', () => {
+    expect(ids(applyIncidentFilters(incidents, { statuses: ['new'], severities: ['critical'] }))).toEqual([4, 1]);
+    // пересечение пустое: in_progress есть только у high
+    expect(applyIncidentFilters(incidents, { statuses: ['in_progress'], severities: ['critical'] })).toEqual([]);
+  });
+
+  it('поиск: подстрока по id/title/description без учёта регистра', () => {
+    expect(ids(applyIncidentFilters(incidents, { search: 'brute' }))).toEqual([4, 1]);
+    expect(ids(applyIncidentFilters(incidents, { search: 'ПЕРЕБОР' }))).toEqual([4, 1]);
+    expect(ids(applyIncidentFilters(incidents, { search: '3' }))).toEqual([3]);
+    expect(applyIncidentFilters(incidents, { search: 'нет такого' })).toEqual([]);
+  });
+
+  it('фильтры и поиск сочетаются', () => {
+    expect(ids(applyIncidentFilters(incidents, { statuses: ['new'], severities: ['critical'], search: 'rdp' }))).toEqual([4]);
+  });
+
+  it('не-массив/undefined → пустой список', () => {
+    expect(applyIncidentFilters(null, {})).toEqual([]);
+    expect(applyIncidentFilters(undefined)).toEqual([]);
+  });
+});
+
+describe('ruleTemplateLabel — подпись шаблона правила из справочника', () => {
+  it('«id — описание» через длинное тире', () => {
+    expect(ruleTemplateLabel({ id: '5710', level: 10, description: 'sshd: Multiple authentication failures' }))
+      .toBe('5710 — sshd: Multiple authentication failures');
+  });
+
+  it('числовой id подставляется как есть', () => {
+    expect(ruleTemplateLabel({ id: 31103, description: 'SQL injection attempt in query string' }))
+      .toBe('31103 — SQL injection attempt in query string');
+  });
+
+  it('пустое правило → пустая строка', () => {
+    expect(ruleTemplateLabel(null)).toBe('');
+    expect(ruleTemplateLabel(undefined)).toBe('');
   });
 });

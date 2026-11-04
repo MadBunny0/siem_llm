@@ -1697,3 +1697,91 @@ button:focus-visible {
 .detail-grid span.assignee-badge.none { color: #5f6c83; }
 .detail-grid span.assignee-badge.mine { font-size: 9px; color: #67d9a9; }
 
+/* ---------- [15] Шаги playbook в карточке результата ---------- */
+
+.result-steps {
+  margin-top: 7px;
+  padding: 8px 10px;
+  background: rgba(82, 102, 217, 0.08);
+  border: 1px solid rgba(82, 102, 217, 0.25);
+  border-radius: 6px;
+}
+
+.result-steps label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #8ea0e8;
+  margin-bottom: 4px;
+}
+
+.result-steps ol {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 10.5px;
+  color: #a9b4c9;
+  line-height: 1.55;
+}
+
+/* Сырой JSON DVE — второстепенный технический блок (свёрнут по умолчанию) */
+.result-raw {
+  margin-top: 9px;
+}
+
+.result-raw summary {
+  color: #66738a;
+  cursor: pointer;
+  font-size: 10.5px;
+  outline: none;
+  user-select: none;
+}
+
+.result-raw summary:hover {
+  color: #8ea6ff;
+}
+
+.result-raw pre {
+  margin-top: 6px;
+}
+
+/* ---------- [15] Подсказки ---------- */
+
+.status-hint {
+  display: block;
+  margin-top: 7px;
+  font-size: 11px;
+  color: #c9a34e;
+  line-height: 1.5;
+}
+
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: #66738a;
+  line-height: 1.45;
+}
+
+/* ---------- [15] Мультиселект-фильтры инцидентов: подписи групп чипов ---------- */
+
+/* Две группы чипов (Статус / Критичность) могут не влезать в строку с поиском */
+.filters {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-group-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #69758c;
+  white-space: nowrap;
+}
+
