@@ -27,6 +27,10 @@ def _ensure_schema_updates() -> None:
     statements = [
         # порог повторений для правил корреляции (§3.3.2 ВКР)
         "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS min_events INTEGER NOT NULL DEFAULT 1",
+        # матрица критичности (stage-17): тактика/техника MITRE и флаг поставщика
+        "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS mitre_tactic VARCHAR(50)",
+        "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS mitre_technique VARCHAR(50)",
+        "ALTER TABLE correlation_rules ADD COLUMN IF NOT EXISTS escalated_by_vendor BOOLEAN NOT NULL DEFAULT FALSE",
         # критерии успешного завершения сценария (§3.4 ВКР, p:105)
         "ALTER TABLE playbooks ADD COLUMN IF NOT EXISTS success_criteria JSON",
         # индексы под корреляцию (stage-11: окно + совпадение атрибутов в SQL)
@@ -138,7 +142,12 @@ def _seed_default_assets() -> None:
 
 def _seed_default_correlation_rules() -> None:
     """Seed-правила корреляции по техникам MITRE ATT&CK (база mitre.ptsecurity.com,
-    ATT&CK v15.1) — покрывают классы атак из §3.3.2 ВКР (p:61)."""
+    ATT&CK v15.1) — покрывают классы атак из §3.3.2 ВКР (p:61).
+
+    Тактики правил (stage-17) задают базовую критичность инцидента по матрице
+    критичности (процедура PDF v3.1, см. docs/CRITICALITY_MATRIX.md); правила
+    без тактики обрабатываются по числовой модели риска (fallback).
+    """
     from sqlalchemy.orm import Session
 
     rules = [
@@ -154,6 +163,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 3,
             "priority": 2,
             "is_active": True,
+            "mitre_tactic": "credential_access",
+            "mitre_technique": "T1110",
         },
         {
             # T1110.003 Распыление паролей (§3.3.2: «перебор учётных записей»):
@@ -168,9 +179,14 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 5,  # выше brute_force: 4 события одной учётки = brute, 5+ разных = spraying
             "priority": 3,  # spraying специфичнее brute_force — детерминированно перебивает его
             "is_active": True,
+            "mitre_tactic": "credential_access",
+            "mitre_technique": "T1110.003",
         },
         {
-            # T1046 Изучение сетевых служб (§3.3.2: «сетевое сканирование»)
+            # T1046 Изучение сетевых служб (§3.3.2: «сетевое сканирование»).
+            # БЕЗ тактики (mitre_tactic=None): универсальное правило-«шумосборка»
+            # ловит любой повторяющийся трафик, включая легитимный, — критичность
+            # остаётся по числовой модели §3.3.3 (fallback, stage-17)
             "name": "repeated_scan",
             "description": "T1046 Изучение сетевых служб: повторяющиеся события с одного IP в течение окна корреляции",
             "conditions": [
@@ -180,6 +196,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 2,
             "priority": 1,
             "is_active": True,
+            "mitre_tactic": None,
+            "mitre_technique": "T1046",
         },
         {
             # T1068 / T1548 Повышение привилегий (§3.3.2: «попытки получения НСД»)
@@ -192,6 +210,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 1,
             "priority": 3,
             "is_active": True,
+            "mitre_tactic": "privilege_escalation",
+            "mitre_technique": "T1068",
         },
         {
             # T1190 Недостатки в общедоступном приложении
@@ -204,6 +224,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 2,
             "priority": 2,
             "is_active": True,
+            "mitre_tactic": "initial_access",
+            "mitre_technique": "T1190",
         },
         {
             # T1204 Выполнение с участием пользователя (запуск вредоносного ПО)
@@ -216,6 +238,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 1,
             "priority": 3,
             "is_active": True,
+            "mitre_tactic": "execution",
+            "mitre_technique": "T1204",
         },
         {
             # T1048 Эксфильтрация по альтернативному протоколу
@@ -228,6 +252,8 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 1,
             "priority": 3,
             "is_active": True,
+            "mitre_tactic": "exfiltration",
+            "mitre_technique": "T1048",
         },
     ]
     with Session(engine) as session:
@@ -242,10 +268,15 @@ def _seed_default_correlation_rules() -> None:
             elif (
                 existing.min_events != rule_data.get("min_events", 1)
                 or existing.priority != rule_data.get("priority", 1)
+                or existing.mitre_tactic != rule_data.get("mitre_tactic")
+                or existing.mitre_technique != rule_data.get("mitre_technique")
             ):
-                # обновление порога и приоритета (stage-12: priority тоже актуализируется)
+                # обновление порога, приоритета и тактик MITRE (stage-12:
+                # priority тоже актуализируется; stage-17: матрица критичности)
                 existing.min_events = rule_data.get("min_events", 1)
                 existing.priority = rule_data.get("priority", 1)
+                existing.mitre_tactic = rule_data.get("mitre_tactic")
+                existing.mitre_technique = rule_data.get("mitre_technique")
                 session.add(existing)
         session.commit()
 

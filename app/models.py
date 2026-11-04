@@ -156,6 +156,14 @@ class CorrelationRule(Base):
     min_events: Mapped[int] = mapped_column(Integer, default=1)  # порог повторений (§3.3.2 ВКР)
     priority: Mapped[int] = mapped_column(Integer, default=1)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # матрица критичности (stage-17): тактика/техника MITRE ATT&CK правила;
+    # тактика задаёт базовую критичность (app/services/criticality.py),
+    # None — критичность по числовой модели риска (fallback)
+    mitre_tactic: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    mitre_technique: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # ручной флаг «отдельно отмеченные критичные события поставщика логов»
+    # (п.7 процедуры определения критичности, v3.1) — повышает критичность
+    escalated_by_vendor: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

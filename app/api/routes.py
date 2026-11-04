@@ -3,6 +3,11 @@
 Этапы обработки события (§3.1, рис. 3.1):
 сбор (ingest) → нормализация → привязка актива → корреляция по правилам БД →
 оценка риска → [авто]LLM-анализ → Decision Validation Engine → playbook → аудит.
+
+Критичность инцидента (stage-17) — по матрице «тактика MITRE → критичность»
+(процедура PDF v3.1, docs/CRITICALITY_MATRIX.md); при тактике без матричного
+правила — числовая модель §3.3.3. Low-инциденты после успешного автоанализа
+закрываются автоматически (AUTO_CLOSE_LEVELS) — без участия человека.
 """
 
 import random
@@ -52,11 +57,12 @@ from app.services.security import create_access_token, hash_password, verify_pas
 from app.services.audit import audit
 from app.services.assets import resolve_asset_id
 from app.services.correlation import create_or_update_incident, evaluate_correlation
+from app.services.criticality import derive_severity
 from app.services.llm import analyze_incident, render_full_prompt
 from app.services.normalization import normalize_wazuh
 from app.services.notification import notify_analyst
 from app.services.playbook import execute_playbook, load_playbook_by_action
-from app.services.risk import calculate_risk
+from app.services.risk import calculate_risk, score_to_severity
 from app.services.validation import validate_recommendation
 
 router = APIRouter(prefix="/api/v1", tags=["SIEM"])
@@ -196,14 +202,27 @@ def _ingest_alert(db: Session, alert_payload: dict) -> dict:
         }
         for e in related
     ]
-    # вероятность реализации угрозы — из данных события (§3.3.3, p:74)
-    score, severity = calculate_risk(
+    # вероятность реализации угрозы — из данных события (§3.3.3, p:74);
+    # числовая оценка остаётся для сортировки/отображения
+    score, _ = calculate_risk(
         risk_events,
         p_implement=_p_implement(risk_events),
         correlation_confidence=correlation_confidence,
     )
 
     incident = create_or_update_incident(db, related, risk_score=score)
+
+    # Критичность по матрице MITRE (stage-17, процедура PDF v3.1,
+    # docs/CRITICALITY_MATRIX.md): базовая — по тактике правила, повышение —
+    # по условиям процедуры (критичный актив, маркеры, периметр, флаг
+    # поставщика). Без тактики — числовая модель риска (fallback, §3.3.3)
+    matrix_severity, escalation_reasons = derive_severity(rule, related, incident.asset)
+    if matrix_severity is not None:
+        severity = matrix_severity
+        severity_basis = "mitre_matrix"
+    else:
+        severity = score_to_severity(score)
+        severity_basis = "risk_score"
     incident.severity = severity
 
     audit(
@@ -215,7 +234,14 @@ def _ingest_alert(db: Session, alert_payload: dict) -> dict:
     )
     audit(
         "risk_calculated",
-        {"risk_score": score, "severity": severity, "p_implement": _p_implement(risk_events)},
+        {
+            "risk_score": score,
+            "severity": severity,
+            "severity_basis": severity_basis,
+            "mitre_tactic": rule.mitre_tactic,
+            "escalation_reasons": escalation_reasons,
+            "p_implement": _p_implement(risk_events),
+        },
         db=db,
         incident_id=incident.id,
     )
@@ -252,7 +278,12 @@ def _ingest_alert(db: Session, alert_payload: dict) -> dict:
 
 
 async def run_auto_analysis(incident_id: int) -> None:
-    """Фоновый автоанализ (stage-12): собственная сессия БД, после ответа API."""
+    """Фоновый автоанализ (stage-12): собственная сессия БД, после ответа API.
+
+    После успешного анализа (stage-17) инциденты из AUTO_CLOSE_LEVELS
+    закрываются автоматически (_maybe_auto_close) — low обрабатывается
+    без участия человека.
+    """
     from app.db import SessionLocal
     import logging
 
@@ -263,7 +294,11 @@ async def run_auto_analysis(incident_id: int) -> None:
         if incident is None:
             logger.warning("auto_analysis: incident %s not found", incident_id)
             return
-        await _run_incident_analysis(db, incident, raise_on_error=False, initiated_by="auto_analysis")
+        result = await _run_incident_analysis(
+            db, incident, raise_on_error=False, initiated_by="auto_analysis"
+        )
+        if "error" not in result:
+            _maybe_auto_close(db, incident, result)
         db.commit()
         logger.info("auto_analysis: incident %s analyzed", incident_id)
     except Exception as exc:  # фон не должен ронять приложение
@@ -280,6 +315,68 @@ def _auto_analysis_levels() -> set[str]:
         for level in (settings.auto_analysis_levels or "critical").split(",")
         if level.strip()
     }
+
+
+def _auto_close_levels() -> set[str]:
+    """Уровни, закрываемые автоматически после успешного автоанализа
+    (AUTO_CLOSE_LEVELS, stage-17 — «фильтр автоматического закрытия»).
+
+    Пустая строка/настройка → пустое множество: автозакрытие выключено.
+    """
+    return {
+        level.strip().lower()
+        for level in (settings.auto_close_levels or "").split(",")
+        if level.strip()
+    }
+
+
+def _maybe_auto_close(db: Session, incident: Incident, analysis_result: dict) -> bool:
+    """Автоматическое закрытие инцидента после успешного автоанализа (stage-17).
+
+    Условия (все одновременно): критичность инцидента входит в
+    AUTO_CLOSE_LEVELS; инцидент ещё не закрыт; аналитик не взял его в работу
+    (analyst_id is None); ни одно из рекомендуемых действий не отложено до
+    подтверждения администратора (pending_confirmation).
+
+    Пометка auto_closed ставится в response_raw ПОСЛЕДНЕГО Analysis инцидента.
+    ВАЖНО (грабль проекта): мутация JSON-колонки не отслеживается SQLAlchemy —
+    только полное переприсвоение словаря. Изменения сохраняются коммитом
+    вызывающего (run_auto_analysis).
+    """
+    if incident.severity not in _auto_close_levels():
+        return False
+    if incident.status == "closed":
+        return False
+    if incident.analyst_id is not None:
+        return False
+    for r in analysis_result.get("results") or []:
+        validation = r.get("validation") or {}
+        execution = r.get("execution") or {}
+        if validation.get("requires_confirmation") or execution.get("mode") == "pending_confirmation":
+            return False
+
+    incident.status = "closed"
+    audit(
+        "incident_auto_closed",
+        {
+            "initiated_by": "auto_close",
+            "severity": incident.severity,
+            "risk_score": incident.risk_score,
+        },
+        db=db,
+        incident_id=incident.id,
+    )
+    notify_analyst(db, incident, "incident_auto_closed")
+
+    # пометка в последнем анализе: только полное переприсвоение JSON-словаря
+    analysis = db.scalar(
+        select(Analysis)
+        .where(Analysis.incident_id == incident.id)
+        .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+    )
+    if analysis is not None:
+        analysis.response_raw = {**(analysis.response_raw or {}), "auto_closed": True}
+    return True
 
 
 def _p_implement(risk_events: list[dict]) -> float:
@@ -1104,4 +1201,5 @@ def health(db: Session = Depends(get_db)):
         "auto_response": settings.auto_response,
         "auto_analysis": settings.auto_analysis,
         "auto_analysis_levels": sorted(_auto_analysis_levels()),
+        "auto_close_levels": sorted(_auto_close_levels()),
     }
