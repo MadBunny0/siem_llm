@@ -1,16 +1,16 @@
 """ITSM-уведомления аналитикам SOC (Глава 3.5).
 
-Сервис имитирует отправку уведомлений через email/Slack/Teams в демонстрационном
-режиме. При AUTO_RESPONSE=true уведомления помечаются как 'sent', иначе 'pending'
-и выводятся в лог — реальная интеграция с почтовым сервером или Slack API остаётся
-за рамками прототипа.
+Сервис имитирует отправку уведомлений через email/Slack/Teams: записи
+создаются со статусом 'pending' и выводятся в лог — реальная интеграция
+с почтовым сервером или Slack API остаётся за рамками прототипа
+(настройка AUTO_RESPONSE, управлявшая пометкой 'sent', удалена в stage-23
+вместе с режимом симуляции).
 """
 
 import logging
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.models import Incident, Notification
 
 logger = logging.getLogger("notification")
@@ -86,7 +86,7 @@ def notify_analyst(
             channel=channel,
             message=message,
             payload=payload,
-            status="sent" if settings.auto_response else "pending",
+            status="pending",
         )
         db.add(notification)
         created.append(notification)

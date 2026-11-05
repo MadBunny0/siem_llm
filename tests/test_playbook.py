@@ -1,47 +1,46 @@
-from unittest.mock import patch
+"""Тесты справочника сценариев реагирования (app/services/playbook.py).
 
-from app.models import Incident, Playbook
-from app.services.playbook import execute_playbook
+execute_playbook (движок симуляции, stage-12…20) удалён в stage-23 вместе
+с режимом симуляции: исполнение всегда реальное — app/services/execution.py
+(тесты — test_execution.py, test_responses_api.py). Здесь остаётся
+загрузка сценариев из БД по типу действия.
+"""
 
-
-def test_execute_playbook_simulation_mode():
-    with patch("app.services.playbook.settings.auto_response", False):
-        result = execute_playbook("block_ip", {"incident_id": 1})
-        assert result["executed"] is False
-        assert result["mode"] == "simulation"
-        assert result["action"] == "block_ip"
+from app.models import Playbook
+from app.services.playbook import load_playbook_by_action
 
 
-def test_execute_playbook_controlled_mode(db):
-    """Контролируемый режим: playbook из БД, ResponseAction, ITSM, уведомление."""
-    db.add(
-        Playbook(
-            name="block_ip",
-            description="Блокировка IP",
-            trigger_conditions={},
-            allowed_actions=["block_ip"],
-            steps=[{"action": "block_ip", "target": "{{src_ip}}", "tool": "firewall"}],
-            priority=1,
-            is_active=True,
-        )
+def _add(db, name="block_ip", allowed=None):
+    playbook = Playbook(
+        name=name,
+        description=f"Сценарий {name}",
+        trigger_conditions={},
+        allowed_actions=allowed or [name],
+        steps=[{"action": name}],
+        is_active=True,
     )
-    db.add(
-        Incident(
-            id=1,
-            title="Тестовый инцидент",
-            description="d",
-            severity="high",
-            status="new",
-            risk_score=70,
-        )
-    )
+    db.add(playbook)
     db.commit()
+    return playbook
 
-    with patch("app.services.playbook.settings.auto_response", True):
-        result = execute_playbook("block_ip", {"incident_id": 1}, db=db)
-        assert result["executed"] is True
-        assert result["mode"] == "controlled"
-        assert result["action"] == "block_ip"
-        assert result["playbook"] == "block_ip"
-        # запись о выполненном действии сохранена
-        assert result["response_action_id"] is not None
+
+def test_load_playbook_by_action_found(db):
+    playbook = _add(db)
+    assert load_playbook_by_action(db, "block_ip") is playbook
+
+
+def test_load_playbook_by_action_string_allowed_actions(db):
+    """allowed_actions может храниться строкой (старые записи) — ищем и так."""
+    _add(db, allowed="block_ip")
+    assert load_playbook_by_action(db, "block_ip") is not None
+
+
+def test_load_playbook_by_action_unknown(db):
+    assert load_playbook_by_action(db, "nonexistent_action") is None
+
+
+def test_load_playbook_by_action_inactive_excluded(db):
+    playbook = _add(db)
+    playbook.is_active = False
+    db.commit()
+    assert load_playbook_by_action(db, "block_ip") is None

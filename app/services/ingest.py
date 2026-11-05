@@ -5,11 +5,12 @@
 оценка риска → [авто]LLM-анализ → Decision Validation Engine → playbook → аудит.
 
 ingest_alert возвращает (result, should_auto_analyze): result — тело ответа
-endpoint'ов /ingest/wazuh и /demo/*, should_auto_analyze — запланировать ли
-фоновый LLM-анализ (auto_analysis включён И severity инцидента входит в
-AUTO_ANALYSIS_LEVELS). Вызвавший сам ставит BackgroundTasks — семантика
-фонового запуска прежняя (stage-12); служебный ключ _auto_analysis_incident_id
-в result больше не кладётся.
+эндпоинта /ingest/wazuh (единственный вход алертов с stage-23 — реальный
+поток с wazuh-агентов ВМ; мок-генераторы /demo/* удалены), should_auto_analyze —
+запланировать ли фоновый LLM-анализ (auto_analysis включён И severity
+инцидента входит в AUTO_ANALYSIS_LEVELS). Вызвавший сам ставит
+BackgroundTasks — семантика фонового запуска прежняя (stage-12); служебный
+ключ _auto_analysis_incident_id в result больше не кладётся.
 """
 
 from datetime import datetime, timedelta, timezone

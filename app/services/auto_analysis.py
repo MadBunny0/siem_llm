@@ -26,7 +26,6 @@ from app.models import Analysis, Incident
 from app.services.audit import audit
 from app.services.llm import render_full_prompt
 from app.services.notification import notify_analyst
-from app.services.playbook import execute_playbook
 
 
 async def analyze_incident(context: dict) -> dict:
@@ -231,17 +230,19 @@ async def _run_incident_analysis(
 ) -> dict:
     """Интеллектуальный анализ инцидента (§3.3.4 + §3.4).
 
-    Контекст → Ollama → Decision Validation Engine → playbook → аудит.
-    Результаты сохраняются в Analysis (LLMAnalysis);
-    initiated_by: manual | auto_analysis (для UI-бейджа, stage-12).
+    Контекст → Ollama → Decision Validation Engine → аудит. Результаты
+    сохраняются в Analysis (LLMAnalysis); initiated_by: manual | auto_analysis
+    (для UI-бейджа, stage-12).
 
-    Исполнение рекомендаций (stage-17, фидбек): инциденты уровней из
-    AUTO_CLOSE_LEVELS (автоконвейер) — одобренные DVE действия исполняются
-    сразу; остальные уровни — только рекомендация (execution.mode =
-    "manual_run"), playbook запускает оператор через POST /execute-action.
-    Заблокированные DVE действия не исполняются ни в автоконвейере, ни
-    вручную (stage-18), отложенные до подтверждения ждут администратора
-    (POST /confirm-action).
+    Stage-23: автоисполнение рекомендаций удалено вместе с режимом симуляции
+    (по явной команде пользователя 2026-11-05) — реакция всегда реальная
+    (Wazuh active response) и всегда запускается ОПЕРАТОРОМ: анализ любого
+    уровня только рекомендует (execution.mode = "manual_run"), playbook
+    выполняет оператор кнопкой «▶ Выполнить» → POST /execute-action.
+    Заблокированные DVE действия не исполняются (stage-18), отложенные до
+    подтверждения ждут администратора (POST /confirm-action). Автозакрытие
+    low-инцидентов (_maybe_auto_close, stage-17) сохранено — закрывается
+    статус, реакции не исполняются.
     """
     asset = incident.asset
     # контекст ограничен последними 12 событиями (хронологический порядок):
@@ -330,20 +331,13 @@ async def _run_incident_analysis(
             pending_any = True
         elif not validation["approved"]:
             # DVE заблокировал действие (заменил на monitor): ничего не
-            # исполняем. Проверка ДО ветки автоконвейера (stage-18, фидбек):
-            # заблокированное действие не исполняется и в автоконвейере —
-            # иначе low-инцидент исполнял playbook monitor'а вместо
-            # заблокированного действия. Оператор видит блокировку и причину
+            # исполняем (stage-18, фидбек). Оператор видит блокировку и причину
             execution = _not_executed("blocked", action, validation["reason"], playbook)
-        elif incident.severity in auto_close_levels():
-            # Автоконвейер (stage-17): low-инциденты обрабатываются от начала
-            # до конца без человека — одобренное DVE действие исполняется сразу
-            # (при AUTO_RESPONSE=false — dry run симуляция)
-            execution = execute_playbook(validation["action"], context, db)
         else:
-            # Ручной режим (stage-17, фидбек): для medium/high/critical playbook
-            # выполняет ОПЕРАТОР кнопкой «▶ Выполнить» (владелец инцидента или
-            # админ, POST /execute-action) — анализ только рекомендует
+            # Ручной режим (stage-23): одобренное DVE действие выполняет
+            # ОПЕРАТОР кнопкой «▶ Выполнить» (владелец инцидента или админ,
+            # POST /execute-action → Wazuh active response) — анализ только
+            # рекомендует, реальные реакции не запускаются автоматически
             execution = _not_executed(
                 "manual_run", validation["action"], validation["reason"], playbook
             )

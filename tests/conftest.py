@@ -57,10 +57,11 @@ def db_session(engine):
 @pytest.fixture
 def client(engine, monkeypatch):
     """TestClient с подменой зависимости get_db на тестовую БД."""
-    # LLM-автоанализ и реальное реагирование отключаем: тесты не должны
-    # зависеть ни от запущенного Ollama, ни от локального .env
+    # LLM-автоанализ отключаем: тесты не должны зависеть ни от запущенного
+    # Ollama, ни от локального .env. Реакции (execute-action) всегда реальные
+    # (stage-23) — Wazuh API подменяется фейком в конкретных модулях
+    # (test_routes/test_auth/test_responses_api: wazuh_mock)
     monkeypatch.setattr(settings, "auto_analysis", False)
-    monkeypatch.setattr(settings, "auto_response", False)
 
     # та же конфигурация сессии, что в app.db.get_db (autoflush=False)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

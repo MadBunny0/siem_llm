@@ -20,8 +20,7 @@ from app.schemas import ExecuteActionIn, IncidentDetailOut, IncidentOut, Inciden
 from app.services.audit import audit
 from app.services.auth import get_current_user, require_admin
 from app.services.auto_analysis import run_auto_analysis
-from app.services.execution import execute_real_action
-from app.services.playbook import execute_playbook
+from app.services.execution import execute_real_action, undo_incident_real_actions
 
 router = APIRouter()
 
@@ -183,6 +182,10 @@ def confirm_action(
     разрешены политикой уровня риска (из БД) и для которых зарегистрирован
     playbook. Ответ — список результатов по каждому действию. Закрытый
     инцидент подтверждению недоступен (stage-16).
+
+    Stage-23: исполнение — только реальное, через Wazuh active response
+    (как в execute-action): подтверждение администратора снимает
+    pending_confirmation и запускает настоящие реакции на ВМ актива.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -208,7 +211,7 @@ def confirm_action(
     for action in action_list:
         playbook, validation = _validate_with_playbook(db, incident, action, admin_confirmed=True)
         execution = (
-            execute_playbook(validation["action"], {"incident_id": incident.id}, db)
+            execute_real_action(db, incident, validation["action"], requested_by=admin.username)
             if validation["approved"]
             else {"executed": False, "mode": "blocked", "action": action, "reason": validation["reason"]}
         )
@@ -272,14 +275,14 @@ def execute_action(
     DVE проверяет действие; требование подтверждения критического актива
     снимает только администратор (admin_confirmed по роли): аналитик на
     критическом активе получает pending_confirmation (§3.4, p:102).
-    Исполнение — через execute_playbook: при AUTO_RESPONSE=false это dry run
-    (симуляция, без изменения инфраструктуры), иначе — контролируемое выполнение.
-    Успешный запуск (simulation/controlled) сохраняет отметку в
-    incident.manual_actions (stage-18, фидбек) — состояние кнопок действий
-    видно всем операторам с сервера, а не из localStorage.
 
-    Stage-20: payload.mode="real" — реальное исполнение на ВМ через агента
-    (services/execution.py): DVE тот же, меняется только способ исполнения.
+    Stage-23: исполнение — ТОЛЬКО реальное, через Wazuh active response API
+    (services/execution.py): менеджер доставляет AR-команду агенту на ВМ актива,
+    скрипт меняет состояние узла по-настоящему. Режим симуляции (dry run,
+    stage-12…20) удалён по явной команде пользователя 2026-11-05 — реакции
+    на учебном стенде выполняются только по-настоящему. Успешная доставка
+    команды сохраняет отметку в incident.manual_actions (stage-18, фидбек)
+    с целью реакции — состояние кнопок видно всем операторам с сервера.
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -298,10 +301,7 @@ def execute_action(
         db, incident, action, admin_confirmed=user.role == "admin"
     )
     if validation["approved"]:
-        if payload.mode == "real":
-            execution = execute_real_action(db, incident, validation["action"], requested_by=user.username)
-        else:
-            execution = execute_playbook(validation["action"], {"incident_id": incident.id}, db)
+        execution = execute_real_action(db, incident, validation["action"], requested_by=user.username)
     elif validation.get("requires_confirmation"):
         # Аналитик запустил действие на критическом активе — как в анализе:
         # сохраняется до подтверждения администратора
@@ -320,16 +320,20 @@ def execute_action(
         # всем операторам (stage-18, фидбек). Отметка ставится при фактическом
         # запуске: pending_confirmation/blocked её не пишут. Симуляция пишет
         # всегда (executed=False там означает dry run, а не ошибку); real —
-        # только если цель подтвердила исполнение (stage-20), иначе кнопка
-        # остаётся доступной для повторного запуска.
+        # только если Wazuh Manager принял команду (stage-23), иначе кнопка
+        # остаётся доступной для повторного запуска. Для real дополнительно
+        # сохраняется цель реакции (IP/учётка/актив) — stage-23.
         # переприсвоение JSON-колонок обязательно — см. common.py
+        mark = {
+            "mode": execution["mode"],
+            "at": datetime.now(timezone.utc).isoformat(),
+            "by": user.username,
+        }
+        if execution.get("target"):
+            mark["target"] = execution["target"]
         incident.manual_actions = {
             **(incident.manual_actions or {}),
-            action: {
-                "mode": execution["mode"],
-                "at": datetime.now(timezone.utc).isoformat(),
-                "by": user.username,
-            },
+            action: mark,
         }
     audit(
         "action_executed_manually",
@@ -366,6 +370,11 @@ def reset_actions(
     владения: владелец или админ; свободный инцидент доступен любому
     аналитику, analyst_id не изменяется. Закрытый инцидент — 409 (как у
     остальных операций реагирования, stage-16).
+
+    Stage-23: перед сбросом отметок все активные РЕАЛЬНЫЕ реакции инцидента
+    (mode=real без undone_at) отменяются обратными AR-командами через
+    Wazuh Manager (best-effort: неудача отката не мешает сбросу — запись
+    остаётся в «Реакциях (ВМ)», сброс можно повторить; ошибки — в ответе).
     """
     incident = db.get(Incident, incident_id)
     if not incident:
@@ -378,15 +387,23 @@ def reset_actions(
             detail="Инцидент закрыт — сброс действий недоступен. Верните инцидент в работу",
         )
     _ensure_incident_access(incident, user, assign=False)
+    # откат реальных реакций (best-effort): исполненные отмены помечаются
+    # undone_at/undone_by в metadata_json записей ResponseAction
+    undo_results = undo_incident_real_actions(db, incident, requested_by=user.username)
     # полное переприсвоение (переприсвоение JSON-колонок обязательно —
     # см. common.py); NULL → {}
     incident.manual_actions = {}
     audit(
         "incident_actions_reset",
-        {"by": user.username},
+        {"by": user.username, "undo": undo_results},
         db=db,
         incident_id=incident.id,
         user_id=user.id,
     )
     db.commit()
-    return {"incident_id": incident.id, "reset": True, "manual_actions": {}}
+    return {
+        "incident_id": incident.id,
+        "reset": True,
+        "manual_actions": {},
+        "undo": undo_results,
+    }

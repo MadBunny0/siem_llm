@@ -1,19 +1,21 @@
-# Развёртывание проекта (Docker-стенд, без VirtualBox)
+# Развёртывание проекта (Docker-стенд)
 
 Инструкция для развёртывания «с нуля» на чистой машине. Стенд целиком поднимается в
-контейнерах; VirtualBox-стенд с ВМ (для экспериментов Главы 4) — отдельная история,
-см. [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md) (раздел «Способ 2»).
+контейнерах; Wazuh-менеджер — базовый сервис compose (stage-23). Полный E2E-стенд
+с настоящими wazuh-агентами на виртуальных машинах Kali Linux (эксперименты Главы 4,
+реакции playbook на ВМ) — [E2E_STAND.md](E2E_STAND.md), сценарии атак —
+[E2E_SCENARIOS.md](E2E_SCENARIOS.md).
 
 ---
 
 ## 1. Требования к машине
 
-| Ресурс | Без Wazuh | С профилем Wazuh |
+| Ресурс | Только контейнеры | + ВМ Kali (E2E-стенд) |
 |---|---|---|
-| ОС | Windows 10/11 64-bit, Linux, macOS | то же |
+| ОС | Windows 10/11 64-bit, Linux, macOS | Windows (VirtualBox Host-Only) |
 | RAM | **8 ГБ** минимум (комфортно 12+) | **16 ГБ** |
 | CPU | 4+ ядра (LLM работает на CPU) | 6+ ядер |
-| Диск | **15 ГБ** свободно | **20 ГБ** |
+| Диск | **20 ГБ** свободно (образ wazuh-manager ~1.5 ГБ) | **40 ГБ** (+2 ВМ Kali) |
 | Интернет | нужен для первичной загрузки образов и модели LLM (~4 ГБ) | то же |
 
 GPU не используется: `qwen2.5:3b` в Ollama работает на CPU; ускорение инференса —
@@ -61,9 +63,9 @@ cd siem_llm
 ## 3. Настройка окружения
 
 1. **Порты** должны быть свободны: `3000` (веб-интерфейс), `8000` (API/Swagger), `5433`
-   (PostgreSQL наружу), `11434` (Ollama), `8080` (Adminer — веб-UI PostgreSQL), `8101`–`8103`
-   (агенты-«ВМ» stage-20 — веб-статусы эмулируемых узлов), а с профилем
-   Wazuh ещё `1514`, `1515`, `55000`.
+   (PostgreSQL наружу), `11434` (Ollama), `8080` (Adminer — веб-UI PostgreSQL),
+   `1514`/`1515` (приём событий и регистрация wazuh-агентов), `55000` (Wazuh API —
+   реакции playbook и диагностика).
 2. **Файл `.env`** (необязательно на старте): скопируй `.env.example` → `.env` при желании
    переопределить параметры. Ключевые переменные:
 
@@ -72,16 +74,16 @@ cd siem_llm
    | `JWT_SECRET` | `dev-secret-change-me-in-production` | секрет JWT — **смени** для машины, доступной другим |
    | `JWT_ALGORITHM` | `HS256` | алгоритм подписи JWT |
    | `TOKEN_EXPIRE_MINUTES` | `480` | время жизни access-токена (минуты) |
-   | `AUTO_RESPONSE` | `false` | безопасный демо-режим реагирования (симуляция) |
    | `AUTO_ANALYSIS` | `true` | главный выключатель автоанализа LLM |
    | `AUTO_ANALYSIS_LEVELS` | `low` | уровни риска для автоанализа (плановый режим: `low,medium,high,critical`) |
-   | `AUTO_CLOSE_LEVELS` | `low` | уровни полного автоконвейера (анализ → исполнение → автозакрытие); пусто = выключен |
+   | `AUTO_CLOSE_LEVELS` | `low` | уровни автозакрытия после успешного автоанализа (реакции не исполняются автоматически, stage-23); пусто = выключено |
    | `CORRELATION_WINDOW_MINUTES` | `5` | окно корреляции по умолчанию |
    | `OLLAMA_MODEL` | `qwen2.5:3b` | модель интеллектуального анализа |
-   | `EXECUTION_TARGETS` | 3 агента стенда (см. compose) | реестр целей реального исполнения (stage-20): `имя=URL|токен` через запятую; **имя цели = имя актива** — инцидент находит цель по активу автоматически; пусто = реестр пуст, `mode=real` возвращает `no_target` |
-   | `EXECUTION_TIMEOUT_SECONDS` | `10` | таймаут HTTP-вызова агента при исполнении действия |
-   | `EXECUTION_DEFAULT_MODE` | `simulation` | режим execute-action по умолчанию: `simulation` (dry run, как в §3.4 ВКР) или `real` (исполнение на ВМ через агента) |
-   | `AGENT_TOKEN` | `dev-agent-token` | Bearer-токен агентов-«ВМ» стенда — общий для `EXECUTION_TARGETS` и сервисов agent-* |
+   | `WAZUH_API_URL` | `https://wazuh-manager:55000` | Wazuh Manager API (stage-23): реальные реакции playbook уходят в `POST /active-response` менеджера |
+   | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh-wui` / `wazuh-wui` | учётка Wazuh API. **На стенде пароли дефолтные** (wazuh-wui — полный доступ); для контура вне учебного стенда — сменить и/или завести отдельного пользователя API (Wazuh UI → Security) |
+   | `WAZUH_API_VERIFY_TLS` | `false` | self-signed сертификат менеджера — проверка TLS выключена на стенде |
+   | `WAZUH_API_TIMEOUT_SECONDS` | `15` | таймаут вызова Wazuh API при исполнении реакции |
+   | `EXECUTION_DEFAULT_MODE` | `simulation` | режим execute-action по умолчанию: `simulation` (dry run, как в §3.4 ВКР) или `real` (реальная реакция на ВМ через Wazuh active response) |
 
    Все тюнируемые переменные сервиса api из таблицы выше (`JWT_SECRET`, `JWT_ALGORITHM`,
    `TOKEN_EXPIRE_MINUTES`, `AUTO_RESPONSE`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
@@ -111,7 +113,6 @@ healthcheck'ами. Последующие запуски — минуты.
 | Правила корреляции | 7 шт. по MITRE ATT&CK (T1110, T1110.003, T1046, T1068/T1548, T1190, T1204, T1048) |
 | Playbooks | 5 шт. (block_ip, disable_account, isolate_host, collect_evidence, monitor) с критериями успешного завершения |
 | Политика DVE | 4 уровня (validation_policy) |
-| Цели исполнения (stage-20) | из `EXECUTION_TARGETS`: `wks-finance-12`, `app-web-01`, `mail-prod-01` — агенты-«ВМ» наблюдаемых пользователей (имена = имена активов seed) |
 
 ### Проверка после запуска
 
@@ -122,77 +123,78 @@ healthcheck'ами. Последующие запуски — минуты.
   (доступ с правами суперпользователя этой БД; можно смотреть/править все таблицы)
 - **Health:** `curl http://localhost:8000/api/v1/health` — ответ содержит `status: ok`,
   модель и уровни автоанализа
-- **Агенты-«ВМ» (stage-20):** `curl http://localhost:8101/agent/status` — состояние АРМ
-  финансиста (`8102` — app-web-01, `8103` — mail-prod-01); в UI — вкладка «Агенты»
-  (реестр целей, heartbeat, журнал исполненных действий, сброс состояния ВМ)
+- **Wazuh-менеджер:** `docker compose exec wazuh-manager /var/ossec/bin/wazuh-control status`
+  — демоны active-response/analysisd/... запущены; `agent_control -l` — список агентов
+  (пусто, пока ВМ с агентами не подключены — [E2E_STAND.md](E2E_STAND.md))
 
 ### Первое демо (важно: 1 событие ≠ инцидент)
 
 По эталону (§3.3.2) инцидент создаётся **только при срабатывании правила корреляции**.
-Seed-правило `brute_force_attempts` требует 3 события за окно:
+Seed-правило `brute_force_attempts` требует 3 события за окно. События поступают
+**только с wazuh-агентов ВМ** (генераторы демо-данных удалены в stage-23):
 
-1. Войди как `soc_lead / soclead123` (или любой аналитик).
-2. **Быстрый способ — кнопка «🎬 Мок-сценарии»** (видна админу): генерирует 19 событий →
-   7 инцидентов всех уровней (low/medium/high/critical), разные активы и классы атак
-   MITRE ATT&CK. Идеально для демонстрации системы.
-3. Ручной способ: **«＋ Тестовое событие» 3 раза** — первые два ответят «правила
-   корреляции не сработали» (события копятся), на третьем появится инцидент. Тестовое
-   событие привязано к активу `mail-prod-01` (critical) — критичность учтётся в риске.
-4. Выбери инцидент → **«✦ Запустить интеллектуальный анализ»** — увидишь рекомендацию
-   LLM, решение DVE (список действий с бейджами) и режим playbook (симуляция). Админ
-   может вручную запустить действие кнопкой **▶ Выполнить** на строке результата.
-5. Инцидент уровня `critical` (например, событие level 15) анализируется **автоматически
-   в фоне** — приём события отвечает мгновенно, анализ появится в карточке через ~1 мин
-   (бейдж «авто (critical)» в истории анализов).
-6. Загляни во вкладки: **Правила** (7 правил MITRE), **Playbooks** (критерии завершения),
-   **Аудит** (все этапы конвейера), **Анализы**, **Уведомления**, **Агенты (ВМ)** —
-   и в **Adminer** (п. выше).
+1. Подними стенд с ВМ по [E2E_STAND.md](E2E_STAND.md) (агенты Active).
+2. Войди как `soc_lead / soclead123` (или любой аналитик).
+3. Выполни **сценарий 1** из [E2E_SCENARIOS.md](E2E_SCENARIOS.md): 3–4 неудачных
+   входа `ssh admin@<IP_ВМ-1>` с ВМ-2 → в ленте появится инцидент
+   `brute_force_attempts` (критичный актив → critical).
+4. Выбери инцидент → **«✦ Запустить интеллектуальный анализ»** — увидишь вердикт
+   LLM, решение DVE и блок «Все действия playbook». Запуск действия — **реальная
+   реакция** на ВМ через Wazuh active response (физическую проверку см. в сценарии).
+5. Инциденты уровней из `AUTO_ANALYSIS_LEVELS` (по умолчанию low) анализируются
+   **автоматически в фоне** и закрываются (`AUTO_CLOSE_LEVELS`) — реакции при
+   этом не исполняются автоматически.
+6. Загляни во вкладки: **Правила** (7 правил MITRE), **Playbooks** (критерии
+   завершения), **Аудит** (все этапы конвейера), **Анализы**, **Уведомления**,
+   **Реакции (ВМ)** — и в **Adminer** (п. выше).
 
-### Демо реального исполнения playbook (stage-20)
+### Демо реальной реакции playbook (stage-23)
 
-Полное описание — [REAL_EXECUTION.md](REAL_EXECUTION.md). Короткий сценарий:
+Полное описание стенда с ВМ — [E2E_STAND.md](E2E_STAND.md), сценарии атак для
+человека-оператора — [E2E_SCENARIOS.md](E2E_SCENARIOS.md). Коротко:
 
-1. Вкладка **«Агенты (ВМ)»** → у `wks-finance-12` выбери сценарий **«Подбор пароля»** →
-   **«Проиграть активность»**: ВМ генерирует алерты Wazuh → SIEM создаёт инцидент
-   (id показан в ответе).
-2. Открой инцидент → запусти анализ → в боксе «Все действия playbook» переключи
-   **режим исполнения на «Реально на ВМ»** → нажми **«▶ Блокировать IP»**.
-3. Проверь: на агенте http://localhost:8101/agent/status появилось правило фаервола
-   с IP атакующего; в журнале агента (вкладка «Агенты» → «Журнал») — запись с указанием
-   кто/когда/по какому инциденту. Кнопка «Сбросить ВМ» возвращает узел к исходному
-   состоянию (повторное демо).
-4. DVE работает одинаково в обоих режимах: аналитик на критическом активе получит
+1. Подними стенд с ВМ Kali по E2E_STAND (агенты `mail-prod-01`, `wks-finance-12` — Active).
+2. Выполни сценарий 1 (SSH-брутфорс с ВМ-2) → в «Событиях» записи `authentication_failed`,
+   инцидент `brute_force_attempts`.
+3. Открой инцидент → запусти анализ → в боксе «Все действия playbook» переключи
+   **режим исполнения на «Реально (Wazuh AR)»** → нажми **«▶ Блокировать IP»** —
+   Wazuh Manager доставит AR-команду `block-ip` на ВМ-1, IP ВМ-2 реально заблокируется
+   (проверка — `ssh`/`ping` с ВМ-2, `iptables -L INPUT -n` на ВМ-1).
+4. Активные реакции видны во вкладке **«Реакции (ВМ)»**; «Сбросить реакции» в карточке
+   инцидента выполняет обратные AR-команды (снятие блокировки) и возвращает ВМ
+   к исходному состоянию.
+5. DVE работает одинаково в обоих режимах: аналитик на критическом активе получит
    `pending_confirmation` — подтверждает soc_lead (кнопка «✓ Подтвердить и выполнить»).
 
-## 5. Wazuh (профиль) — коротко
+## 5. Wazuh-менеджер — коротко
 
-+2–4 ГБ RAM. Запуск и настройка — 3 команды:
+Базовый сервис compose (поднимается обычным `docker compose up`, профиль не нужен),
++1–2 ГБ RAM. Правила/декодеры/AR-скрипты приходят маунтами из `wazuh/`; конфигурация
+менеджера — один идемпотентный шаг после старта (и после каждого recreate контейнера):
 
 ```bash
-docker compose --profile wazuh up --build
+docker compose exec wazuh-manager bash /wazuh-config/setup.sh
 ```
 
-и инструкции из [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md) (раздел «Способ 1»).
-Обычный `docker compose up` Wazuh не поднимает. Демо-матрица атак (hydra/nmap/curl) —
-там же.
+Подробности интеграции — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md); демо-матрица
+атак (hydra/curl/useradd) — [E2E_SCENARIOS.md](E2E_SCENARIOS.md).
 
 ## 6. Автотесты — только Docker, локальный Python/Node не нужны
 
-**Бэкенд (178 тестов, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
-`base` — прод, `dev` — прод + тесты + `agent/`):
+**Бэкенд (171 тест, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
+`base` — прод, `dev` — прод + тесты):
 
 ```bash
 docker compose --profile tests build tests      # собрать образ с тестами
 docker compose --profile tests run --rm tests   # прогнать pytest
 ```
 
-Тесты самодостаточны (SQLite in-memory) — БД/Ollama/запущенный стенд не требуются.
-Повторный прогон после правок: та же команда `run` (кэш сборки обновит только слои
-с изменившимися файлами — это секунды). В набор входят `tests_agent/` — тесты
-endpoint-агента (состояние ВМ, журнал, сценарии активности; сетевые вызовы подменяются
-monkeypatch), общий прогон с backend-тестами через `pytest.ini` (`testpaths = tests tests_agent`).
+Тесты самодостаточны (SQLite in-memory) — БД/Ollama/Wazuh/запущенный стенд не требуются:
+вызовы Wazuh API подменяются фейком на `httpx.MockTransport`. Повторный прогон после
+правок: та же команда `run` (кэш сборки обновит только слои с изменившимися файлами —
+это секунды).
 
-**Фронтенд (114 тестов, Vitest + React Testing Library):**
+**Фронтенд (116 тестов, Vitest + React Testing Library):**
 
 ```bash
 docker compose --profile tests run --rm frontend-tests
@@ -252,8 +254,9 @@ docker compose start               # продолжить
 docker compose down                # остановить и убрать контейнеры (данные в volumes сохраняются)
 docker compose down -v             # ⚠️ ПОЛНЫЙ СБРОС: удалит БД, модель и данные Wazuh
 docker compose run --rm ollama-init  # докачать модель, если загрузка прервалась (идемпотентно)
-docker compose logs -f agent-wks   # логи агента-«ВМ» (8102 — agent-app, 8103 — agent-mail)
-curl http://localhost:8101/agent/status   # состояние эмулируемой ВМ в браузере
+docker compose exec wazuh-manager bash /wazuh-config/setup.sh  # настройка менеджера (после recreate)
+docker compose exec wazuh-manager /var/ossec/bin/agent_control -l  # список wazuh-агентов
+docker compose exec wazuh-manager tail -n 20 /var/ossec/logs/alerts/alerts.json  # последние алерты
 ```
 
 ## 9. Типичные проблемы
@@ -268,14 +271,13 @@ curl http://localhost:8101/agent/status   # состояние эмулируе�
 | Анализ возвращает 503 | Ollama не готова: `docker compose ps` (healthcheck), `docker compose logs ollama` |
 | Ошибки схемы БД у старого volume | Миграции `init_db` накатываются автоматически; если volume от очень старой версии — `docker compose down -v` (⚠️ удалит данные) и заново |
 | В списке пусто, «правила не сработали» | Так и задумано (§3.3.2): нужно ≥3 связанных события в окне — жми «Тестовое событие» 3 раза |
-| `integrator.sh: Permission denied` (Wazuh) | Exec-бит на mount с Windows: `docker compose --profile wazuh exec wazuh-manager chmod +x /var/ossec/integrator_files/custom-integration` |
-| Предупреждения `LF will be replaced by CRLF` при git-операциях | Безвредно (Windows line endings) |
+| `integrator.sh: Permission denied` (Wazuh) | Exec-бит на mount с Windows: `docker compose exec wazuh-manager bash /wazuh-config/setup.sh` (шаг 1 ставит его сам) |
+| Альтернативные реакции «не выполнено — Wazuh API вернул ошибку» | Менеджер не поднялся/не прошёл setup.sh; проверь `docker compose logs wazuh-manager` и повтори setup.sh. Диагностика доставки — [E2E_STAND.md](E2E_STAND.md), раздел «Диагностика» |
+| Предупреждения `LF will be replaced by CRLF` при git-операциях | Безвредно (для скриптов стенда действует `.gitattributes` с `eol=lf`) |
 
 ## 10. Что дальше
 
-- Подключить реальные события Wazuh и атаки — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md)
-  (демо-матрица: какие seed-правила чем воспроизводить).
-- Стенд с виртуальными машинами (VirtualBox) для экспериментов — там же, «Способ 2».
-- Реальное исполнение playbook на ВМ (stage-20: `mode=real`, агенты, журнал) —
-  [REAL_EXECUTION.md](REAL_EXECUTION.md) и [agent/README.md](../agent/README.md).
+- Полный E2E-стенд с ВМ Kali (агенты, реакции playbook по-настоящему) —
+  [E2E_STAND.md](E2E_STAND.md); сценарии атак для оператора — [E2E_SCENARIOS.md](E2E_SCENARIOS.md).
+- Подключение и настройка Wazuh — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
 - Описание системы — [README.md](../README.md) и [DOCUMENTATION.md](DOCUMENTATION.md).

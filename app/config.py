@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     ollama_num_predict: int = 2048
     ollama_keep_alive: str = "30m"
     correlation_window_minutes: int = 5
-    auto_response: bool = False
     # автоматический LLM-анализ инцидентов без задержек (§3.3.3 ВКР, p:80):
     # auto_analysis — главный выключатель, auto_analysis_levels — какие уровни
     # риска анализировать автоматически (плановый режим: перечислить все уровни).
@@ -32,18 +31,18 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     token_expire_minutes: int = 480
 
-    # Реальное исполнение ответных действий (stage-20): реестр целей —
-    # агентов на виртуальных машинах наблюдаемых пользователей (docs/REAL_EXECUTION.md).
-    # Формат EXECUTION_TARGETS: "name=url|token[,name=url|token…]" (разделитель
-    # url/токена — «|», т.к. URL содержит «://» и порт) — имя цели должно
-    # совпадать с именем актива (Asset.name), тогда инцидент по активу
-    # автоматически находит цель исполнения. Пусто — реестр пуст, действия в
-    # режиме real возвращают reason=no_target.
-    execution_targets: str = ""
-    # таймаут вызова агента (сек): действия быстрые, долгих операций нет
-    execution_timeout_seconds: int = 10
+    # Wazuh Manager API (stage-23): активные реакции playbook (block_ip /
+    # disable_account / isolate_host) уходят в POST /active-response менеджера,
+    # менеджер доставляет команду wazuh-агенту на ВМ актива (docs/E2E_STAND.md).
+    # Self-signed сертификат менеджера — verify_tls=False по умолчанию.
+    wazuh_api_url: str = "https://wazuh-manager:55000"
+    wazuh_api_user: str = "wazuh-wui"
+    wazuh_api_password: str = "wazuh-wui"
+    wazuh_api_verify_tls: bool = False
+    # таймаут вызова Wazuh API (сек): реакции быстрые, долгих операций нет
+    wazuh_api_timeout_seconds: int = 15
     # режим по умолчанию для execute-action: simulation (dry run, как в ВКР §3.4)
-    # или real (реальное исполнение на ВМ через агента)
+    # или real (реальная реакция через Wazuh active response)
     execution_default_mode: str = "simulation"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

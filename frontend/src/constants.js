@@ -1,5 +1,7 @@
-// Общие константы интерфейса и чистые хелперы форм и истории анализов.
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Общие константы интерфейса и чистые хелперы истории анализов.
+// Вынесено из main.jsx (stage-19-legacy-cleanup). stage-23: генераторы
+// демо-данных и режимы симуляции удалены — события приходят только с
+// wazuh-агентов ВМ, реакции всегда реальные (Wazuh active response).
 
 export const TABS = [
   { id: 'incidents', icon: '◈', label: 'Инциденты' },
@@ -8,8 +10,8 @@ export const TABS = [
   { id: 'audit', icon: '☰', label: 'Аудит' },
   { id: 'rules', icon: '⚡', label: 'Правила корреляции' },
   { id: 'playbooks', icon: '▶', label: 'Playbooks' },
-  // [20] реальное исполнение playbook: агенты на ВМ наблюдаемых пользователей
-  { id: 'targets', icon: '⬡', label: 'Агенты (ВМ)' },
+  // [23] реальные реакции playbook на ВМ актива через Wazuh active response
+  { id: 'responses', icon: '⬡', label: 'Реакции (ВМ)' },
 ];
 
 export const TAB_META = {
@@ -19,7 +21,7 @@ export const TAB_META = {
   audit: { eyebrow: 'ЖУРНАЛ ДЕЙСТВИЙ', title: 'Аудит' },
   rules: { eyebrow: 'КОРРЕЛЯЦИЯ СОБЫТИЙ', title: 'Правила корреляции' },
   playbooks: { eyebrow: 'АВТОМАТИЗАЦИЯ РЕАГИРОВАНИЯ', title: 'Playbooks' },
-  targets: { eyebrow: 'РЕАЛЬНОЕ ИСПОЛНЕНИЕ (STAGE-20)', title: 'Агенты на ВМ наблюдаемых пользователей' },
+  responses: { eyebrow: 'РЕАКЦИИ PLAYBOOK (WAZUH AR)', title: 'Реальные реакции на виртуальных машинах' },
 };
 
 export const CONDITION_OPERATORS = ['eq', 'neq', 'in', 'like'];
@@ -40,37 +42,6 @@ export const ANALYSIS_BLOCK_LABELS = [
   ['missing_data', 'Недостающие данные'],
   ['recommendations', 'Рекомендации для дальнейших действий'],
 ];
-// [15] Дефолты формы «Добавить событие Wazuh»: агент — seed-актив mail-prod-01,
-// чтобы событие сразу привязывалось к активу (критичность влияет на риск/DVE).
-export function emptyEventForm() {
-  return {
-    timestamp: new Date().toISOString().replace('Z', ''),
-    rule_id: '5710',
-    rule_level: '10',
-    rule_description: 'sshd: Multiple authentication failures',
-    rule_groups: 'authentication_failed,sshd',
-    agent_id: '001',
-    agent_name: 'mail-prod-01',
-    srcip: '192.0.2.10',
-    dstuser: 'root',
-    full_log: 'Failed password for root from 192.0.2.10 port 22 ssh2',
-  };
-}
-
-// [15] Выбор шаблона из справочника /ingest/reference: заполняет только поля
-// правила (группы — через запятую без пробелов, как их парсит createCustomEvent);
-// ввод пользователя (IP, агент, время) не перетирается. Пустой выбор
-// («— заполнить вручную —») ничего не заполняет, поля остаются правиться свободно.
-export function applyRuleTemplate(rule, formData) {
-  if (!rule) return formData;
-  return {
-    ...formData,
-    rule_id: String(rule.id),
-    rule_level: rule.level === null || rule.level === undefined ? formData.rule_level : String(rule.level),
-    rule_description: rule.description || formData.rule_description,
-    rule_groups: (rule.groups || []).join(','),
-  };
-}
 
 // Последняя запись истории анализов: по created_at, при равенстве — по большему id.
 export function latestAnalysis(list) {

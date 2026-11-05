@@ -47,7 +47,7 @@
    - бонус за серию связанных событий (корреляция).
 4. **Интеллектуальный анализ через LLM** — для инцидентов высокой и критической категории подключается локальная языковая модель **Qwen2.5-3B** (запускается в **Ollama**). Модель работает **без интернета, приватно**, и выдает обоснованное решение с объяснением и степенью уверенности.
 5. **Decision Validation Engine (фильтр безопасности)** — решение модели **не выполняется слепо**: система сверяет его с политикой, привязанной к уровню риска. Например, при severity `low` модель *не может* предложить `block_ip` — действие заменится на безопасный `monitor`.
-6. **Playbook (автоматизированное реагирование)** — если решение одобрено, выполняется заранее подготовленный сценарий из базы (`block_ip` → команда фаерволу; `disable_account` → блокировка учётной записи). **По умолчанию режим безопасный** (`AUTO_RESPONSE=false`): playbook **симулирует** действие и записывает его в БД, но не меняет инфраструктуру.
+6. **Playbook (реальное реагирование)** — если решение одобрено, выполняется заранее подготовленный сценарий (`block_ip`, `disable_account`, `isolate_host`): **реальная реакция** через Wazuh active response API — менеджер доставляет команду AR-скрипту на ВМ актива, скрипт по-настоящему меняет состояние узла (`iptables`, `passwd`). Режим симуляции удалён (stage-23): событие приходит только с wazuh-агентов ВМ, реакция всегда настоящая.
 7. **Audit Log** — каждый шаг пайплайна (приём, нормализация, корреляция, оценка риска, анализ LLM, валидация, выполнение playbook) записывается в журнал аудита с привязкой к инциденту/событию/пользователю. Это обеспечивает полную подотчётность решений.
 8. **Web-интерфейс** — React-дашборд, где аналитик видит список инцидентов, их детализацию, рекомендации модели, историю аудита и может запустить анализ вручную.
 
@@ -67,7 +67,7 @@
 3. **Оценка риска**: уровень 10 из событий + бонус за серию (+20) + критичность сервера → **риск = 90, severity = critical**.
 4. **LLM** получает контекст (включая исходный JSON событий с парсингом ECS) → возвращает вердикт (True Positive / False Positive / Pending), подробный разбор и `recommended_action: "block_ip"` с объяснением.
 5. **Decision Validation Engine**: для `critical` действие `block_ip` **разрешено политикой** → одобряет.
-6. **Playbook** загружает сценарий `block_ip` → шаг «выполнить `iptables -A INPUT -s 192.0.2.10 -j DROP`».
+6. **Playbook** загружает сценарий `block_ip` → шаг «выполнить `iptables DROP` для источника»: Wazuh Manager доставляет команду `block-ip` агенту на ВМ актива — правило блокировки появляется **по-настоящему**.
 7. **Audit Log** фиксирует: кто/что инициировал, когда, почему, какое действие выполнено.
 8. Аналитик видит всё в **веб-интерфейсе** и может вмешаться в любой момент.
 
@@ -102,10 +102,14 @@
 | **`analyses`** | Результаты анализа LLM (LLMAnalysis): `incident_id`, `model`, `prompt`, `description` (описание), `attack_type` (предполагаемый тип атаки), `confidence` (уровень достоверности 0.0–1.0), `explanation` (обоснование), `recommended_action`, `response_raw` (полный ответ JSON для расследований). Поля позволяют формировать статистику качества работы интеллектуального модуля (Таблица 3.1, глава 3.2). С stage-18 системный промпт требует вердикт (True Positive / False Positive / Pending), разбор команд, подозрительные фрагменты, дерево процессов и рекомендации — всё это сохраняется в `response_raw.recommendation` и выводится в панели «Результат анализа». |
 | **`correlation_rules`** | **Правила корреляции из БД** (ключевое нововведение): `name`, `conditions` (JSON: поле, оператор `eq/neq/in/like`, значение), `time_window_minutes`, `priority`, `is_active`. Раньше корреляция была жёсткой (`src_ip` + `dstuser`), теперь — **настраиваемая без изменения кода**. |
 | **`playbooks`** | Сценарии автоматизированного реагирования: `name`, `description`, `trigger_conditions`, `allowed_actions`, `steps` (порядок операций, например блокировка IP через фаервол), `priority`, `is_active`. |
-| **`response_actions`** | Выполненные ответные действия: привязка к инциденту, playbook, тип действия (`block_ip`, `disable_account`…), результат, кто инициировал (`playbook`/`validation`/`manual`), метаданные. |
+| **`response_actions`** | Выполненные ответные действия: привязка к инциденту, playbook, тип действия (`block_ip`, `disable_account`…), результат, кто инициировал (`manual:<user>`), метаданные (`metadata_json`: режим `real`, цель реакции — IP/учётка, данные доставки через Wazuh `wazuh`-блок, аргументы отката `undo_arguments`, `undone_at/undone_by` после «Сбросить реакции»). Активные записи (mode=real без `undone_at`) — источник сводки «Реакции (ВМ)» (`GET /responses/state`). |
 | **`validation_policy`** | Политика DVE в БД (stage-11): `severity` → перечень разрешённых действий; читается `validate_recommendation` (fallback на дефолты в `validation.py`), отдаётся `GET /validation-policy`. |
-| **`execution_targets`** | **Реестр целей реального исполнения** (stage-20): агент, развёрнутый на ВМ наблюдаемого пользователя/сервера — `name` (= имя актива, связка с инцидентом), `asset_id`, `kind` (`agent`/`firewall`/`itsm` — резерв), `base_url`, `auth_token` (Bearer, не покидает бэкенд), `platform`, `adapter` (`state` — эмуляция стенда / `linux` — реальные команды), `is_active`, `status` (`unknown`/`online`/`offline`), `last_seen` (heartbeat). Seed из `EXECUTION_TARGETS`. |
-| **`audit_logs`** | **Журнал аудита всех этапов**: `timestamp`, `event_type` (`event_ingested`, `normalized`, `correlated`, `risk_calculated`, `llm_analyzed`, `playbook_selected`, `action_executed`, `validation_result`, события исполнения stage-20 — `execution_target_checked`, `execution_target_reset`), привязка к инциденту/событию/пользователю, детали. |
+| **`audit_logs`** | **Журнал аудита всех этапов**: `timestamp`, `event_type` (`event_ingested`, `normalized`, `correlated`, `risk_calculated`, `llm_analyzed`, `playbook_selected`, `action_executed`, `validation_result`; реакции stage-23 — `real_action_executed`/`real_action_failed`/`real_action_skipped`/`real_action_undone`; откаты — `incident_actions_reset`), привязка к инциденту/событию/пользователю, детали. |
+
+> Таблица `execution_targets` (реестр агентов-эмуляторов stage-20) удалена в stage-23
+> вместе с самой реализацией: цели доставки реакций менеджер находит по имени
+> wazuh-агента (= имя актива); при обновлении с older-версии `db-init` выполняет
+> `DROP TABLE IF EXISTS execution_targets`.
 ### 3. Как строится и запускается проект
 
 #### Структура кода
@@ -119,9 +123,8 @@ siem_llm/
 │   │   ├── auth_routes.py         # /auth/* (JWT, stage-09)
 │   │   ├── ingest_routes.py       # POST /ingest/wazuh, GET /ingest/reference
 │   │   ├── incident_routes.py     # /incidents/* + analyze/confirm-action/execute-action/reset-actions
-│   │   ├── execution_routes.py    # /execution-targets/* — реестр целей real-исполнения (stage-20)
+│   │   ├── response_routes.py     # GET /responses/state — сводка активных реакций (stage-23)
 │   │   ├── catalog_routes.py      # CRUD correlation-rules и playbooks, GET /validation-policy
-│   │   ├── demo_routes.py         # POST /demo/populate, POST /demo/test-event
 │   │   └── system_routes.py       # GET /notifications, /analyses, /audit-logs, /health
 │   ├── services/
 │   │   ├── normalization.py       # этап 2: нормализация Wazuh
@@ -132,32 +135,30 @@ siem_llm/
 │   │   ├── llm.py                 # этап 5: запрос к Ollama/Qwen
 │   │   ├── auto_analysis.py       # оркестрация LLM-анализа и автозакрытия (stage-19, из routes.py)
 │   │   ├── validation.py          # этап 6: Decision Validation Engine
-│   │   ├── playbook.py            # этап 7: запуск playbook (симуляция)
-│   │   ├── execution.py           # этап 7 (stage-20): реальное исполнение playbook на ВМ через агента
-│   │   ├── assets.py, security.py, auth.py, notification.py, demo_events.py, audit.py
-│   ├── models.py                  # SQLAlchemy модели (12 таблиц)
-│   ├── schemas.py                 # Pydantic-схемы (WazuhAlert, IncidentOut, ...)
+│   │   ├── playbook.py            # справочник сценариев реагирования (+ заглушка ITSM)
+│   │   ├── execution.py           # этап 7 (stage-23): реальные реакции через Wazuh active response + откат
+│   │   ├── wazuh_api.py           # клиент Wazuh Manager API (JWT, agents, active-response)
+│   │   └── assets.py, security.py, auth.py, notification.py, audit.py
+│   ├── models.py                  # SQLAlchemy модели
+│   ├── schemas.py                 # Pydantic-схемы (WazuhAlert extra="allow", IncidentOut, ...)
 │   ├── db.py                      # engine, SessionLocal, Base, get_db
-│   ├── config.py                  # Settings (DATABASE_URL, OLLAMA_*, AUTO_*, JWT_*, EXECUTION_*)
-│   ├── init_db.py                 # create_all + ALTER-миграции + seed (пользователи, активы, правила, playbook, DVE-политика, цели исполнения из EXECUTION_TARGETS)
+│   ├── config.py                  # Settings (DATABASE_URL, OLLAMA_*, WAZUH_API_*, JWT_*, ...)
+│   ├── init_db.py                 # create_all + ALTER-миграции + seed (пользователи, активы, правила, playbooks, DVE-политика)
 │   └── main.py                    # FastAPI app
-├── agent/                         # endpoint-агент ВМ (stage-20): main.py (FastAPI: /agent/*),
-│                                  #   emu_state.py (состояние ВМ + журнал), activity.py (генератор
-│                                  #   активности → SIEM); переносится на реальную ВМ как есть
 ├── frontend/                      # React + Vite: src/main.jsx (точка входа), src/App.jsx (логика UI),
 │                                  #   src/api.js (JWT-сессия + request), src/constants.js,
 │                                  #   src/components/* (вкладки, логин, бейджи), src/lib/helpers.js
 ├── tests/                         # pytest-тесты API/сервисов (общие фикстуры — conftest.py, stage-19)
-├── tests_agent/                   # pytest-тесты endpoint-агента (stage-20, pythonpath включает agent/)
-├── samples/                       # примеры JSON-алертов Wazuh
-├── wazuh/                         # интеграция Wazuh (integrator.sh, ossec-integration.xml)
+├── wazuh/                         # интеграция Wazuh (stage-23): integrator.sh, ossec-integration.xml,
+│                                  #   setup.sh (идемпотентный сетап менеджера), local_rules.xml,
+│                                  #   local_decoder.xml, ar/*.sh (AR-скрипты реакций на ВМ)
 ├── docs/, analysis/               # документация стенда и рабочие материалы
-├── docker-compose.yml             # оркестрация всех сервисов
+├── docker-compose.yml             # оркестрация всех сервисов (включая wazuh-manager — базовый)
 ├── Dockerfile
 ├── requirements.txt
 ├── pytest.ini
 ├── README.md
-└── samples/sample_wazuh_alert.json  # тестовый алерт Wazuh (curl-пример из README)
+└── .env.example, .gitattributes
 ```
 
 #### Пайплайн: как одно событие пробегает через систему
@@ -175,20 +176,22 @@ siem_llm/
    > С stage-17 severity инцидента для правил с заданной тактикой MITRE определяется
    **матрицей критичности** (базовая критичность тактики + максимум одно повышение) —
    числовой `risk_score` остаётся метрикой сортировки и отображения. Для правил без
-   тактики работает числовая модель выше. Инциденты уровня `low` проходят конвейер
-   полностью автоматически (`AUTO_CLOSE_LEVELS`: автоанализ → исполнение → закрытие);
-   для `medium/high/critical` playbook выполняет оператор кнопкой «▶ Выполнить»
-   (`execution.mode = manual_run`).
+   тактики работает числовая модель выше. Автоанализ уровня `low`
+   (`AUTO_ANALYSIS_LEVELS`) завершается автозакрытием (`AUTO_CLOSE_LEVELS`,
+   stage-17) — без автоисполнения реакций (stage-23); для `medium/high/critical`
+   (и для low — после возврата в работу) реакцию запускает оператор кнопкой
+   «▶ Выполнить» (`execution.mode = manual_run`).
    Подробно — [CRITICALITY_MATRIX.md](CRITICALITY_MATRIX.md).
 
-   > С stage-20 у кнопки «▶ Выполнить» (и автоконвейера low) есть два режима исполнения:
-   **`simulation`** (dry run по умолчанию, как в §3.4 ВКР — инфраструктура не меняется) и
-   **`real`** — действие исполняется **реально** на ВМ через endpoint-агента
-   (`services/execution.py` → HTTP-вызов `POST /agent/action` на цели из
-   `execution_targets`, Bearer-токен не покидает бэкенд). DVE один и тот же для обоих
-   режимов; результат вызова агента сохраняется в `ResponseAction.metadata_json`,
-   heartbeat цели обновляется. Подробно — [REAL_EXECUTION.md](REAL_EXECUTION.md) и
-   [agent/README.md](../agent/README.md).
+   > С stage-23 реакция всегда **реальная**: Wazuh Manager API
+   (`services/wazuh_api.py`, env `WAZUH_API_*`) доставляет AR-команду
+   (`block-ip` / `lock-account` / `isolate-host`) агенту на ВМ актива — цель
+   менеджер находит по имени агента (= имя актива). Скрипты меняют состояние
+   узла по-настоящему (`iptables`, `passwd`); «Сбросить реакции» выполняет
+   обратные команды; активные реакции видны во вкладке «Реакции (ВМ)»
+   (`GET /responses/state`). Режим симуляции (dry run stage-12…20) удалён по
+   явной команде пользователя. Подробно — [E2E_STAND.md](E2E_STAND.md),
+   [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
 
 
 ---

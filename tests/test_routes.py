@@ -4,7 +4,9 @@
 со StaticPool, чтобы все соединения (приложение и тестовая сессия) видели
 одну и ту же базу. Внешние зависимости изолируются:
 - settings.auto_analysis=False — ингест не запускает LLM-анализ;
-- settings.auto_response=False — реагирование выполняется в режиме simulation;
+- Wazuh Manager API подменяется фейком на httpx.MockTransport (общий с
+  test_execution.py) — реакции execute-action/confirm-action проходят
+  весь реальный конвейер доставки AR-команды без сети;
 - app.api.routes.analyze_incident подменяется фейковой async-функцией;
 - get_current_user подменяется фейковым админом (механика JWT тестируется
   отдельно в test_auth.py);
@@ -15,13 +17,15 @@
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
+import app.services.wazuh_api as wazuh_api
 from app.config import settings
 from app.main import app
 from app.models import User
 from app.services.auth import get_current_user
-from app.services.demo_events import build_mock_scenarios
+from tests.test_execution import MockWazuhAPI
 
 API = "/api/v1"
 
@@ -53,6 +57,25 @@ def client(client):
     yield client
 
 
+@pytest.fixture(autouse=True)
+def wazuh_mock(monkeypatch):
+    """Wazuh API подменяется во всех тестах модуля (stage-23: исполнение
+    реакций всегда реальное — без сети). В реестр агентов добавлен
+    «test-host» — агент из алерта make_alert()."""
+    api = MockWazuhAPI()
+    api.agents.append({"id": "099", "name": "test-host", "status": "active"})
+
+    def create_client():
+        return httpx.Client(
+            transport=httpx.MockTransport(api.handler),
+            base_url="https://wazuh-mock:55000",
+            timeout=5,
+        )
+
+    monkeypatch.setattr(wazuh_api, "_create_client", create_client)
+    yield api
+
+
 def seed_rule(db_session, name="brute_rule", **overrides):
     """Создание активного правила корреляции напрямую в тестовой БД."""
     from app.models import CorrelationRule
@@ -73,51 +96,7 @@ def seed_rule(db_session, name="brute_rule", **overrides):
     return rule
 
 
-def seed_demo_rules_and_assets(db_session):
-    """Seed правил корреляции и активов как в init_db (stage-12/17) — общее
-    для тестов мок-сценариев: /demo/populate и /demo/test-event берут
-    правила (включая тактики MITRE матрицы критичности) и привязку агентов
-    к активам из БД."""
-    from app.models import Asset, CorrelationRule
-
-    for name, conds, window, min_events, priority, tactic, technique in [
-        ("brute_force_attempts", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 5, 3, 2, "credential_access", "T1110"),
-        ("password_spraying", [{"field": "event_type", "operator": "like", "value": "authentication_failed"}], 10, 5, 3, "credential_access", "T1110.003"),
-        ("privilege_escalation_attempt", [{"field": "event_type", "operator": "like", "value": "privilege"}], 10, 1, 3, "privilege_escalation", "T1068"),
-        ("repeated_scan", [{"field": "src_ip", "operator": "neq", "value": ""}], 10, 2, 1, None, "T1046"),
-        ("web_attack", [{"field": "event_type", "operator": "like", "value": "web"}], 5, 2, 2, "initial_access", "T1190"),
-        ("malware_detection", [{"field": "event_type", "operator": "like", "value": "malware"}], 10, 1, 3, "execution", "T1204"),
-    ]:
-        db_session.add(
-            CorrelationRule(
-                name=name, description=name, conditions=conds,
-                time_window_minutes=window, min_events=min_events,
-                priority=priority, is_active=True,
-                mitre_tactic=tactic, mitre_technique=technique,
-            )
-        )
-    # активы — моки используют имена агентов = имена активов
-    for name, criticality in [
-        ("mail-prod-01", "critical"), ("db-primary-01", "critical"),
-        ("fw-edge-01", "high"), ("wks-finance-12", "medium"), ("app-web-01", "high"),
-    ]:
-        db_session.add(Asset(name=name, type="server", criticality=criticality))
-    db_session.commit()
-
-
 FROZEN_NOW = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def frozen_demo_time(monkeypatch):
-    """Фиксирует datetime в app.api.routes: таймстампы мок-сценариев в
-    /demo/*-эндпоинтах становятся предсказуемыми (детерминизм тестов)."""
-    class _FrozenDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):  # noqa: N805 — имитация datetime.now
-            return FROZEN_NOW
-
-    monkeypatch.setattr("app.api.routes.datetime", _FrozenDatetime)
 
 
 def test_health(client):
@@ -287,10 +266,11 @@ def test_analyze_incident_success(client, db_session, engine, monkeypatch):
 
 
 def test_manual_playbook_execution_for_high(client, db_session, engine, monkeypatch):
-    """stage-17, фидбек: для инцидента high анализ только рекомендует
-    (manual_run), playbook выполняет оператор через POST /execute-action —
-    при AUTO_RESPONSE=false это dry run (simulation). Анализ выполняется
-    в фоне (stage-18): POST /analyze отвечает scheduled, результат — в БД."""
+    """stage-17/23: для инцидента high анализ только рекомендует (manual_run),
+    действие выполняет оператор через POST /execute-action — stage-23:
+    исполнение всегда реальное (collect_evidence — пассивное, снимок без
+    Wazuh API). Анализ выполняется в фоне (stage-18): POST /analyze отвечает
+    scheduled, результат — в БД."""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import Analysis
@@ -324,8 +304,10 @@ def test_manual_playbook_execution_for_high(client, db_session, engine, monkeypa
     assert run.status_code == 200
     body = run.json()
     assert body["validation"]["approved"] is True
-    assert body["execution"]["executed"] is False
-    assert body["execution"]["mode"] == "simulation"
+    # stage-23: collect_evidence — пассивное действие, снимок собирается
+    # без вызова Wazuh API
+    assert body["execution"]["executed"] is True
+    assert body["execution"]["mode"] == "real"
 
 
 def test_analyze_incident_llm_unavailable(client, db_session, engine, monkeypatch):
@@ -374,11 +356,12 @@ def test_confirm_action_without_analysis(client, db_session):
     assert resp.status_code == 404
 
 
-def test_confirm_action_updates_saved_analysis(client, db_session, engine, monkeypatch):
+def test_confirm_action_updates_saved_analysis(client, db_session, engine, monkeypatch, wazuh_mock):
     """POST /confirm-action (stage-18, фидбек): подтверждение администратором
     перезаписывает response_raw сохранённого анализа — в results появляются
     свежие validation/execution с confirmed_by; плашка «Требуется
-    подтверждение» не возвращается после перезагрузки у ЛЮБОГО оператора."""
+    подтверждение» не возвращается после перезагрузки у ЛЮБОГО оператора.
+    stage-23: подтверждённое действие исполняется РЕАЛЬНО (Wazuh API — фейк)."""
     from sqlalchemy.orm import sessionmaker
 
     from app.models import Analysis, Asset, Incident
@@ -391,6 +374,8 @@ def test_confirm_action_updates_saved_analysis(client, db_session, engine, monke
     incident.asset_id = db_session.query(Asset).filter_by(name="crit-host").one().id
     db_session.commit()
     client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
+    # агент у актива есть — AR-команда доставляется (фейк менеджера)
+    wazuh_mock.agents.append({"id": "003", "name": "crit-host", "status": "active"})
 
     monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
 
@@ -413,20 +398,21 @@ def test_confirm_action_updates_saved_analysis(client, db_session, engine, monke
     raw = db_session.query(Analysis).filter_by(incident_id=incident_id).one().response_raw
     assert raw["results"][0]["execution"]["mode"] == "pending_confirmation"
 
-    # админ подтверждает — действие исполняется (simulation)
+    # админ подтверждает — действие исполняется РЕАЛЬНО (stage-23, Wazuh — фейк)
     confirm = client.post(f"{API}/incidents/{incident_id}/confirm-action")
     assert confirm.status_code == 200
-    assert confirm.json()["results"][0]["execution"]["mode"] == "simulation"
+    assert confirm.json()["results"][0]["execution"]["mode"] == "real"
+    assert confirm.json()["results"][0]["execution"]["executed"] is True
 
     # сохранённый анализ перезаписан: pending больше нет, есть confirmed_by
     db_session.expire_all()  # объект закэширован сессией — перечитать из БД
     updated = db_session.query(Analysis).filter_by(incident_id=incident_id).one()
     results = updated.response_raw["results"]
-    assert results[0]["execution"]["mode"] == "simulation"
+    assert results[0]["execution"]["mode"] == "real"
     assert results[0]["execution"]["confirmed_by"] == "tester"
     # верхнеуровневые compat-ключи — от первого confirm-результата
     assert updated.response_raw["validation"]["approved"] is True
-    assert updated.response_raw["execution"]["mode"] == "simulation"
+    assert updated.response_raw["execution"]["mode"] == "real"
     # условие resultsNeedConfirmation больше не срабатывает
     assert not any(
         r["validation"].get("requires_confirmation")
@@ -1097,211 +1083,6 @@ def test_incident_description_actualized(client, db_session):
     assert len(detail["events"]) == 2
 
 
-def test_demo_populate(client, db_session):
-    """POST /demo/populate — мок-сценарии: 19 событий → 7 инцидентов всех уровней."""
-    seed_demo_rules_and_assets(db_session)
-
-    resp = client.post(f"{API}/demo/populate")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["created_events"] == 19
-    incidents = data["incidents"]
-    assert len(incidents) == 7
-    severities = {i["severity"] for i in incidents}
-    assert "critical" in severities and "low" in severities and "high" in severities
-    rules = {i["rule"] for i in incidents}
-    assert {"brute_force_attempts", "password_spraying", "privilege_escalation_attempt",
-            "repeated_scan", "web_attack", "malware_detection"} <= rules
-
-    # severity по матрице критичности (stage-17): базовая — по тактике MITRE
-    # правила, повышение — максимум +1 (критичный актив/периметр); правило
-    # без тактики (repeated_scan) — по числовой модели (fallback)
-    sev_by_rule: dict[str, set] = {}
-    for i in incidents:
-        sev_by_rule.setdefault(i["rule"], set()).add(i["severity"])
-    assert sev_by_rule["web_attack"] == {"medium"}  # initial_access, повышения нет (было high)
-    assert sev_by_rule["malware_detection"] == {"high"}  # execution, актив medium
-    assert sev_by_rule["brute_force_attempts"] == {"critical"}  # credential_access high +1 (критичный актив + периметр)
-    assert sev_by_rule["password_spraying"] == {"critical"}  # credential_access high +1 (критичный актив)
-    assert sev_by_rule["privilege_escalation_attempt"] == {"critical"}  # privilege_escalation high +1
-    # repeated_scan без тактики: скан fw-edge → high, фоновый шум → low
-    assert sev_by_rule["repeated_scan"] == {"high", "low"}
-
-    # активы привязаны (моки используют seed-имена агентов)
-    items = client.get(f"{API}/incidents").json()
-    with_assets = [i for i in items if i["asset"]]
-    assert len(with_assets) >= 5
-
-    # автоанализ выключен фикстурой — populate ничего не планировал
-    assert data["auto_analysis_scheduled"] == 0
-
-
-def test_demo_populate_marks_new_vs_merged(client, db_session):
-    """Повторный populate сразу после первого (stage-22, фидбек «почему не
-    появляются карточки»): события попадают в корреляционные окна только что
-    созданных инцидентов и приклеиваются к ним (§3.3.2) — новых карточек нет,
-    ответ помечает is_new=False и отдаёт счётчики new_incidents/merged_incidents
-    для тоста UI."""
-    seed_demo_rules_and_assets(db_session)
-
-    first = client.post(f"{API}/demo/populate").json()
-    assert len(first["incidents"]) == 7
-    assert all(i["is_new"] for i in first["incidents"])
-    assert first["new_incidents"] == 7
-    assert first["merged_incidents"] == 0
-
-    second = client.post(f"{API}/demo/populate").json()
-    assert second["new_incidents"] == 0
-    assert second["merged_incidents"] == 7
-    assert all(not i["is_new"] for i in second["incidents"])
-    # те же инциденты: события добавлены в существующие, новых карточек нет
-    assert {i["incident_id"] for i in second["incidents"]} == {
-        i["incident_id"] for i in first["incidents"]
-    }
-
-
-def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatch):
-    """Мок-сценарии + автоконвейер (stage-18, фидбек): populate запускает
-    фоновый автоанализ ТОЛЬКО для low (AUTO_ANALYSIS_LEVELS="low"); low
-    проходит конвейер до конца (анализ → исполнение → автозакрытие),
-    critical/high/medium остаются открытыми БЕЗ анализов — анализ и playbook
-    выполняет оператор."""
-    seed_demo_rules_and_assets(db_session)
-    from sqlalchemy.orm import sessionmaker  # конфтест-чистка убрала импорт верхнего уровня
-
-    monkeypatch.setattr(settings, "auto_analysis", True)  # default levels: low
-    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
-
-    async def fake_analyze(context):
-        return {
-            "description": "d",
-            "attack_type": "test",
-            "confidence": 0.9,
-            "explanation": "e",
-            "recommended_action": "monitor",
-        }
-
-    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
-
-    resp = client.post(f"{API}/demo/populate")
-    assert resp.status_code == 200
-    data = resp.json()
-    # мок-набор: 1 low (фоновый шум) — только он уходит в автоанализ;
-    # critical/high/medium не планируются вовсе (stage-18)
-    assert data["auto_analysis_scheduled"] == 1
-
-    by_severity: dict[str, list[int]] = {}
-    for inc in data["incidents"]:
-        by_severity.setdefault(inc["severity"], []).append(inc["incident_id"])
-
-    # low: весь конвейер — анализ, исполнение (dry run), автозакрытие
-    assert by_severity.get("low"), "в мок-наборе должен быть low-инцидент"
-    for inc_id in by_severity["low"]:
-        detail = client.get(f"{API}/incidents/{inc_id}").json()
-        assert detail["status"] == "closed"
-        assert len(detail["analyses"]) == 1
-        assert detail["analyses"][-1]["response_raw"]["auto_closed"] is True
-        assert detail["analyses"][-1]["response_raw"]["initiated_by"] == "auto_analysis"
-
-    # critical/high/medium: анализов нет, инциденты остались новыми —
-    # за оператором (stage-18)
-    assert by_severity.get("critical"), "в мок-наборе должны быть critical-инциденты"
-    for severity in ("critical", "high", "medium"):
-        for inc_id in by_severity.get(severity, []):
-            detail = client.get(f"{API}/incidents/{inc_id}").json()
-            assert detail["status"] == "new"
-            assert detail["analyses"] == []
-
-
-# ---------------------------------------------------------------------------
-# POST /demo/test-event — случайное тестовое событие из мок-пула (stage-15)
-# ---------------------------------------------------------------------------
-def test_demo_test_event_structure(client, db_session, monkeypatch, frozen_demo_time):
-    """Контракт ответа (scenario/scenario_title/event/result); событие в БД."""
-    seed_demo_rules_and_assets(db_session)
-
-    # детерминизм: random.choice всегда берёт первый элемент —
-    # первый сценарий, затем первое событие выбранного сценария
-    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
-
-    resp = client.post(f"{API}/demo/test-event")
-    assert resp.status_code == 200
-    data = resp.json()
-
-    scenarios = build_mock_scenarios(FROZEN_NOW)
-    assert set(data.keys()) == {"scenario", "scenario_title", "event", "result"}
-    assert data["scenario"] == scenarios[0].key
-    assert data["scenario_title"] == scenarios[0].title
-    assert data["event"] == scenarios[0].events[0]
-
-    # result — ответ конвейера без служебного ключа; одиночное событие
-    # не набирает порог brute_force (min_events=3) → инцидент не создаётся
-    result = data["result"]
-    assert "_auto_analysis_incident_id" not in result
-    assert result["correlated"] is False
-    assert result["incident_id"] is None
-
-    # событие реально попало в БД
-    from app.models import Event
-    event = db_session.get(Event, result["event_id"])
-    assert event is not None
-    assert event.src_ip == data["event"]["data"]["srcip"]
-    assert event.user == data["event"]["data"]["dstuser"]
-
-
-def test_demo_test_event_deterministic(client, db_session, monkeypatch, frozen_demo_time):
-    """Подмена random.choice: два вызова дают одно и то же событие (stage-15)."""
-    seed_demo_rules_and_assets(db_session)
-    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
-
-    first = client.post(f"{API}/demo/test-event").json()
-    second = client.post(f"{API}/demo/test-event").json()
-    assert first["scenario"] == second["scenario"]
-    assert first["scenario_title"] == second["scenario_title"]
-    assert first["event"] == second["event"]
-
-
-def test_demo_test_event_creates_incident(client, db_session, monkeypatch, frozen_demo_time):
-    """Сценарий с правилом min_events=1 → correlated=True, инцидент в БД, аудит."""
-    seed_demo_rules_and_assets(db_session)
-
-    scenarios = build_mock_scenarios(FROZEN_NOW)
-    target = next(s for s in scenarios if s.key == "privilege_escalation")
-    picks = iter([target, target.events[0]])
-    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: next(picks))
-
-    resp = client.post(f"{API}/demo/test-event")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["scenario"] == "privilege_escalation"
-    assert data["result"]["correlated"] is True
-    incident_id = data["result"]["incident_id"]
-    assert incident_id is not None
-
-    detail = client.get(f"{API}/incidents/{incident_id}")
-    assert detail.status_code == 200
-    assert len(detail.json()["events"]) == 1
-
-    # аудит зафиксировал генерацию тестового события
-    logs = client.get(f"{API}/audit-logs").json()
-    entry = next(a for a in logs if a["event_type"] == "test_event_generated")
-    assert entry["details"]["scenario"] == "privilege_escalation"
-    assert entry["details"]["correlated"] is True
-    assert entry["details"]["incident_id"] == incident_id
-    assert entry["details"]["event_id"] == data["result"]["event_id"]
-
-
-def test_demo_test_event_available_to_analyst(client, db_session, monkeypatch, frozen_demo_time):
-    """«Тестовое событие» доступно аналитику (get_current_user, не require_admin)."""
-    seed_demo_rules_and_assets(db_session)
-    monkeypatch.setattr("app.api.routes.random.choice", lambda seq: seq[0])
-    app.dependency_overrides[get_current_user] = lambda: User(
-        id=2, username="analyst1", role="analyst"
-    )
-    resp = client.post(f"{API}/demo/test-event")
-    assert resp.status_code == 200
-
-
 # ---------------------------------------------------------------------------
 # GET /incidents?status=&severity= — мультифильтры списка инцидентов (stage-15)
 # ---------------------------------------------------------------------------
@@ -1439,7 +1220,12 @@ def test_ingest_reference_empty_db(client):
 
 def test_execute_action_manual(client, db_session):
     """POST /incidents/{id}/execute-action — ручной запуск действия админом (stage-12)."""
+    from app.models import Asset
+
     seed_rule(db_session)
+    # актив с агентом (wazuh_mock знает test-host) — иначе real-режим вернёт no_target
+    db_session.add(Asset(name="test-host", type="server", criticality="high"))
+    db_session.commit()
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
 
     # без зарегистрированного playbook действие блокируется с причиной
@@ -1450,7 +1236,7 @@ def test_execute_action_manual(client, db_session):
     assert blocked.json()["validation"]["approved"] is False
     assert blocked.json()["execution"]["mode"] == "blocked"
 
-    # после регистрации playbook — исполняется (simulation)
+    # после регистрации playbook — команда доставляется в Wazuh (фейк, stage-23)
     client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
     ok = client.post(
         f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"}
@@ -1458,7 +1244,8 @@ def test_execute_action_manual(client, db_session):
     assert ok.status_code == 200
     body = ok.json()
     assert body["validation"]["approved"] is True
-    assert body["execution"]["mode"] == "simulation"
+    assert body["execution"]["mode"] == "real"
+    assert body["execution"]["executed"] is True
     assert body["action"] == "block_ip"
 
 
@@ -1468,10 +1255,15 @@ def test_execute_action_manual(client, db_session):
 # всем операторам
 # ---------------------------------------------------------------------------
 def test_execute_action_records_manual_state(client, db_session):
-    """Успешный ручной запуск действия (simulation) сохраняет отметку в
-    incident.manual_actions: {mode, at, by} — доступно всем операторам
-    через GET /incidents/{id}."""
+    """Успешный ручной запуск действия сохраняет отметку в
+    incident.manual_actions: {mode, at, by, target} — доступно всем операторам
+    через GET /incidents/{id}. stage-23: отметка только при доставленной
+    AR-команде (Wazuh API — фейк)."""
+    from app.models import Asset
+
     seed_rule(db_session)
+    db_session.add(Asset(name="test-host", type="server", criticality="high"))
+    db_session.commit()
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
     client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
 
@@ -1479,19 +1271,21 @@ def test_execute_action_records_manual_state(client, db_session):
         f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"}
     )
     assert resp.status_code == 200
-    assert resp.json()["execution"]["mode"] == "simulation"
+    assert resp.json()["execution"]["mode"] == "real"
+    assert resp.json()["execution"]["executed"] is True
 
     detail = client.get(f"{API}/incidents/{incident_id}").json()
     mark = detail["manual_actions"]["block_ip"]
-    assert mark["mode"] == "simulation"
+    assert mark["mode"] == "real"
     assert mark["by"] == "tester"  # фейковый пользователь из фикстуры client
     assert mark["at"]  # момент запуска зафиксирован
+    assert mark["target"] == "192.0.2.10"  # цель реакции (stage-23)
 
 
 def test_execute_action_blocked_and_pending_do_not_record(client, db_session):
     """Заблокированное DVE действие и отложенное до подтверждения
     НЕ сохраняют отметку в manual_actions — она пишется только при
-    фактическом исполнении (simulation/controlled)."""
+    фактическом исполнении (доставленной AR-команде, stage-23)."""
     from app.models import Asset, Incident, Playbook
 
     seed_rule(db_session)
@@ -1532,19 +1326,27 @@ def test_execute_action_blocked_and_pending_do_not_record(client, db_session):
 
 
 def test_reset_actions_clears_manual_state_and_audits(client, db_session):
-    """POST /incidents/{id}/reset-actions (stage-18): сброс отметок
-    manual_actions с аудитом; повторный сброс работает и на пустых
-    отметках (NULL → {})."""
-    from app.models import Incident
+    """POST /incidents/{id}/reset-actions (stage-18 + откат stage-23): сброс
+    отметок manual_actions с аудитом; реальная реакция отменяется обратной
+    AR-командой (best-effort), результаты — в ответе."""
+    from app.models import Asset, Incident
 
     seed_rule(db_session)
+    db_session.add(Asset(name="test-host", type="server", criticality="high"))
+    db_session.commit()
     incident_id = client.post(f"{API}/ingest/wazuh", json=make_alert()).json()["incident_id"]
     client.post(f"{API}/playbooks", json={"name": "block_ip", "allowed_actions": ["block_ip"]})
     client.post(f"{API}/incidents/{incident_id}/execute-action", json={"action": "block_ip"})
 
     resp = client.post(f"{API}/incidents/{incident_id}/reset-actions")
     assert resp.status_code == 200
-    assert resp.json() == {"incident_id": incident_id, "reset": True, "manual_actions": {}}
+    data = resp.json()
+    assert data["reset"] is True
+    assert data["manual_actions"] == {}
+    # реальная реакция block_ip отменена обратной командой (delete)
+    assert len(data["undo"]) == 1
+    assert data["undo"][0]["action"] == "block_ip"
+    assert data["undo"][0]["executed"] is True
 
     # состояние в БД очищено (полное переприсвоение JSON-колонки)
     assert db_session.get(Incident, incident_id).manual_actions == {}
@@ -1554,7 +1356,7 @@ def test_reset_actions_clears_manual_state_and_audits(client, db_session):
     assert entry["incident_id"] == incident_id
     assert entry["details"]["by"] == "tester"
 
-    # повторный сброс на пустых отметках тоже успешен
+    # повторный сброс на пустых отметках тоже успешен (undo пуст — всё отменено)
     assert client.post(f"{API}/incidents/{incident_id}/reset-actions").status_code == 200
 
 
