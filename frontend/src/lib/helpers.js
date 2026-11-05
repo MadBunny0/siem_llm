@@ -84,7 +84,9 @@ export function resultExecutionBadge(result) {
     // [17] ручной режим: playbook выполнит оператор кнопкой «▶ Выполнить»
     return { cls: 'badge-pending', text: 'ОЖИДАЕТ ЗАПУСКА' };
   }
-  return { cls: 'simulated-text', text: 'СИМУЛЯЦИЯ' };
+  // stage-23: симуляции больше нет — fallback достижим только для blocked
+  // (DVE запретил действие); до legacy-cleanup здесь выводился «СИМУЛЯЦИЯ»
+  return { cls: 'blocked-text', text: 'БЛОКИРОВАНО' };
 }
 
 // Бейдж источника анализа: поле initiated_by в Analysis.response_raw
@@ -194,22 +196,6 @@ export function criteriaCountLabel(count) {
 }
 
 /* ==================== Stage 15: ручной запуск действий, шаги playbook ==================== */
-
-// Режимы исполнения (execution.mode) — русские подписи для тостов и бейджей.
-const EXECUTION_MODE_RU = {
-  simulation: 'dry run — симуляция, инфраструктура не изменялась',
-  controlled: 'реальное выполнение',
-  // [23] реальная реакция на ВМ актива через Wazuh active response
-  real: 'реально на ВМ актива (Wazuh active response)',
-  pending_confirmation: 'ожидает подтверждения администратора',
-  blocked: 'заблокировано политикой DVE',
-  // [17] ручной режим: medium/high/critical — playbook запустит оператор
-  manual_run: 'ожидает запуска оператором — playbook ещё не выполнялся',
-};
-
-export function executionModeRu(mode) {
-  return EXECUTION_MODE_RU[mode] || mode || '';
-}
 
 // [23] Краткие русские подписи действий во вкладке «Реакции (ВМ)» —
 // рядом с целью (IP/учётная запись), если она есть.

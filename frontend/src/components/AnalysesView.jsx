@@ -1,30 +1,17 @@
 // Вкладка «Анализы»: история LLM-анализов (read-only).
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Вынесено из main.jsx (stage-19-legacy-cleanup); загрузка — общий хук
+// useListResource (legacy-cleanup).
 
-import React, { useEffect, useState } from 'react';
-import { request } from '../api.js';
+import React from 'react';
+import { useListResource } from '../hooks/useListResource.js';
 import { confPct, formatDate } from '../lib/helpers.js';
 
 /* ==================== Вкладка «Анализы» ==================== */
 
 export default function AnalysesView({ onOpenIncident }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  async function load() {
-    setLoading(true);
-    try {
-      setError('');
-      setItems(await request('/analyses'));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
+  // ?limit=200 (legacy-cleanup): записи тяжёлые (prompt Text + response_raw
+  // JSON) — последние 200 вместо всей таблицы
+  const { items, loading, error, load } = useListResource('/analyses', { query: '?limit=200' });
 
   return (
     <div className="panel tab-panel">

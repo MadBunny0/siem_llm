@@ -1,30 +1,15 @@
 // Вкладка «Аудит»: журнал действий системы (read-only).
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Вынесено из main.jsx (stage-19-legacy-cleanup); загрузка — общий хук
+// useListResource (legacy-cleanup).
 
-import React, { useEffect, useState } from 'react';
-import { request } from '../api.js';
+import React from 'react';
+import { useListResource } from '../hooks/useListResource.js';
 import { formatDate } from '../lib/helpers.js';
 
 /* ==================== Вкладка «Аудит» ==================== */
 
 export default function AuditView() {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  async function load() {
-    setLoading(true);
-    try {
-      setError('');
-      setItems(await request('/audit-logs?limit=200'));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
+  const { items, loading, error, load } = useListResource('/audit-logs', { query: '?limit=200' });
 
   return (
     <div className="panel tab-panel">

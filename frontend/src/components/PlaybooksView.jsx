@@ -1,17 +1,17 @@
 // Вкладка «Playbooks»: просмотр, создание, редактирование и удаление сценариев реагирования (admin).
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Вынесено из main.jsx (stage-19-legacy-cleanup); загрузка — общий хук
+// useListResource (legacy-cleanup).
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { request } from '../api.js';
+import { useListResource } from '../hooks/useListResource.js';
 import { PRIORITIES } from '../constants.js';
 import { actionRuDescription, criteriaCountLabel, PLAYBOOK_ACTIONS, priorityLabel } from '../lib/helpers.js';
 
 /* ==================== Вкладка «Playbooks» ==================== */
 
 export default function PlaybooksView({ notify, toastError, isAdmin }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const { items, setItems, loading, error, setError, load } = useListResource('/playbooks');
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [showForm, setShowForm] = useState(false);
@@ -29,20 +29,6 @@ export default function PlaybooksView({ notify, toastError, isAdmin }) {
       success_criteria: '',
     };
   }
-
-  async function load() {
-    setLoading(true);
-    try {
-      setError('');
-      setItems(await request('/playbooks'));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
 
   function openCreate() {
     setEditing(null);
