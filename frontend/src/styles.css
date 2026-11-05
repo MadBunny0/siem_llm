@@ -1,4 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+/* Шрифт Inter — локально (legacy-cleanup): раньше @import с fonts.googleapis.com
+   на изолированном стенде блокировал первый рендер до сетевого таймаута.
+   Вариативный файл покрывает все используемые веса (300–800) и кириллицу;
+   лицензия SIL OFL — frontend/public/fonts/LICENSE.txt. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+}
 
 /* ===================== Базовый слой (stage-19: развёрнут из минифицированного легаси-слоя).
    Порядок правил сохранён исходным — поздние секции файла переопределяют эти значения. ===================== */
@@ -666,10 +676,6 @@ body {
   color: #5bd6a3 !important;
 }
 
-.simulated-text {
-  color: #75a9ff !important;
-}
-
 /* ===================== Stage 08: tabs, tables, rules, playbooks, detail panel ===================== */
 
 .tab-content {
@@ -755,16 +761,6 @@ body {
 
 .link-btn:hover {
   color: #b7c6ff;
-}
-
-.chip {
-  display: inline-block;
-  font-size: 8px;
-  border: 1px solid #202b40;
-  color: #8290a8;
-  border-radius: 20px;
-  padding: 4px 8px;
-  white-space: nowrap;
 }
 
 .chip.accent {
@@ -896,17 +892,6 @@ body {
 .status-buttons {
   display: flex;
   gap: 7px;
-}
-
-.status-btn {
-  flex: 1;
-  border: 1px solid #263149;
-  background: #111827;
-  color: #8a96ad;
-  border-radius: 7px;
-  padding: 8px 6px;
-  font-size: 10px;
-  cursor: pointer;
 }
 
 .status-btn:hover:not(:disabled) {
@@ -1722,16 +1707,6 @@ button:focus-visible {
   color: #ffd98a;
   margin-top: 3px;
   white-space: nowrap;
-}
-
-/* ---------- Панель-head: группа кнопок ленты инцидентов ---------- */
-
-.panel-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 /* ---------- [3] Адаптивность ---------- */
