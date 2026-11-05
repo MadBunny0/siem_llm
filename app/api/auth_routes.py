@@ -45,8 +45,8 @@ def register(payload: RegisterIn, db: Session = Depends(get_db), _: User = Depen
         role=payload.role,
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    db.flush()  # id пользователя для аудита
     audit("user_created", {"user_id": user.id, "username": user.username, "role": user.role}, db=db)
     db.commit()
+    db.refresh(user)
     return {"id": user.id, "username": user.username, "role": user.role}

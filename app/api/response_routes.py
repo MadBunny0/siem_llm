@@ -13,10 +13,10 @@ isolate_host) и какие пассивные отметки (monitor/collect_e
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db import get_db
-from app.models import ResponseAction, User
+from app.models import Incident, ResponseAction, User
 from app.schemas import ResponsesStateAction, ResponsesStateItem
 from app.services.auth import get_current_user
 from app.services.execution import PASSIVE_ACTIONS, WAZUH_AR_COMMANDS
@@ -35,9 +35,23 @@ def responses_state(
     """Активные реальные реакции по всем инцидентам (stage-23): группировка
     {asset, incident_id} → список действий {action, target, at, by}.
     Отменённые (undone_at) и записи не-real режимов не попадают в ответ;
-    сортировка — актив, затем инцидент."""
+    сортировка — актив, затем инцидент.
+
+    legacy-cleanup: фильтр mode/undone_at — в SQL (раньше грузилась вся
+    таблица), joinedload инцидента+актива убирает N+1 группировки.
+    """
     records = db.scalars(
-        select(ResponseAction).order_by(ResponseAction.executed_at.asc())
+        select(ResponseAction)
+        .options(joinedload(ResponseAction.incident).joinedload(Incident.asset))
+        .where(
+            # отсутствие ключа/NULL-метадата → NULL → строка отсекается;
+            # семантика прежнего питоновского фильтра сохранена. as_string()
+            # обязателен: сырой JSON-путь SQLite оборачивает в JSON_QUOTE,
+            # и IS NULL по отсутствующему ключу не срабатывает
+            ResponseAction.metadata_json["mode"].as_string() == "real",
+            ResponseAction.metadata_json["undone_at"].as_string().is_(None),
+        )
+        .order_by(ResponseAction.executed_at.asc())
     ).all()
     grouped: dict[tuple[str, int], list[ResponsesStateAction]] = {}
     for record in records:

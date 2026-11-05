@@ -19,23 +19,19 @@ Stage-19: монолит разрезан по доменам — этот мо�
 роутеров (app/api/{auth,ingest,incident,catalog,response,system}_routes.py);
 конвейер приёма — app/services/ingest.py, оркестрация анализа —
 app/services/auto_analysis.py, общие хелперы роутеров — app/api/common.py.
-Здесь же — compat-швы для тестов (см. ниже).
+Здесь же — живой compat-шов для тестов (см. ниже).
 """
 
 # ---------------------------------------------------------------------------
-# Compat-швы для тестов (stage-19): эти имена должны СУЩЕСТВОВАТЬ как атрибуты
-# модуля app.api.routes — тесты подменяют их через monkeypatch.setattr(...):
-#   "app.api.routes.analyze_incident"  — фейковый LLM-вызов (test_routes.py,
+# Живой compat-шов для тестов (stage-19): имя должно СУЩЕСТВОВАТЬ как атрибут
+# модуля app.api.routes — тесты подменяют его через monkeypatch.setattr(...):
+#   "app.api.routes.analyze_incident" — фейковый LLM-вызов (test_routes.py,
 #       test_auth.py); реальный вызов резолвится в рантайме через этот модуль
-#       делегатом app/services/auto_analysis.analyze_incident;
-#   "app.api.routes.datetime"          — заморозка времени (fixture
-#       frozen_demo_time); перенесённые модули читают его через прокси
-#       routes_datetime в app/api/common.py;
-#   "app.api.routes.random.choice"     — подменяется атрибут самого модуля
-#       random (глобально), здесь достаточно наличия имени.
+#       делегатом app/services/auto_analysis.analyze_incident.
+# (Швы "app.api.routes.datetime" и "app.api.routes.random.choice" удалены в
+# legacy-cleanup 2026-11-05 — потребителей больше нет, история в
+# analysis/DEVIATIONS.md.)
 # ---------------------------------------------------------------------------
-import random  # noqa: F401 — compat-шов для monkeypatch "app.api.routes.random.choice"
-from datetime import datetime  # noqa: F401 — compat-шов для "app.api.routes.datetime"
 
 from fastapi import APIRouter
 

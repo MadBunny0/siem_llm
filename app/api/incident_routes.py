@@ -5,15 +5,19 @@
 общие хелперы доступа/валидации — в app/api/common.py.
 """
 
-from datetime import timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.api.common import _ensure_incident_access, _not_executed, _validate_with_playbook
-# compat-шов: тесты замораживают datetime на агрегаторе — см. common.py
-from app.api.common import routes_datetime as datetime
+from app.api.common import (
+    _ensure_incident_access,
+    _not_executed,
+    _validate_with_playbook,
+    ensure_incident_open,
+    get_incident_or_404,
+)
 from app.db import get_db
 from app.models import Analysis, Incident, User
 from app.schemas import ExecuteActionIn, IncidentDetailOut, IncidentOut, IncidentStatusIn
@@ -53,20 +57,32 @@ def _parse_multiselect(raw: str | None, allowed: tuple[str, ...], name: str) -> 
 def incidents(
     status: str | None = None,
     severity: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Список инцидентов (created_at ↓) с мультифильтрами (stage-15):
     ?status=new,in_progress&severity=high,critical — значения через запятую;
     пустой/отсутствующий параметр = без фильтра (прежнее поведение).
+
+    ?limit/?offset (legacy-cleanup) — необязательное окно выдачи: без них
+    ответ прежний (весь список). selectinload актива/аналитика убирает
+    N+1 валидации IncidentOut (иначе 2 ленивых запроса на строку).
     """
     statuses = _parse_multiselect(status, ALLOWED_INCIDENT_STATUSES, "status")
     severities = _parse_multiselect(severity, ALLOWED_INCIDENT_SEVERITIES, "severity")
-    query = select(Incident).order_by(Incident.created_at.desc())
+    query = (
+        select(Incident)
+        .options(selectinload(Incident.asset), selectinload(Incident.analyst))
+        .order_by(Incident.created_at.desc())
+    )
     if statuses:
         query = query.where(Incident.status.in_(statuses))
     if severities:
         query = query.where(Incident.severity.in_(severities))
+    if limit is not None:
+        query = query.limit(max(0, limit)).offset(max(0, offset))
     items = list(db.scalars(query).all())
     # from_attributes в схемах — валидация напрямую из ORM-объектов
     return [IncidentOut.model_validate(incident) for incident in items]
@@ -79,9 +95,7 @@ def incident_detail(
     user: User = Depends(get_current_user),
 ):
     """Детальная карточка инцидента: события, история анализов, актив (§3.2)."""
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
+    incident = get_incident_or_404(db, incident_id)
     return IncidentDetailOut.model_validate(incident)
 
 
@@ -98,9 +112,7 @@ def update_incident_status(
     аналитику недоступен (stage-14). Закрытый инцидент допускает только
     возврат в работу (stage-16).
     """
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
+    incident = get_incident_or_404(db, incident_id)
     _ensure_incident_access(incident, user, assign=True)
     if payload.status not in ALLOWED_INCIDENT_STATUSES:
         raise HTTPException(status_code=422, detail=f"Недопустимый статус: {payload.status}")
@@ -115,9 +127,6 @@ def update_incident_status(
 
     previous = incident.status
     incident.status = payload.status
-    db.commit()
-    db.refresh(incident)
-
     audit(
         "incident_status_changed",
         {"incident_id": incident.id, "from": previous, "to": payload.status},
@@ -125,6 +134,7 @@ def update_incident_status(
         incident_id=incident.id,
     )
     db.commit()
+    db.refresh(incident)
     return IncidentOut.model_validate(incident)
 
 
@@ -147,16 +157,9 @@ async def analyze(
     с initiated_by="manual" — ручной анализ не закрывает инцидент автоматически).
     Ответ отдаётся сразу: {"analysis": {"scheduled": True}} — как у ingest.
     """
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    # инцидент закрыт — операции реагирования запрещены, доступен только
-    # возврат в работу (stage-16, фидбек)
-    if incident.status == "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="Инцидент закрыт — анализ недоступен. Верните инцидент в работу",
-        )
+    incident = get_incident_or_404(db, incident_id)
+    # закрытый инцидент — только возврат в работу (stage-16, фидбек)
+    ensure_incident_open(incident, "анализ недоступен")
     _ensure_incident_access(incident, user, assign=True)
     background_tasks.add_task(run_auto_analysis, incident.id, "manual")
     audit(
@@ -187,16 +190,9 @@ def confirm_action(
     (как в execute-action): подтверждение администратора снимает
     pending_confirmation и запускает настоящие реакции на ВМ актива.
     """
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    # инцидент закрыт — операции реагирования запрещены, доступен только
-    # возврат в работу (stage-16, фидбек)
-    if incident.status == "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="Инцидент закрыт — подтверждение действий недоступно. Верните инцидент в работу",
-        )
+    incident = get_incident_or_404(db, incident_id)
+    # закрытый инцидент — только возврат в работу (stage-16, фидбек)
+    ensure_incident_open(incident, "подтверждение действий недоступно")
 
     analysis = db.scalar(
         select(Analysis)
@@ -211,9 +207,11 @@ def confirm_action(
     for action in action_list:
         playbook, validation = _validate_with_playbook(db, incident, action, admin_confirmed=True)
         execution = (
-            execute_real_action(db, incident, validation["action"], requested_by=admin.username)
+            execute_real_action(
+                db, incident, validation["action"], requested_by=admin.username, playbook=playbook
+            )
             if validation["approved"]
-            else {"executed": False, "mode": "blocked", "action": action, "reason": validation["reason"]}
+            else _not_executed("blocked", action, validation["reason"], playbook)
         )
         audit(
             "action_confirmed_by_admin",
@@ -284,16 +282,9 @@ def execute_action(
     команды сохраняет отметку в incident.manual_actions (stage-18, фидбек)
     с целью реакции — состояние кнопок видно всем операторам с сервера.
     """
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    # инцидент закрыт — операции реагирования запрещены, доступен только
-    # возврат в работу (stage-16, фидбек)
-    if incident.status == "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="Инцидент закрыт — выполнение действий недоступно. Верните инцидент в работу",
-        )
+    incident = get_incident_or_404(db, incident_id)
+    # закрытый инцидент — только возврат в работу (stage-16, фидбек)
+    ensure_incident_open(incident, "выполнение действий недоступно")
     _ensure_incident_access(incident, user, assign=True)
 
     action = payload.action.strip()
@@ -301,7 +292,9 @@ def execute_action(
         db, incident, action, admin_confirmed=user.role == "admin"
     )
     if validation["approved"]:
-        execution = execute_real_action(db, incident, validation["action"], requested_by=user.username)
+        execution = execute_real_action(
+            db, incident, validation["action"], requested_by=user.username, playbook=playbook
+        )
     elif validation.get("requires_confirmation"):
         # Аналитик запустил действие на критическом активе — как в анализе:
         # сохраняется до подтверждения администратора
@@ -309,18 +302,12 @@ def execute_action(
             "pending_confirmation", validation["action"], validation["reason"], playbook
         )
     else:
-        execution = {
-            "executed": False,
-            "mode": "blocked",
-            "action": action,
-            "reason": validation["reason"],
-        }
-    if execution.get("mode") in ("simulation", "controlled") or execution.get("executed"):
+        execution = _not_executed("blocked", action, validation["reason"], playbook)
+    if execution.get("executed"):
         # Отметка ручного запуска в карте инцидента — состояние кнопок видно
-        # всем операторам (stage-18, фидбек). Отметка ставится при фактическом
-        # запуске: pending_confirmation/blocked её не пишут. Симуляция пишет
-        # всегда (executed=False там означает dry run, а не ошибку); real —
-        # только если Wazuh Manager принял команду (stage-23), иначе кнопка
+        # всем операторам (stage-18, фидбек). Отметка ставится только при
+        # фактическом запуске: pending_confirmation/blocked её не пишут;
+        # real — если Wazuh Manager принял команду (stage-23), иначе кнопка
         # остаётся доступной для повторного запуска. Для real дополнительно
         # сохраняется цель реакции (IP/учётка/актив) — stage-23.
         # переприсвоение JSON-колонок обязательно — см. common.py
@@ -376,16 +363,9 @@ def reset_actions(
     Wazuh Manager (best-effort: неудача отката не мешает сбросу — запись
     остаётся в «Реакциях (ВМ)», сброс можно повторить; ошибки — в ответе).
     """
-    incident = db.get(Incident, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    # инцидент закрыт — операции реагирования запрещены, доступен только
-    # возврат в работу (stage-16, фидбек)
-    if incident.status == "closed":
-        raise HTTPException(
-            status_code=409,
-            detail="Инцидент закрыт — сброс действий недоступен. Верните инцидент в работу",
-        )
+    incident = get_incident_or_404(db, incident_id)
+    # закрытый инцидент — только возврат в работу (stage-16, фидбек)
+    ensure_incident_open(incident, "сброс действий недоступен")
     _ensure_incident_access(incident, user, assign=False)
     # откат реальных реакций (best-effort): исполненные отмены помечаются
     # undone_at/undone_by в metadata_json записей ResponseAction

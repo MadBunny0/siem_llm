@@ -4,7 +4,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import CorrelationRule, Event, Incident
+from app.models import CorrelationRule, Event, Incident, incident_events
 
 
 def load_correlation_rules(db: Session) -> list[CorrelationRule]:
@@ -176,18 +176,27 @@ def evaluate_correlation(db: Session, event: Event) -> tuple[CorrelationRule | N
 
 
 def create_or_update_incident(db: Session, events, risk_score: int = 0) -> Incident:
-    for event in events:
-        if event.incidents:
-            incident = event.incidents[0]
-            for e in events:
-                if e not in incident.events:
-                    incident.events.append(e)
-            # описание актуализируется под фактическое число событий
-            # (stage-12: раньше оставалось от момента создания — расхождение с таймлайном)
-            incident.description = (
-                f"Инцидент сформирован на основе {len(incident.events)} связанных событий."
-            )
-            return incident
+    # инцидент, уже связанный с любым из событий, — один запрос по
+    # ассоциативной таблице (legacy-cleanup: раньше lazy-загрузка
+    # event.incidents на каждое событие и O(n²) скан incident.events)
+    incident = db.scalar(
+        select(Incident)
+        .join(incident_events, Incident.id == incident_events.c.incident_id)
+        .where(incident_events.c.event_id.in_([e.id for e in events]))
+        .order_by(Incident.id)
+        .limit(1)
+    )
+    if incident is not None:
+        linked_ids = {e.id for e in incident.events}
+        for e in events:
+            if e.id not in linked_ids:
+                incident.events.append(e)
+        # описание актуализируется под фактическое число событий
+        # (stage-12: раньше оставалось от момента создания — расхождение с таймлайном)
+        incident.description = (
+            f"Инцидент сформирован на основе {len(incident.events)} связанных событий."
+        )
+        return incident
 
     first = events[0]
     rule = (first.raw_data or {}).get("rule") or {}

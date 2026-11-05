@@ -57,7 +57,7 @@ def test_execute_action_mode_real_calls_dispatcher(client, db_session, monkeypat
 
     calls = []
 
-    def fake_dispatch(db, incident_obj, action, requested_by=None):
+    def fake_dispatch(db, incident_obj, action, requested_by=None, playbook=None):
         calls.append({"action": action, "by": requested_by})
         return {
             "executed": True,

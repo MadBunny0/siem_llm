@@ -37,10 +37,10 @@ def correlation_rules(db: Session = Depends(get_db), user: User = Depends(get_cu
 def create_correlation_rule(payload: CorrelationRuleIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     rule = CorrelationRule(**payload.model_dump())
     db.add(rule)
-    db.commit()
-    db.refresh(rule)
+    db.flush()  # id правила для аудита
     audit("correlation_rule_created", {"rule_id": rule.id, "name": rule.name}, db=db)
     db.commit()
+    db.refresh(rule)
     return CorrelationRuleOut.model_validate(rule)
 
 
@@ -51,10 +51,9 @@ def update_correlation_rule(rule_id: int, payload: CorrelationRuleIn, db: Sessio
         raise HTTPException(status_code=404, detail="Rule not found")
     for field, value in payload.model_dump().items():
         setattr(rule, field, value)
-    db.commit()
-    db.refresh(rule)
     audit("correlation_rule_updated", {"rule_id": rule.id, "name": rule.name}, db=db)
     db.commit()
+    db.refresh(rule)
     return CorrelationRuleOut.model_validate(rule)
 
 
@@ -64,7 +63,6 @@ def delete_correlation_rule(rule_id: int, db: Session = Depends(get_db), admin: 
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
     db.delete(rule)
-    db.commit()
     audit("correlation_rule_deleted", {"rule_id": rule_id}, db=db)
     db.commit()
     return {"deleted": True, "id": rule_id}
@@ -81,10 +79,10 @@ def playbooks(db: Session = Depends(get_db), user: User = Depends(get_current_us
 def create_playbook(payload: PlaybookIn, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
     playbook = Playbook(**payload.model_dump())
     db.add(playbook)
-    db.commit()
-    db.refresh(playbook)
+    db.flush()  # id сценария для аудита
     audit("playbook_created", {"playbook_id": playbook.id, "name": playbook.name}, db=db)
     db.commit()
+    db.refresh(playbook)
     return PlaybookOut.model_validate(playbook)
 
 
@@ -95,10 +93,9 @@ def update_playbook(playbook_id: int, payload: PlaybookIn, db: Session = Depends
         raise HTTPException(status_code=404, detail="Playbook not found")
     for field, value in payload.model_dump().items():
         setattr(playbook, field, value)
-    db.commit()
-    db.refresh(playbook)
     audit("playbook_updated", {"playbook_id": playbook.id, "name": playbook.name}, db=db)
     db.commit()
+    db.refresh(playbook)
     return PlaybookOut.model_validate(playbook)
 
 
@@ -109,16 +106,16 @@ def delete_playbook(playbook_id: int, db: Session = Depends(get_db), admin: User
         raise HTTPException(status_code=404, detail="Playbook not found")
     try:
         db.delete(playbook)
+        audit("playbook_deleted", {"playbook_id": playbook_id}, db=db)
         db.commit()
     except IntegrityError as exc:
-        # playbook уже использовался в response_actions — ссылочная целостность (§3.2)
+        # playbook уже использовался в response_actions — ссылочная целостность
+        # (§3.2); rollback отменяет и удаление, и запись аудита
         db.rollback()
         raise HTTPException(
             status_code=409,
             detail="Playbook используется в выполненных действиях (response_actions) — удаление запрещено",
         ) from exc
-    audit("playbook_deleted", {"playbook_id": playbook_id}, db=db)
-    db.commit()
     return {"deleted": True, "id": playbook_id}
 
 

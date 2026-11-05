@@ -86,7 +86,6 @@ services:
       WAZUH_API_PASSWORD: "${WAZUH_API_PASSWORD:-wazuh}"
       WAZUH_API_VERIFY_TLS: "${WAZUH_API_VERIFY_TLS:-false}"
       WAZUH_API_TIMEOUT_SECONDS: "${WAZUH_API_TIMEOUT_SECONDS:-15}"
-      EXECUTION_DEFAULT_MODE: "${EXECUTION_DEFAULT_MODE:-simulation}"
     ports:
       - "8000:8000"
     depends_on:

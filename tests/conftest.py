@@ -5,19 +5,46 @@
 - `engine`/`db_session`/`client` — API-тесты (test_routes.py, test_auth.py):
   StaticPool делает одну in-memory базу общей для всех соединений, client
   подменяет зависимость get_db на тестовую БД и отключает LLM-автоанализ
-  и реальное реагирование.
+  и реальное реагирование;
+- `wazuh_mock` — подмена Wazuh Manager API фейком (stage-23: реакции всегда
+  реальные — без сети); модули включают её autouse-обёрткой (test_routes,
+  test_auth), сами фикстуры-дубликаты слиты в legacy-cleanup.
 """
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.services.wazuh_api as wazuh_api
 from app.config import settings
 from app.db import get_db
 from app.main import app
 from app.models import Base
+from tests.test_execution import MockWazuhAPI
+
+
+@pytest.fixture
+def wazuh_mock(monkeypatch):
+    """Wazuh API подменяется фейком на httpx.MockTransport (общий с
+    test_execution.py). В реестр агентов добавлен «test-host» — агент из
+    алертов make_alert() (test_routes); остальным модулям лишний агент
+    безвреден. Возвращает MockWazuhAPI — тесты могут расширять реестр
+    (api.agents.append(...))."""
+    api = MockWazuhAPI()
+    api.agents.append({"id": "099", "name": "test-host", "status": "active"})
+
+    def create_client():
+        return httpx.Client(
+            transport=httpx.MockTransport(api.handler),
+            base_url="https://wazuh-mock:55000",
+            timeout=5,
+        )
+
+    monkeypatch.setattr(wazuh_api, "_create_client", create_client)
+    yield api
 
 
 @pytest.fixture
