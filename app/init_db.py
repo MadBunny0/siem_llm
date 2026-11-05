@@ -52,6 +52,19 @@ def _ensure_schema_updates() -> None:
         # "user" — зарезервированное слово Postgres (без кавычек парсится как функция user())
         'CREATE INDEX IF NOT EXISTS ix_events_user ON events ("user")',
         "CREATE INDEX IF NOT EXISTS ix_events_asset_id ON events (asset_id)",
+        # индексы под горячие списки (legacy-cleanup): лента инцидентов
+        # (фильтры status/severity, сортировка created_at), последний анализ
+        # инцидента (confirm-action), limit-выборка аудита, сводка реакций,
+        # уведомления — те же имена, что в models.py (для существующих БД)
+        "CREATE INDEX IF NOT EXISTS ix_incidents_status ON incidents (status)",
+        "CREATE INDEX IF NOT EXISTS ix_incidents_severity ON incidents (severity)",
+        "CREATE INDEX IF NOT EXISTS ix_incidents_created_at ON incidents (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_analyses_incident_id ON analyses (incident_id)",
+        "CREATE INDEX IF NOT EXISTS ix_analyses_created_at ON analyses (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_logs_timestamp ON audit_logs (timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_audit_logs_incident_id ON audit_logs (incident_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notification_logs_created_at ON notification_logs (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_response_actions_incident_id ON response_actions (incident_id)",
     ]
     with engine.begin() as conn:
         for stmt in statements:

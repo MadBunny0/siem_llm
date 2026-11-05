@@ -83,7 +83,6 @@ cd siem_llm
    | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh` / `wazuh` | учётка Wazuh API. Дефолт стенда — `wazuh/wazuh`: read-only роль API включает `active-response:run` (verified live; `wazuh-wui` требует run_as). **На стенде пароли дефолтные**; для контура вне учебного стенда — сменить и/или завести отдельного пользователя API (Wazuh UI → Security) |
    | `WAZUH_API_VERIFY_TLS` | `false` | self-signed сертификат менеджера — проверка TLS выключена на стенде |
    | `WAZUH_API_TIMEOUT_SECONDS` | `15` | таймаут вызова Wazuh API при исполнении реакции |
-   | `EXECUTION_DEFAULT_MODE` | `simulation` | режим execute-action по умолчанию: `simulation` (dry run, как в §3.4 ВКР) или `real` (реальная реакция на ВМ через Wazuh active response) |
 
    Все тюнируемые переменные сервиса api из таблицы выше (`JWT_SECRET`, `JWT_ALGORITHM`,
    `TOKEN_EXPIRE_MINUTES`, `AUTO_RESPONSE`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
@@ -194,7 +193,7 @@ docker compose --profile tests run --rm tests   # прогнать pytest
 правок: та же команда `run` (кэш сборки обновит только слои с изменившимися файлами —
 это секунды).
 
-**Фронтенд (116 тестов, Vitest + React Testing Library):**
+**Фронтенд (113 тестов, Vitest + React Testing Library):**
 
 ```bash
 docker compose --profile tests run --rm frontend-tests

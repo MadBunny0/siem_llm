@@ -44,6 +44,13 @@ class Event(Base):
 
 class Incident(Base):
     __tablename__ = "incidents"
+    # индексы под ленту инцидентов (legacy-cleanup): фильтры и сортировка
+    # GET /incidents — самые частые запросы дашборда
+    __table_args__ = (
+        Index("ix_incidents_status", "status"),
+        Index("ix_incidents_severity", "severity"),
+        Index("ix_incidents_created_at", "created_at"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255))
     description: Mapped[str] = mapped_column(Text)
@@ -88,6 +95,12 @@ class Incident(Base):
 # ---------------------------------------------------------------------------
 class Analysis(Base):
     __tablename__ = "analyses"
+    # индексы (legacy-cleanup): последний анализ инцидента (confirm-action,
+    # карточка) и сортировка /analyses
+    __table_args__ = (
+        Index("ix_analyses_incident_id", "incident_id"),
+        Index("ix_analyses_created_at", "created_at"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=False)
     model: Mapped[str] = mapped_column(String(100))
@@ -133,6 +146,8 @@ class Asset(Base):
 # ---------------------------------------------------------------------------
 class Notification(Base):
     __tablename__ = "notification_logs"
+    # сортировка /notifications (legacy-cleanup)
+    __table_args__ = (Index("ix_notification_logs_created_at", "created_at"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     event_type: Mapped[str] = mapped_column(String(100))  # incident_created, incident_analyzed, action_executed, correlation_triggered
     incident_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"))
@@ -209,6 +224,9 @@ class Playbook(Base):
 # ---------------------------------------------------------------------------
 class ResponseAction(Base):
     __tablename__ = "response_actions"
+    # выборки по инциденту (legacy-cleanup): сводка «Реакции (ВМ)», откат
+    # реакций при reset-actions
+    __table_args__ = (Index("ix_response_actions_incident_id", "incident_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=False)
     playbook_id: Mapped[int | None] = mapped_column(ForeignKey("playbooks.id"))
@@ -239,6 +257,12 @@ class ValidationPolicy(Base):
 # ---------------------------------------------------------------------------
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    # журнальная таблица — всегда последние записи (legacy-cleanup): limit-
+    # выборка /audit-logs и отбор по инциденту в карточке
+    __table_args__ = (
+        Index("ix_audit_logs_timestamp", "timestamp"),
+        Index("ix_audit_logs_incident_id", "incident_id"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

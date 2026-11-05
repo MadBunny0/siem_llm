@@ -43,9 +43,6 @@ class Settings(BaseSettings):
     wazuh_api_verify_tls: bool = False
     # таймаут вызова Wazuh API (сек): реакции быстрые, долгих операций нет
     wazuh_api_timeout_seconds: int = 15
-    # режим по умолчанию для execute-action: simulation (dry run, как в ВКР §3.4)
-    # или real (реальная реакция через Wazuh active response)
-    execution_default_mode: str = "simulation"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

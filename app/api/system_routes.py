@@ -19,18 +19,31 @@ router = APIRouter()
 
 
 @router.get("/notifications", response_model=list[NotificationOut])
-def notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return list(db.scalars(
-        select(Notification).order_by(Notification.created_at.desc())
-    ).all())
+def notifications(
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Список уведомлений (created_at ↓); ?limit — необязательное окно
+    (legacy-cleanup, как у /audit-logs): без параметра ответ прежний."""
+    query = select(Notification).order_by(Notification.created_at.desc())
+    if limit is not None:
+        query = query.limit(max(1, min(limit, 500)))
+    return list(db.scalars(query).all())
 
 
 @router.get("/analyses", response_model=list[AnalysisOut])
-def analyses(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """Статистика качества работы LLM-модуля (Таблица 3.1, §3.2 ВКР)."""
-    return list(db.scalars(
-        select(Analysis).order_by(Analysis.created_at.desc())
-    ).all())
+def analyses(
+    limit: int | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Статистика качества работы LLM-модуля (Таблица 3.1, §3.2 ВКР);
+    ?limit — необязательное окно (legacy-cleanup): без параметра ответ прежний."""
+    query = select(Analysis).order_by(Analysis.created_at.desc())
+    if limit is not None:
+        query = query.limit(max(1, min(limit, 500)))
+    return list(db.scalars(query).all())
 
 
 @router.get("/audit-logs", response_model=list[AuditLogOut])

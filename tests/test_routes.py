@@ -17,15 +17,12 @@
 
 from datetime import datetime, timezone
 
-import httpx
 import pytest
 
-import app.services.wazuh_api as wazuh_api
 from app.config import settings
 from app.main import app
 from app.models import User
 from app.services.auth import get_current_user
-from tests.test_execution import MockWazuhAPI
 
 API = "/api/v1"
 
@@ -58,22 +55,10 @@ def client(client):
 
 
 @pytest.fixture(autouse=True)
-def wazuh_mock(monkeypatch):
-    """Wazuh API подменяется во всех тестах модуля (stage-23: исполнение
-    реакций всегда реальное — без сети). В реестр агентов добавлен
-    «test-host» — агент из алерта make_alert()."""
-    api = MockWazuhAPI()
-    api.agents.append({"id": "099", "name": "test-host", "status": "active"})
-
-    def create_client():
-        return httpx.Client(
-            transport=httpx.MockTransport(api.handler),
-            base_url="https://wazuh-mock:55000",
-            timeout=5,
-        )
-
-    monkeypatch.setattr(wazuh_api, "_create_client", create_client)
-    yield api
+def wazuh_mock_autouse(wazuh_mock):
+    """Автоподмена Wazuh API во всех тестах модуля — общая фикстура wazuh_mock
+    из conftest.py (до legacy-cleanup модуль держал собственный дубликат)."""
+    return wazuh_mock
 
 
 def seed_rule(db_session, name="brute_rule", **overrides):

@@ -3,39 +3,25 @@
 // («Сбросить реакции» в карточке инцидента выполняет обратные AR-команды,
 // после чего записи исчезают отсюда). Источник — GET /responses/state:
 // агрегат по всем инцидентам, группировка {актив, инцидент}. Обновление
-// каждые 10 с + кнопка «Обновить». Отдельный файл — интеграция с App
-// минимальна: компонент получает request как prop (fetch-обёртка с JWT
-// живёт в api.js). См. docs/E2E_STAND.md, docs/E2E_SCENARIOS.md.
+// каждые 10 с + кнопка «Обновить» (пауза, когда вкладка браузера скрыта —
+// legacy-cleanup). Отдельный файл — интеграция с App минимальна: компонент
+// получает request как prop (fetch-обёртка с JWT живёт в api.js; тот же
+// проп используют тесты — мок без сети). См. docs/E2E_STAND.md,
+// docs/E2E_SCENARIOS.md.
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
+import { useListResource } from '../hooks/useListResource.js';
 import { formatDate, RESPONSE_ACTION_RU } from '../lib/helpers.js';
 
 const REFRESH_MS = 10000;
 
 function ResponsesView({ request }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
-
-  async function load() {
-    setLoading(true);
-    try {
-      setError('');
-      setItems(await request('/responses/state'));
-      setUpdatedAt(new Date());
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    load();
-    const timer = setInterval(load, REFRESH_MS);
-    return () => clearInterval(timer);
-  }, []);
+  const { items, loading, error, load } = useListResource('/responses/state', {
+    pollMs: REFRESH_MS,
+    requester: request,
+    onLoaded: () => setUpdatedAt(new Date()),
+  });
 
   return (
     <div className="panel tab-panel">

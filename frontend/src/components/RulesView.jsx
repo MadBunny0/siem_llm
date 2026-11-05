@@ -1,17 +1,17 @@
 // Вкладка «Правила корреляции»: просмотр, создание, редактирование и удаление правил (admin).
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Вынесено из main.jsx (stage-19-legacy-cleanup); загрузка — общий хук
+// useListResource (legacy-cleanup).
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { request } from '../api.js';
+import { useListResource } from '../hooks/useListResource.js';
 import { CONDITION_OPERATORS, PRIORITIES } from '../constants.js';
 import { MITRE_TACTIC_RU, priorityLabel } from '../lib/helpers.js';
 
 /* ==================== Вкладка «Правила корреляции» ==================== */
 
 export default function RulesView({ notify, toastError, isAdmin }) {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const { items, setItems, loading, error, setError, load } = useListResource('/correlation-rules');
   const [busy, setBusy] = useState(false);
   const [busyId, setBusyId] = useState(null);
   const [showForm, setShowForm] = useState(false);
@@ -34,20 +34,6 @@ export default function RulesView({ notify, toastError, isAdmin }) {
       conditions: [{ field: '', operator: 'eq', value: '' }],
     };
   }
-
-  async function load() {
-    setLoading(true);
-    try {
-      setError('');
-      setItems(await request('/correlation-rules'));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => { load(); }, []);
 
   function openCreate() {
     setEditing(null);

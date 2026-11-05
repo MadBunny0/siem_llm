@@ -11,7 +11,6 @@ import {
   confPct,
   criteriaCountLabel,
   detailToMessage,
-  executionModeRu,
   formatPlaybookStep,
   formatPlaybookSteps,
   initiatedByBadge,
@@ -36,7 +35,7 @@ describe('analysisResults — нормализация форматов отве
 
   it('новый формат: results передаётся как есть', () => {
     const results = [
-      { action: 'monitor', validation: { approved: true }, execution: { mode: 'simulation' } },
+      { action: 'monitor', validation: { approved: true }, execution: { mode: 'real' } },
       { action: 'block_ip', validation: { approved: false }, execution: { mode: 'pending_confirmation' } },
     ];
     expect(analysisResults({ results })).toBe(results);
@@ -46,7 +45,7 @@ describe('analysisResults — нормализация форматов отве
     const single = {
       recommendation: { action: 'monitor' },
       validation: { approved: true },
-      execution: { mode: 'simulation' },
+      execution: { mode: 'real' },
     };
     expect(analysisResults({ results: [], ...single })).toHaveLength(1);
   });
@@ -55,11 +54,11 @@ describe('analysisResults — нормализация форматов отве
     const legacy = {
       recommendation: { recommended_action: 'block_ip' },
       validation: { approved: true, action: 'block_ip' },
-      execution: { executed: false, mode: 'simulation', action: 'block_ip' },
+      execution: { executed: false, mode: 'real', action: 'block_ip' },
     };
     const [result] = analysisResults(legacy);
     expect(result.action).toBe('block_ip');
-    expect(result.execution.mode).toBe('simulation');
+    expect(result.execution.mode).toBe('real');
   });
 
   it('ничего полезного → пустой список', () => {
@@ -124,9 +123,9 @@ describe('бейджи DVE и исполнения', () => {
     expect(resultExecutionBadge({ execution: { mode: 'pending_confirmation' } }).text).toBe('ОЖИДАЕТ');
   });
 
-  it('исполнение: выполнено → ВЫПОЛНЕНО, иначе СИМУЛЯЦИЯ', () => {
+  it('исполнение: выполнено → ВЫПОЛНЕНО, заблокировано → БЛОКИРОВАНО (stage-23: симуляции нет)', () => {
     expect(resultExecutionBadge({ execution: { executed: true } }).text).toBe('ВЫПОЛНЕНО');
-    expect(resultExecutionBadge({ execution: { executed: false, mode: 'simulation' } }).text).toBe('СИМУЛЯЦИЯ');
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'blocked' } }).text).toBe('БЛОКИРОВАНО');
   });
 });
 
@@ -302,7 +301,7 @@ describe('stage-14: analysisFromHistory — восстановление пан�
   });
 
   it('fallback на саму запись, если в response_raw нет results', () => {
-    const legacy = { ...stored, response_raw: { initiated_by: 'manual' }, validation: { approved: true }, execution: { mode: 'simulation', action: 'monitor' } };
+    const legacy = { ...stored, response_raw: { initiated_by: 'manual' }, validation: { approved: true }, execution: { mode: 'real', action: 'monitor' } };
     const panel = analysisFromHistory(legacy);
     expect(panel.results).toHaveLength(1);
     expect(panel.results[0].action).toBe('block_ip');
@@ -316,7 +315,7 @@ describe('stage-14: analysisFromHistory — восстановление пан�
 /* ==================== Stage 15: запуск действий, шаги playbook ==================== */
 
 describe('canRunAction — кому доступен ручной запуск действия', () => {
-  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'simulation' } };
+  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'real' } };
   const pending = { action: 'block_ip', validation: { approved: false, requires_confirmation: true }, execution: { mode: 'pending_confirmation' } };
   const blocked = { action: 'monitor', validation: { approved: false }, execution: { mode: 'blocked' } };
 
@@ -368,8 +367,8 @@ describe('canConfirmAction — подтверждение отложенного
 /* ==================== Stage 16: feedback fixes — run_manually, закрытый инцидент ==================== */
 
 describe('canRunAction stage-16: run_manually и закрытый инцидент', () => {
-  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'simulation' } };
-  const manual = { ...approved, execution: { mode: 'simulation', run_manually: true } };
+  const approved = { action: 'block_ip', validation: { approved: true }, execution: { mode: 'real' } };
+  const manual = { ...approved, execution: { mode: 'real', run_manually: true } };
 
   it('run_manually: true — кнопку больше не показываем (даже при approved и админе)', () => {
     expect(canRunAction(manual, { isAdmin: true })).toBe(false);
@@ -398,20 +397,6 @@ describe('canConfirmAction stage-16: закрытый инцидент и обр
   it('без третьего аргумента поведение прежнее (обратная совместимость)', () => {
     expect(canConfirmAction(pending, true)).toBe(true);
     expect(canConfirmAction(pending, false)).toBe(false);
-  });
-});
-
-describe('executionModeRu — русские подписи режимов исполнения', () => {
-  it('известные режимы', () => {
-    expect(executionModeRu('simulation')).toContain('симуляция');
-    expect(executionModeRu('controlled')).toContain('реальное');
-    expect(executionModeRu('pending_confirmation')).toContain('подтверждения');
-    expect(executionModeRu('blocked')).toContain('заблокировано');
-  });
-
-  it('неизвестный — как есть, пустой → пусто', () => {
-    expect(executionModeRu('mystery')).toBe('mystery');
-    expect(executionModeRu(undefined)).toBe('');
   });
 });
 
@@ -519,19 +504,15 @@ describe('stage-17: ручной режим исполнения (manual_run)', 
     expect(badge.text).toBe('ОЖИДАЕТ ЗАПУСКА');
   });
 
-  it('resultExecutionBadge: simulation и pending не сломаны', () => {
-    expect(resultExecutionBadge({ execution: { executed: false, mode: 'simulation' } }).text).toBe('СИМУЛЯЦИЯ');
+  it('resultExecutionBadge: blocked и pending не сломаны (stage-23: симуляции нет)', () => {
+    expect(resultExecutionBadge({ execution: { executed: false, mode: 'blocked' } }).text).toBe('БЛОКИРОВАНО');
     expect(resultExecutionBadge({ execution: { executed: false, mode: 'pending_confirmation' } }).text).toBe('ОЖИДАЕТ');
-    expect(resultExecutionBadge({ execution: { executed: true, mode: 'controlled' } }).text).toBe('ВЫПОЛНЕНО');
-  });
-
-  it('executionModeRu: manual_run — «ожидает запуска оператором»', () => {
-    expect(executionModeRu('manual_run')).toContain('ожидает запуска оператором');
+    expect(resultExecutionBadge({ execution: { executed: true, mode: 'real' } }).text).toBe('ВЫПОЛНЕНО');
   });
 
   it('resultsAwaitManualRun: true только при наличии manual_run', () => {
     expect(resultsAwaitManualRun([{ execution: { mode: 'manual_run' } }])).toBe(true);
-    expect(resultsAwaitManualRun([{ execution: { mode: 'simulation' } }])).toBe(false);
+    expect(resultsAwaitManualRun([{ execution: { mode: 'blocked' } }])).toBe(false);
     expect(resultsAwaitManualRun([])).toBe(false);
     expect(resultsAwaitManualRun(null)).toBe(false);
   });

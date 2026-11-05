@@ -6,33 +6,20 @@ Bearer-токен → доступ/401/403.
 """
 
 import jwt as pyjwt
-import httpx
 import pytest
 
-import app.services.wazuh_api as wazuh_api
 from app.config import settings
 from app.models import User
 from app.services.security import create_access_token, hash_password
-from tests.test_execution import MockWazuhAPI
 
 API = "/api/v1"
 
 
 @pytest.fixture(autouse=True)
-def wazuh_mock(monkeypatch):
-    """Wazuh API подменяется фейком во всех тестах модуля (stage-23:
-    исполнение реакций всегда реальное — без сети)."""
-    api = MockWazuhAPI()
-
-    def create_client():
-        return httpx.Client(
-            transport=httpx.MockTransport(api.handler),
-            base_url="https://wazuh-mock:55000",
-            timeout=5,
-        )
-
-    monkeypatch.setattr(wazuh_api, "_create_client", create_client)
-    yield api
+def wazuh_mock_autouse(wazuh_mock):
+    """Автоподмена Wazuh API во всех тестах модуля — общая фикстура wazuh_mock
+    из conftest.py (до legacy-cleanup модуль держал собственный дубликат)."""
+    return wazuh_mock
 
 
 def seed_users(db_session):

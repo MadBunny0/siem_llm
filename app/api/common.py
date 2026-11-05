@@ -15,26 +15,24 @@ from app.services.playbook import load_playbook_by_action
 from app.services.validation import validate_recommendation
 
 
-class _RoutesDatetime:
-    """Прокси datetime для кода, вынесенного из routes.py (stage-19).
-
-    Тесты замораживают время именно на модуле-агрегаторе:
-    monkeypatch.setattr("app.api.routes.datetime", FrozenDatetime) — поэтому
-    перенесённые модули резолвят datetime через атрибут модуля app.api.routes
-    В МОМЕНТ ВЫЗОВА (from-import сохранил бы копию ссылки, сделанную до
-    подмены). Импорт внутри метода заодно исключает цикл импорта api → routes.
-    """
-
-    @staticmethod
-    def now(tz=None):
-        import app.api.routes as routes
-
-        return routes.datetime.now(tz)
+def get_incident_or_404(db: Session, incident_id: int) -> Incident:
+    """Инцидент по id или 404 — общая проверка всех эндпоинтов инцидентов
+    (до legacy-cleanup блок db.get+404 повторялся в каждом обработчике)."""
+    incident = db.get(Incident, incident_id)
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
 
 
-# имя datetime в вынесенных модулях:
-# from app.api.common import routes_datetime as datetime
-routes_datetime = _RoutesDatetime()
+def ensure_incident_open(incident: Incident, what: str) -> None:
+    """Закрытый инцидент недоступен операциям анализа/реагирования (stage-16,
+    фидбек): 409 с подсказкой вернуть инцидент в работу. what — имя операции
+    в тексте ответа («анализ недоступен», «выполнение действий недоступно», …)."""
+    if incident.status == "closed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Инцидент закрыт — {what}. Верните инцидент в работу",
+        )
 
 
 def _ensure_incident_access(incident: Incident, user: User, assign: bool = False) -> None:

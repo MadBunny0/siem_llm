@@ -27,6 +27,12 @@ import ResponsesView from './components/ResponsesView.jsx';
 import { request } from './api.js';
 import { ANALYSIS_BLOCK_LABELS, TABS, TAB_META, latestAnalysis } from './constants.js';
 
+// [legacy-cleanup] Сравнение JSON-представлений для no-op setState в поллинге:
+// объекты приходят из одного и того же API — порядок ключей стабилен.
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /* ==================== Приложение ==================== */
 
 export default function App({ user, onLogout }) {
@@ -63,18 +69,33 @@ export default function App({ user, onLogout }) {
   // (значение из замыкания устарело бы — ref всегда синхронен с selected).
   const selectedIdRef = useRef(null);
   useEffect(() => { selectedIdRef.current = selected?.id ?? null; }, [selected?.id]);
+  // [legacy-cleanup] Актуальные замыкания для 10-секундного поллинга: interval
+  // создаётся один раз, а load/activeTab из его замыкания устарели бы —
+  // автообновление выбранного инцидента никогда не срабатывало (selected в
+  // замыкании оставался null навсегда), а лента опрашивалась на чужих вкладках.
+  const loadRef = useRef(null);
+  const activeTabRef = useRef(activeTab);
+  const disposedRef = useRef(false);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+  useEffect(() => () => { disposedRef.current = true; }, []);
+  // [legacy-cleanup] Таймеры тостов: новый тост сбрасывает таймер предыдущего
+  // (иначе короткая серия тостов гасилась первым setTimeout'ом).
+  const toastTimerRef = useRef(null);
+  const errorToastTimerRef = useRef(null);
 
   // Хотя бы один запрос в полёте — блокируем связанные кнопки, чтобы не плодить дубли.
   const anyBusy = analyzing;
 
   function showToast(message) {
     setToast(message);
-    setTimeout(() => setToast(''), 3500);
+    clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(''), 3500);
   }
 
   function showErrorToast(message) {
     setErrorToast(message);
-    setTimeout(() => setErrorToast(''), 4500);
+    clearTimeout(errorToastTimerRef.current);
+    errorToastTimerRef.current = setTimeout(() => setErrorToast(''), 4500);
   }
 
   // [15] Клик по чипу мультиселект-фильтра: toggle значения; можно выбрано
@@ -116,17 +137,41 @@ export default function App({ user, onLogout }) {
     try {
       setError('');
       const [items, state] = await Promise.all([request('/incidents'), request('/health')]);
-      setIncidents(items);
-      setHealth(state);
+      // no-op setState (legacy-cleanup): данные не изменились → состояние не
+      // трогаем, лента и статистика не перерисовываются на каждом тике поллинга
+      setIncidents(prev => (sameJson(prev, items) ? prev : items));
+      setHealth(prev => (sameJson(prev, state) ? prev : state));
       if (selected) {
         const fresh = items.find(x => x.id === selected.id);
-        if (fresh) setSelected(fresh);
+        // [legacy-cleanup] sync выбранного инцидента с поллингом — через
+        // loadRef.current() (см. комментарий у refs) он наконец работает
+        if (fresh) setSelected(prev => (prev && prev.id === fresh.id && sameJson(prev, fresh) ? prev : fresh));
       }
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }
 
-  useEffect(() => { load(); const timer = setInterval(load, 10000); return () => clearInterval(timer); }, []);
+  // актуальное замыкание load для interval (переустанавливается после каждого рендера)
+  useEffect(() => { loadRef.current = load; });
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(() => {
+      // [legacy-cleanup] скрытая вкладка браузера или чужая вкладка приложения —
+      // поллинг ленты не нужен; при возврате сработает visibilitychange ниже
+      if (document.visibilityState !== 'visible' || activeTabRef.current !== 'incidents') return;
+      loadRef.current();
+    }, 10000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && activeTabRef.current === 'incidents') loadRef.current();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // [5в] Ручное обновление — спиннер на кнопке «Обновить».
   // Автообновление раз в 10с идёт через load() без индикатора, чтобы кнопка не мигала.
@@ -231,7 +276,9 @@ export default function App({ user, onLogout }) {
         // analyzing сбрасывается в finally.
         for (let attempt = 0; attempt < 120; attempt += 1) {
           await new Promise(resolve => setTimeout(resolve, 2500));
-          if (selectedIdRef.current !== polledId) return;
+          // [legacy-cleanup] компонент размонтирован (выход) или инцидент сменён —
+          // поллинг прекращается и не долбит API из-за размонтированного дерева
+          if (disposedRef.current || selectedIdRef.current !== polledId) return;
           let detail = null;
           try {
             detail = await request(`/incidents/${polledId}`);
@@ -883,7 +930,7 @@ export default function App({ user, onLogout }) {
         {activeTab === 'audit' && <AuditView />}
         {activeTab === 'rules' && <RulesView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
         {activeTab === 'playbooks' && <PlaybooksView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
-        {/* [20] Агенты на ВМ наблюдаемых пользователей — реальное исполнение */}
+        {/* [23] Реальные реакции на ВМ актива (Wazuh active response) */}
         {activeTab === 'responses' && <ResponsesView request={request} />}
       </section>}
 

@@ -2,7 +2,7 @@
 из app/api/routes.py (stage-19).
 
 Контекст → Ollama → Decision Validation Engine → playbook → аудит.
-run_auto_analysis — фоновая точка входа (BackgroundTasks из ingest/demo и
+run_auto_analysis — фоновая точка входа (BackgroundTasks из ingest и
 POST /incidents/{id}/analyze); _run_incident_analysis — сам конвейер анализа;
 _maybe_auto_close — автозакрытие low-инцидентов (stage-17).
 
@@ -13,14 +13,12 @@ CPU-инференс упирался в таймаут nginx (504); инфер�
 (LLM_INFERENCE_LOCK) — пачка анализов не душит модель.
 """
 
-from datetime import timezone
+from datetime import datetime, timezone
 
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.common import _not_executed, _validate_with_playbook
-from app.api.common import routes_datetime as datetime  # compat-шов: см. common.py
 from app.config import settings
 from app.models import Analysis, Incident
 from app.services.audit import audit
@@ -45,7 +43,7 @@ async def analyze_incident(context: dict) -> dict:
 async def run_auto_analysis(incident_id: int, initiated_by: str = "auto_analysis") -> None:
     """Фоновый LLM-анализ инцидента (stage-12): собственная сессия БД, после ответа API.
 
-    Запускается и автоконвейером (ingest, demo — initiated_by="auto_analysis"),
+    Запускается и автоконвейером (ingest — initiated_by="auto_analysis"),
     и ручным POST /incidents/{id}/analyze (stage-18: анализ выполняется в фоне,
     чтобы синхронный CPU-инференс не упирался в таймаут nginx). Автозакрытие
     (_maybe_auto_close, stage-17) — только для автоконвейера: ручной анализ
@@ -61,9 +59,7 @@ async def run_auto_analysis(incident_id: int, initiated_by: str = "auto_analysis
         if incident is None:
             logger.warning("auto_analysis: incident %s not found", incident_id)
             return
-        result = await _run_incident_analysis(
-            db, incident, raise_on_error=False, initiated_by=initiated_by
-        )
+        result = await _run_incident_analysis(db, incident, initiated_by=initiated_by)
         if "error" not in result:
             if initiated_by == "auto_analysis":
                 _maybe_auto_close(db, incident, result)
@@ -225,7 +221,6 @@ def _event_recommendations(events) -> list[str]:
 async def _run_incident_analysis(
     db: Session,
     incident: Incident,
-    raise_on_error: bool = True,
     initiated_by: str = "manual",
 ) -> dict:
     """Интеллектуальный анализ инцидента (§3.3.4 + §3.4).
@@ -297,11 +292,6 @@ async def _run_incident_analysis(
             incident_id=incident.id,
         )
         db.commit()
-        if raise_on_error:
-            raise HTTPException(
-                status_code=503,
-                detail=f"LLM service unavailable: {exc}",
-            ) from exc
         return {"incident_id": incident.id, "error": f"LLM service unavailable: {exc}"}
 
     if "recommended_action" in recommendation and "action" not in recommendation:

@@ -86,7 +86,6 @@ services:
       WAZUH_API_PASSWORD: "${WAZUH_API_PASSWORD:-wazuh}"
       WAZUH_API_VERIFY_TLS: "${WAZUH_API_VERIFY_TLS:-false}"
       WAZUH_API_TIMEOUT_SECONDS: "${WAZUH_API_TIMEOUT_SECONDS:-15}"
-      EXECUTION_DEFAULT_MODE: "${EXECUTION_DEFAULT_MODE:-simulation}"
     ports:
       - "8000:8000"
     depends_on:
@@ -175,11 +174,6 @@ services:
       # фрагмент <integration> и скрипт setup (исполняются вручную, не копируются)
       - ./wazuh/ossec-integration.xml:/wazuh-config/ossec-integration.xml:ro
       - ./wazuh/setup.sh:/wazuh-config/setup.sh:ro
-      # кастомные AR-скрипты реакций (block-ip / lock-account / isolate-host);
-      # exec-бит при необходимости ставит setup.sh
-      - ./wazuh/ar/block-ip.sh:/var/ossec/active-response/bin/block-ip.sh
-      - ./wazuh/ar/lock-account.sh:/var/ossec/active-response/bin/lock-account.sh
-      - ./wazuh/ar/isolate-host.sh:/var/ossec/active-response/bin/isolate-host.sh
     depends_on:
       api:
         condition: service_healthy
