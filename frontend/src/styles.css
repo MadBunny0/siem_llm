@@ -2271,125 +2271,59 @@ button:focus-visible {
 }
 
 
-
-/* ==================== stage-20: реальное исполнение на ВМ ==================== */
-
-/* Переключатель режима исполнения в боксе playbook карточки инцидента */
-.execution-mode-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin: 10px 0 4px;
-}
-
-.execution-mode-label {
-  font-size: 13px;
-  color: var(--text-muted, #6b7280);
-  font-weight: 600;
-}
-
-.mode-btn {
-  border: 1px solid var(--border, #d1d5db);
-  background: transparent;
-  color: var(--text, #111827);
-  border-radius: 999px;
-  padding: 4px 12px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.mode-btn:hover {
-  border-color: var(--primary, #2563eb);
-}
-
-.mode-btn.active {
-  background: var(--primary, #2563eb);
-  border-color: var(--primary, #2563eb);
-  color: #fff;
-  font-weight: 600;
-}
-
-.mode-btn:focus-visible {
-  outline: 2px solid var(--primary, #2563eb);
-  outline-offset: 2px;
-}
-
-/* Вкладка «Агенты (ВМ)»: карточки целей */
-.targets-grid {
+/* Вкладка «Реакции (ВМ)» (stage-23): активные реальные реакции по активам */
+.responses-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 14px;
   margin-bottom: 16px;
 }
 
-.target-card {
+.responses-card {
   border: 1px solid var(--border, #e5e7eb);
   border-radius: 10px;
   padding: 14px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   background: var(--panel-bg, #fff);
 }
 
-.target-head {
+.responses-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.target-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.target-url,
-.target-seen {
+.responses-incident {
   color: var(--text-muted, #6b7280);
   font-size: 12px;
-  word-break: break-all;
 }
 
-.target-actions {
+.responses-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.target-simulate {
-  display: flex;
-  flex-wrap: wrap;
+.responses-action {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  border-top: 1px dashed var(--border, #e5e7eb);
-  padding-top: 10px;
-  margin-top: auto;
-}
-
-.target-simulate select {
-  flex: 1 1 180px;
-  min-width: 0;
-}
-
-.target-simulate input {
-  width: 70px;
-}
-
-/* Журналы выбранной цели: действия SIEM + активность узла */
-.target-details {
   border: 1px solid var(--border, #e5e7eb);
-  border-radius: 10px;
-  padding: 14px;
-  margin-top: 8px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
 }
 
-.target-details-cols {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  gap: 16px;
+.responses-action b {
+  font-weight: 600;
+}
+
+.responses-meta {
+  color: var(--text-muted, #6b7280);
+  font-size: 12px;
 }
 
 /* ===================== Stage-22: блок «Оценка критичности» в карточке инцидента ===================== */

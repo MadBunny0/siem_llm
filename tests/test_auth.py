@@ -6,12 +6,33 @@ Bearer-токен → доступ/401/403.
 """
 
 import jwt as pyjwt
+import httpx
+import pytest
 
+import app.services.wazuh_api as wazuh_api
 from app.config import settings
 from app.models import User
 from app.services.security import create_access_token, hash_password
+from tests.test_execution import MockWazuhAPI
 
 API = "/api/v1"
+
+
+@pytest.fixture(autouse=True)
+def wazuh_mock(monkeypatch):
+    """Wazuh API подменяется фейком во всех тестах модуля (stage-23:
+    исполнение реакций всегда реальное — без сети)."""
+    api = MockWazuhAPI()
+
+    def create_client():
+        return httpx.Client(
+            transport=httpx.MockTransport(api.handler),
+            base_url="https://wazuh-mock:55000",
+            timeout=5,
+        )
+
+    monkeypatch.setattr(wazuh_api, "_create_client", create_client)
+    yield api
 
 
 def seed_users(db_session):
@@ -510,7 +531,8 @@ def test_execute_action_permissions(client, db_session):
     assert foreign.status_code == 403
     assert "закреплён" in foreign.json()["detail"]
 
-    # админ снимает требование подтверждения → dry run (симуляция), шаги сценария видны
+    # админ снимает требование подтверждения → команда реально доставляется
+    # в Wazuh (фейк, stage-23), шаги сценария видны в результате
     resp = client.post(
         f"{API}/incidents/1/execute-action",
         json={"action": "block_ip"},
@@ -519,8 +541,8 @@ def test_execute_action_permissions(client, db_session):
     assert resp.status_code == 200
     body = resp.json()
     assert body["validation"]["approved"] is True
-    assert body["execution"]["executed"] is False  # AUTO_RESPONSE=false — dry run
-    assert body["execution"]["mode"] == "simulation"
+    assert body["execution"]["executed"] is True  # Wazuh Manager принял команду
+    assert body["execution"]["mode"] == "real"
     assert body["execution"]["playbook_steps"] == [
         {"action": "block_ip", "target": "{{src_ip}}", "tool": "firewall"}
     ]
@@ -534,4 +556,5 @@ def test_execute_action_permissions(client, db_session):
     assert resp.status_code == 200
     body = resp.json()
     assert body["validation"]["approved"] is True
-    assert body["execution"]["mode"] == "simulation"
+    assert body["execution"]["mode"] == "real"
+    assert body["execution"]["executed"] is True  # пассивное — снимок без Wazuh API

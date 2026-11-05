@@ -72,6 +72,11 @@ class AnalysisOut(BaseModel):
 
 
 class WazuhAlert(BaseModel):
+    # extra="allow" (stage-23): менеджер кладёт в алерт дополнительные поля
+    # (manager.name, location, …) — они должны выживать в raw_data (JSON)
+    # для расследований, а не отбрасываться валидацией
+    model_config = ConfigDict(extra="allow")
+
     timestamp: str | None = None
     rule: dict = Field(default_factory=dict)
     agent: dict = Field(default_factory=dict)
@@ -162,53 +167,34 @@ class IncidentStatusIn(BaseModel):
 class ExecuteActionIn(BaseModel):
     """Ручной запуск playbook-действия (stage-12; stage-15: владелец или админ).
 
-    mode (stage-20): simulation — dry run как в §3.4 ВКР (по умолчанию);
-    real — реальное исполнение на ВМ через агента (docs/REAL_EXECUTION.md);
-    DVE один и тот же для обоих режимов.
+    Stage-23: поле mode удалено вместе с режимом симуляции — исполнение
+    всегда реальное, через Wazuh active response API (docs/E2E_STAND.md);
+    DVE (политика уровня, playbook, подтверждение критического актива)
+    проверяется как прежде.
     """
 
     action: str = Field(min_length=1)
-    mode: str = Field(default="simulation", pattern="^(simulation|real)$")
 
 
-class ExecutionTargetOut(BaseModel):
-    """Цель реального исполнения — агент на ВМ наблюдаемого пользователя (stage-20)."""
+# ---------------------------------------------------------------------------
+# Реакции на ВМ (stage-23): агрегат активных реальных реакций по всем
+# инцидентам (вкладка «Реакции (ВМ)», GET /responses/state)
+# ---------------------------------------------------------------------------
+class ResponsesStateAction(BaseModel):
+    """Одна активная реальная реакция (mode=real, ещё не отменённая)."""
 
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    name: str
-    asset_id: int | None = None
-    kind: str
-    base_url: str
-    platform: str
-    adapter: str
-    is_active: bool
-    status: str
-    last_seen: datetime | None = None
-
-
-class ExecutionJournalEntry(BaseModel):
-    """Запись журнала действий агента (stage-20, прокси в UI)."""
-
-    at: str | None = None
     action: str
-    params: dict = {}
-    executed: bool = True
-    requested_by: str | None = None
-    incident_id: int | None = None
-    detail: str | None = None
+    target: str | None = None  # IP-адрес / учётная запись / имя актива
+    at: datetime | None = None  # момент исполнения (executed_at)
+    by: str | None = None  # кто запустил (metadata.requested_by)
 
 
-class ExecutionSimulateIn(BaseModel):
-    """Сценарий активности ВМ (stage-20): normal_activity — наблюдаемые
-    пользователи; brute_force / password_spraying / repeated_scan / web_attack /
-    malware / privilege_escalation / data_exfiltration — активность атакующего
-    (сценарии подобраны под seed-правила корреляции, docs/REAL_EXECUTION.md)."""
+class ResponsesStateItem(BaseModel):
+    """Активные реакции одной пары {актив, инцидент} (вкладка «Реакции (ВМ)»)."""
 
-    scenario: str = Field(min_length=1)
-    count: int | None = Field(default=None, ge=1, le=50)
-    detail: str | None = None
+    asset: str
+    incident_id: int
+    actions: list[ResponsesStateAction] = Field(default_factory=list)
 
 
 class AuditLogOut(BaseModel):

@@ -16,7 +16,7 @@ CPU-инференс упирался в таймаут nginx (504); инфер�
 (LLM_INFERENCE_LOCK) — пачка анализов не душит модель.
 
 Stage-19: монолит разрезан по доменам — этот модуль теперь тонкий агрегатор
-роутеров (app/api/{auth,ingest,incident,catalog,demo,system}_routes.py);
+роутеров (app/api/{auth,ingest,incident,catalog,response,system}_routes.py);
 конвейер приёма — app/services/ingest.py, оркестрация анализа —
 app/services/auto_analysis.py, общие хелперы роутеров — app/api/common.py.
 Здесь же — compat-швы для тестов (см. ниже).
@@ -41,10 +41,9 @@ from fastapi import APIRouter
 
 from app.api.auth_routes import router as auth_router
 from app.api.catalog_routes import router as catalog_router
-from app.api.demo_routes import router as demo_router
-from app.api.execution_routes import router as execution_router
 from app.api.ingest_routes import router as ingest_router
 from app.api.incident_routes import router as incident_router
+from app.api.response_routes import router as response_router
 from app.api.system_routes import router as system_router
 # noqa: F401 — реэкспорт: тесты подменяют LLM-вызов именно на этом модуле
 from app.services.llm import analyze_incident  # noqa: F401
@@ -61,9 +60,8 @@ router = APIRouter(prefix="/api/v1", tags=["SIEM"])
 router.include_router(auth_router, tags=["SIEM"])
 router.include_router(ingest_router, tags=["SIEM"])
 router.include_router(incident_router, tags=["SIEM"])
-router.include_router(execution_router, tags=["SIEM"])
+router.include_router(response_router, tags=["SIEM"])
 router.include_router(catalog_router, tags=["SIEM"])
-router.include_router(demo_router, tags=["SIEM"])
 router.include_router(system_router, tags=["SIEM"])
 
 __all__ = ["router", "run_auto_analysis"]

@@ -1,0 +1,28 @@
+<!-- Кастомные декодеры стенда SIEM+LLM (stage-23).
+     Монтируется поверх /var/ossec/etc/decoders/local_decoder.xml
+     (в дефолтном файле только закомментированные примеры).
+
+     Зачем: сценарий 3 «Инсайдер: бэкдор-аккаунт» (docs/E2E_SCENARIOS.md)
+     требует реакцию disable_account, а цель действия (user) бэкенд берёт
+     из событий (app/services/normalization.py: data.dstuser). Строки
+     useradd/usermod/passwd из auth.log декодерами Wazuh dstuser не
+     заполняют — извлекаем имя создаваемой/изменяемой учётной записи сами.
+     Дочерние декодеры к syslog (program_name заполнен родителем). -->
+
+<decoder name="stand-useradd">
+  <program_name>useradd</program_name>
+  <regex>name=(\S+),</regex>
+  <order>dstuser</order>
+</decoder>
+
+<decoder name="stand-usermod">
+  <program_name>usermod</program_name>
+  <regex>add '(\S+)' to group</regex>
+  <order>dstuser</order>
+</decoder>
+
+<decoder name="stand-passwd">
+  <program_name>passwd</program_name>
+  <regex>password for '(\S+)' changed</regex>
+  <order>dstuser</order>
+</decoder>

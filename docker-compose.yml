@@ -22,9 +22,6 @@ services:
       target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
-      # stage-20: seed реестра целей исполнения выполняет db-init — env должен
-      # совпадать с api (иначе реестр останется пустым)
-      EXECUTION_TARGETS: "wks-finance-12=http://agent-wks:8100|${AGENT_TOKEN:-dev-agent-token},app-web-01=http://agent-app:8100|${AGENT_TOKEN:-dev-agent-token},mail-prod-01=http://agent-mail:8100|${AGENT_TOKEN:-dev-agent-token}"
     depends_on:
       db:
         condition: service_healthy
@@ -73,7 +70,6 @@ services:
       JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
       TOKEN_EXPIRE_MINUTES: "${TOKEN_EXPIRE_MINUTES:-480}"
       CORRELATION_WINDOW_MINUTES: "${CORRELATION_WINDOW_MINUTES:-5}"
-      AUTO_RESPONSE: "${AUTO_RESPONSE:-false}"
       AUTO_ANALYSIS: "${AUTO_ANALYSIS:-true}"
       # stage-18 (фидбек): автоанализ и автоконвейер — только для low
       AUTO_ANALYSIS_LEVELS: "${AUTO_ANALYSIS_LEVELS:-low}"
@@ -83,10 +79,13 @@ services:
       OLLAMA_NUM_CTX: "8192"
       OLLAMA_NUM_PREDICT: "2048"
       OLLAMA_KEEP_ALIVE: "30m"
-      # реальное исполнение playbook (stage-20): три агента-«ВМ» наблюдаемых
-      # пользователей; имена = имена активов (seed), токен — общий стенда
-      EXECUTION_TARGETS: "${EXECUTION_TARGETS:-wks-finance-12=http://agent-wks:8100|${AGENT_TOKEN:-dev-agent-token},app-web-01=http://agent-app:8100|${AGENT_TOKEN:-dev-agent-token},mail-prod-01=http://agent-mail:8100|${AGENT_TOKEN:-dev-agent-token}}"
-      EXECUTION_TIMEOUT_SECONDS: "${EXECUTION_TIMEOUT_SECONDS:-10}"
+      # реальные реакции playbook (stage-23): Wazuh Manager API —
+      # PUT /active-response доставляет команду AR-скрипта на ВМ актива
+      WAZUH_API_URL: "${WAZUH_API_URL:-https://wazuh-manager:55000}"
+      WAZUH_API_USER: "${WAZUH_API_USER:-wazuh}"
+      WAZUH_API_PASSWORD: "${WAZUH_API_PASSWORD:-wazuh}"
+      WAZUH_API_VERIFY_TLS: "${WAZUH_API_VERIFY_TLS:-false}"
+      WAZUH_API_TIMEOUT_SECONDS: "${WAZUH_API_TIMEOUT_SECONDS:-15}"
       EXECUTION_DEFAULT_MODE: "${EXECUTION_DEFAULT_MODE:-simulation}"
     ports:
       - "8000:8000"
@@ -122,56 +121,6 @@ services:
       db:
         condition: service_healthy
 
-  # Агенты-«ВМ» наблюдаемых пользователей (stage-20): исполнение playbook
-  # РЕАЛЬНО меняет состояние узла (фаервол/учётки/изоляция) + генератор
-  # активности (алерты Wazuh → SIEM). Имена сервисов согласованы с
-  # EXECUTION_TARGETS выше; имена узлов = имена активов seed.
-  # http://localhost:8101/agent/status — состояние АРМ финансиста в браузере
-  agent-wks:
-    build: ./agent
-    environment:
-      AGENT_HOSTNAME: wks-finance-12
-      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
-      SIEM_URL: http://api:8000/api/v1
-      AGENT_STATE_FILE: /data/state.json
-    ports:
-      - "8101:8100"
-    volumes:
-      - agent_wks_data:/data
-    depends_on:
-      api:
-        condition: service_healthy
-
-  agent-app:
-    build: ./agent
-    environment:
-      AGENT_HOSTNAME: app-web-01
-      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
-      SIEM_URL: http://api:8000/api/v1
-      AGENT_STATE_FILE: /data/state.json
-    ports:
-      - "8102:8100"
-    volumes:
-      - agent_app_data:/data
-    depends_on:
-      api:
-        condition: service_healthy
-
-  agent-mail:
-    build: ./agent
-    environment:
-      AGENT_HOSTNAME: mail-prod-01
-      AGENT_TOKEN: "${AGENT_TOKEN:-dev-agent-token}"
-      SIEM_URL: http://api:8000/api/v1
-      AGENT_STATE_FILE: /data/state.json
-    ports:
-      - "8103:8100"
-    volumes:
-      - agent_mail_data:/data
-    depends_on:
-      api:
-        condition: service_healthy
-
   # Автотесты бэкенда внутри контейнера — локальный Python не нужен (stage-11):
   # docker compose --profile tests build tests
   # docker compose --profile tests run --rm tests
@@ -194,21 +143,43 @@ services:
     command: sh -c "npm install --no-audit --no-fund --loglevel=error && npx vitest run"
     restart: "no"
 
-  # Опциональный Wazuh-менеджер (§3.5 ВКР) — запуск: docker compose --profile wazuh up
-  # Обычный `docker compose up` его не поднимает. Настройка интеграции — docs/WAZUH_INTEGRATION.md
+  # Wazuh-менеджер (stage-23 — базовый сервис, поднимается обычным `docker
+  # compose up`): приём событий от wazuh-агентов на ВМ актива (1514/1515),
+  # алерты → интегратор → POST /api/v1/ingest/wazuh, реакции playbook —
+  # Wazuh API 55000 (POST /active-response). Настройка после recreate
+  # контейнера — один шаг: docker compose exec wazuh-manager bash /wazuh-config/setup.sh
+  # (docs/E2E_STAND.md, docs/WAZUH_INTEGRATION.md)
   wazuh-manager:
     image: wazuh/wazuh-manager:4.7.4
-    profiles: ["wazuh"]
     environment:
       HOOK_URL: http://api:8000/api/v1/ingest/wazuh
     ports:
       - "1514:1514"       # приём событий от агентов
       - "1515:1515"       # регистрация агентов (agent enrollment)
-      - "55000:55000"     # Wazuh API
+      - "55000:55000"     # Wazuh API (реакции + диагностика)
     volumes:
       - wazuh_data:/var/ossec/data
-      - ./wazuh/integrator.sh:/var/ossec/integrator_files/custom-integration:ro
+      # Кастомизация — ТОЛЬКО через /wazuh-config-mount (штатный механизм
+      # образа: на старте всё содержимое копируется в /var/ossec с сохранением
+      # путей). Прямые маунты в /var/ossec/etc/** запрещены: непустой
+      # /var/ossec/etc на первом старте ломает инициализацию образа
+      # (mount_permanent_data пропускает восстановление дефолтов из data_tmp
+      # и удаляет его — менеджер остаётся без ossec.conf). Интегратор
+      # ставится в НАСТОЯЩИЙ каталог интеграций /var/ossec/integrations.
+      - ./wazuh/integrator.sh:/wazuh-config-mount/integrations/custom-integration:ro
+      - ./wazuh/local_rules.xml:/wazuh-config-mount/etc/rules/local_rules.xml:ro
+      - ./wazuh/local_decoder.xml:/wazuh-config-mount/etc/decoders/local_decoder.xml:ro
+      - ./wazuh/ar/block-ip.sh:/wazuh-config-mount/active-response/bin/block-ip.sh:ro
+      - ./wazuh/ar/lock-account.sh:/wazuh-config-mount/active-response/bin/lock-account.sh:ro
+      - ./wazuh/ar/isolate-host.sh:/wazuh-config-mount/active-response/bin/isolate-host.sh:ro
+      # фрагмент <integration> и скрипт setup (исполняются вручную, не копируются)
       - ./wazuh/ossec-integration.xml:/wazuh-config/ossec-integration.xml:ro
+      - ./wazuh/setup.sh:/wazuh-config/setup.sh:ro
+      # кастомные AR-скрипты реакций (block-ip / lock-account / isolate-host);
+      # exec-бит при необходимости ставит setup.sh
+      - ./wazuh/ar/block-ip.sh:/var/ossec/active-response/bin/block-ip.sh
+      - ./wazuh/ar/lock-account.sh:/var/ossec/active-response/bin/lock-account.sh
+      - ./wazuh/ar/isolate-host.sh:/var/ossec/active-response/bin/isolate-host.sh
     depends_on:
       api:
         condition: service_healthy
@@ -218,6 +189,3 @@ volumes:
   ollama_data:
   wazuh_data:
   frontend_node_modules:
-  agent_wks_data:
-  agent_app_data:
-  agent_mail_data:

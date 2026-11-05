@@ -39,26 +39,24 @@ Docker Compose специально разделяет подготовку за
 siem_llm/
 ├── app/                  # Бэкенд: FastAPI
 │   ├── api/              # HTTP-маршруты: routes.py — агрегатор; под-роутеры по доменам
-│   │                     # (auth/ingest/incident/execution/catalog/demo/system_routes.py) + common.py
+│   │                     # (auth/ingest/incident/catalog/demo/response/system_routes.py) + common.py
 │   ├── services/         # Логика конвейера (normalization, correlation, risk, llm, ...)
-│   │                     # + ingest.py (приём события), auto_analysis.py (оркестрация анализа)
-│   │                     # и execution.py (stage-20: реальное исполнение playbook на ВМ)
+│   │                     # + ingest.py (приём события), auto_analysis.py (оркестрация анализа),
+│   │                     # execution.py + wazuh_api.py (stage-23: реакции через Wazuh active response)
 │   └── models.py, schemas.py, config.py, db.py, init_db.py, main.py
-├── agent/                # stage-20: endpoint-агент ВМ наблюдаемого пользователя (standalone)
 ├── frontend/             # React-дашборд: src/App.jsx (логика UI), src/api.js, src/constants.js,
 │                         # src/components/* (вкладки, логин), src/lib — хелперы
-├── tests/                # pytest-тесты бэкенда (178, запускаются в контейнере; общие фикстуры — conftest.py)
-├── tests_agent/          # stage-20: pytest-тесты endpoint-агента
-├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, REAL_EXECUTION
+├── tests/                # pytest-тесты бэкенда (192, запускаются в контейнере; общие фикстуры — conftest.py)
+├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, E2E_STAND, E2E_SCENARIOS
 ├── samples/              # Примеры алертов Wazuh (JSON)
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
-├── wazuh/                # Файлы интеграции с Wazuh (integrator, фрагмент ossec.conf)
-├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer, агенты-ВМ)
+├── wazuh/                # Интеграция с Wazuh (integrator, setup, правила/декодеры, AR-скрипты реакций)
+├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer, wazuh-manager)
 ├── Dockerfile            # Бэкенд: multi-stage (base — прод, dev — +тесты)
-└── requirements.txt, pytest.ini, .env.example
+└── requirements.txt, pytest.ini, .env.example, .gitattributes
 ```
 
-Тесты: 178 backend (pytest, включая tests_agent) + 114 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 192 backend (pytest) + 124 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---
@@ -87,7 +85,7 @@ docker compose up --build
 - **FastAPI напрямую:** http://localhost:8000/docs
 - **Health:** http://localhost:8000/api/v1/health
 
-В веб-интерфейсе можно обновлять список инцидентов, фильтровать их, создавать тестовое событие Wazuh и запускать интеллектуальный анализ выбранного инцидента.
+В веб-интерфейсе можно обновлять список инцидентов, фильтровать их, запускать интеллектуальный анализ и реальные реакции playbook (Wazuh active response на ВМ актива). События поступают только с wazuh-агентов виртуальных машин — сценарии атак для оператора: [docs/E2E_SCENARIOS.md](docs/E2E_SCENARIOS.md).
 
 ## Проверка через терминал
 
@@ -95,14 +93,14 @@ docker compose up --build
 curl http://localhost:8000/api/v1/health
 ```
 
-При успешном запуске ответ содержит статус БД, название LLM и режим автоматического реагирования.
+При успешном запуске ответ содержит статус БД, название LLM и уровни автообработки.
 
-Тестовое событие:
+Тестовый алерт формата Wazuh (так же шлёт интегратор менеджера):
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/ingest/wazuh \
   -H 'Content-Type: application/json' \
-  --data @samples/sample_wazuh_alert.json
+  -d '{"timestamp":"2026-11-05T10:00:00.000+0000","rule":{"level":10,"description":"sshd: authentication failed","groups":["authentication_failed"]},"agent":{"id":"001","name":"mail-prod-01"},"data":{"srcip":"192.168.56.102","dstuser":"admin"},"full_log":"Failed password for admin from 192.168.56.102 port 22 ssh2"}'
 ```
 
 Получение инцидентов:
@@ -124,15 +122,14 @@ curl -X POST http://localhost:8000/api/v1/incidents/1/analyze
 см. `docs/DEPLOYMENT.md`). Виртуальное окружение Python (`.venv`) в репо не
 используется и в git не входит.
 
-## Безопасность стенда
+## Реакции — только реальные (stage-23)
 
-По умолчанию:
-
-```text
-AUTO_RESPONSE=false
-```
-
-Поэтому playbook работает в безопасном демонстрационном режиме и не выполняет реальные блокировки IP, отключение учётных записей или изоляцию узлов.
+Режима симуляции в системе нет: события приходят только с wazuh-агентов
+виртуальных машин ([E2E_STAND.md](docs/E2E_STAND.md)), а одобренные DVE реакции
+playbook **по-настоящему** меняют состояние ВМ через Wazuh active response
+(`iptables`-блокировка IP, `passwd -l` учётной записи, изоляция узла).
+Учебный стенд — контролируемая среда: ВМ созданы для экспериментов и
+восстанавливаются кнопкой «Сбросить реакции» + снапшотом гипервизора.
 
 ## Авторизация (stage-09)
 
@@ -166,14 +163,17 @@ curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
 
 Секрет подписи токена задаётся переменной `JWT_SECRET` (см. `.env.example`) — смените его для окружения, отличного от локального. С stage-19 тюнируемые переменные сервиса api (`JWT_SECRET`, `JWT_ALGORITHM`, `TOKEN_EXPIRE_MINUTES`, `AUTO_*`, `CORRELATION_WINDOW_MINUTES`) доставляются в контейнер из `.env`; значения по умолчанию — в `docker-compose.yml`.
 
-## Wazuh (§3.5 ВКР)
+## Wazuh (§3.5 ВКР, stage-23)
 
-- **Быстрый старт** — контейнерный Wazuh-менеджер под опциональным профилем:
-  `docker compose --profile wazuh up --build` (обычный `up` его не поднимает).
-  Настройка интеграции — 3 команды из [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
-- **Экспериментальный стенд** (VirtualBox: ВМ менеджера, цели с агентом и атакующего)
-  для Главы 4 — топология, регистрация агента, моделирование атак и что фиксировать:
-  тот же [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
+- **Менеджер — базовый сервис compose** (поднимается обычным `docker compose up`).
+  Настройка — одна идемпотентная команда:
+  `docker compose exec wazuh-manager bash /wazuh-config/setup.sh` (после каждого
+  recreate контейнера). Детали — [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
+- **Реальный E2E-стенд** (VirtualBox: 2 ВМ Kali с wazuh-агентами; события идут в SIEM,
+  реакции playbook — Wazuh active response — реально меняют состояние ВМ):
+  установка гипервизора и урезанных консольных ВМ с нуля — [E2E_VM_SETUP.md](docs/E2E_VM_SETUP.md),
+  инструкция стенда — [E2E_STAND.md](docs/E2E_STAND.md), 3 сценария атак для оператора
+  (SSH-брутфорс, SQLi, инсайдерский бэкдор-аккаунт) — [E2E_SCENARIOS.md](docs/E2E_SCENARIOS.md).
 
 ## Остановка
 

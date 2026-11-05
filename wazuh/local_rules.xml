@@ -1,0 +1,87 @@
+<!-- Кастомные правила стенда SIEM+LLM (stage-23, docs/E2E_SCENARIOS.md).
+     Ставится через /wazuh-config-mount/etc/rules/local_rules.xml (образ
+     копирует в /var/ossec/etc/rules/local_rules.xml на старте контейнера;
+     смонтировать напрямую в /var/ossec/etc/** нельзя — см. setup.sh).
+
+     КРИТИЧНО для нормализации SIEM (app/services/normalization.py):
+     event_type = rule.groups[0] — ПЕРВАЯ группа правила должна быть
+     семантической (authentication_failed / web_attack / privilege_escalation).
+     Порядок групп в алерте = порядок в строке group: по исходникам Wazuh 4.7
+     (src/analysisd/rules.c:417,573) группа правила начинается с КОРНЕВОГО
+     <group name="..."> элемента файла, rule-level <group> дописывается после;
+     группы родителя (if_sid) в алерте НЕ наследуются. У файла НЕСКОЛЬКО
+     корневых <group> (парсер это разрешает: rules.c:280-320), семантическое
+     имя в каждом стоит первым.
+
+     ПОРЯДОК ПОИСКА: analysisd берёт ПЕРВОЕ совпадение по порядку загрузки
+     правил (уровень не задаёт приоритет!) — поэтому правила, конкурирующие с
+     built-in, сделаны ДОЧЕРНИМИ (if_sid): ребёнок проверяется сразу после
+     сработавшего родителя и ПОДМЕНЯЕТ его алерт (см. 100100 вместо 5716).
+     Прямые правила ниже — fallback'и для строк, где built-in не сработал.
+     os_regex регистронезависим; <url> матчит сырую строку запроса nginx.
+
+     Родители verified live (wazuh-logtest): 5710/5711/5716 (sshd неудачные
+     входы), 31164 (=%27 SQLi) и 31103 (SQLi UNION), 5902 (adduser). -->
+
+<group name="authentication_failed,sshd,stand,">
+
+  <!-- С1 «Подбор пароля по SSH»: ребёнок built-in sshd-правил — подменяет их
+       алерт (у built-in первая группа syslog, для нормализации непригодны). -->
+  <rule id="100100" level="7">
+    <if_sid>5710,5711,5716</if_sid>
+    <description>sshd: неудачная попытка аутентификации (стенд).</description>
+  </rule>
+
+  <!-- Fallback: тот же класс события по тексту лога (если sshd-декодер не
+       отработал и if_sid не сработал). -->
+  <rule id="100101" level="6">
+    <regex>Failed password for|Invalid user|illegal user|maximum authentication attempts exceeded</regex>
+    <description>sshd: неудачная попытка аутентификации (fallback по тексту лога).</description>
+  </rule>
+
+</group>
+
+<group name="web_attack,nginx,stand,">
+
+  <!-- С2 «SQL-инъекция на веб-сервис»: ребёнок built-in web-правил
+       (31164 — маркеры %27/=%27, 31103 — UNION/SQL-ошибка): подменяет их
+       алерт семантическими группами. -->
+  <rule id="100200" level="10">
+    <if_sid>31164,31103</if_sid>
+    <description>nginx: SQL-инъекция в параметрах запроса (стенд).</description>
+  </rule>
+
+  <!-- Fallback: декодированные/прочие формы, где built-in web не совпал
+       (кавычка+OR/UNION/SELECT в сыром или декодированном виде). -->
+  <rule id="100201" level="9">
+    <url>' or|' and|' union|' select|'or|'and|union select|sleep|information_schema|%27</url>
+    <description>nginx: SQL-инъекция в параметрах запроса (fallback).</description>
+  </rule>
+
+</group>
+
+<group name="privilege_escalation,accounts,stand,">
+
+  <!-- С3 «Инсайдер: бэкдор-аккаунт»: ребёнок built-in 5902/5903 (adduser) —
+       подменяет их алерт (первая группа syslog). Имя учётной записи для
+       цели disable_account даёт декодер stand-useradd (dstuser). -->
+  <rule id="100300" level="10">
+    <if_sid>5902,5903</if_sid>
+    <description>Создание учётной записи на сервере: возможный бэкдор-аккаунт (стенд).</description>
+  </rule>
+
+  <!-- Прямые правила: usermod/смена пароля — строки, где built-in не совпал.
+       ВАЖНО: у декодированных syslog-событий <regex>/<match> матчат остаток
+       строки ПОСЛЕ program_name (имени «usermod» там нет) — поэтому условие
+       по program_name. -->
+  <rule id="100301" level="9">
+    <program_name>usermod</program_name>
+    <description>Изменение учётных записей (usermod): возможное повышение привилегий (стенд).</description>
+  </rule>
+
+  <rule id="100302" level="9">
+    <program_name>passwd</program_name>
+    <description>Смена пароля учётной записи (passwd): возможный бэкдор-аккаунт (стенд).</description>
+  </rule>
+
+</group>

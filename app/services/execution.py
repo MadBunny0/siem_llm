@@ -1,33 +1,38 @@
-"""Диспетчер реального исполнения ответных действий (stage-20).
+"""Диспетчер реального исполнения ответных действий (stage-20/23).
 
-Глава 3.4 (p:116) описывает реагирование как симуляцию; запрос пользователя
-(stage-20) — добавить РЕАЛЬНОЕ исполнение playbook'ов на виртуальных машинах,
-эмулирующих наблюдаемых пользователей прод-инфраструктуры (учебный стенд —
-docs/REAL_EXECUTION.md). Симуляция сохраняется как отдельный режим: DVE
-(Decision Validation Engine) один и тот же для обоих режимов — политика
-уровня риска, playbook и подтверждение критического актива не зависят от
-способа исполнения.
+Глава 3.4 (p:116) описывает реагирование как симуляцию; реальный режим
+(stage-23) выполняет playbook через Wazuh Manager API (active response):
+менеджер доставляет команду кастомного AR-скрипта wazuh-агенту на ВМ
+актива, где она меняет состояние узла по-настоящему (iptables/passwd) —
+docs/E2E_STAND.md. Симуляция сохраняется отдельным режимом: DVE один и
+тот же для обоих режимов — политика уровня риска, playbook и подтверждение
+критического актива не зависят от способа исполнения.
 
 Поток реального исполнения:
-  инцидент → актив (Incident.asset) → ExecutionTarget (агент на ВМ) →
-  HTTP-вызов агента (Bearer-токен) → изменение состояния ВМ →
-  результат + запись в ResponseAction + аудит + heartbeat цели.
+  инцидент → актив (Incident.asset) → wazuh-агент по имени актива
+  (WazuhClient.find_agent_id) → POST /active-response → РЕАЛЬНОЕ изменение
+  на ВМ → результат + запись ResponseAction (аргументы отката — в
+  metadata_json) + аудит.
 
 Действия, не требующие цели (PASSIVE_ACTIONS): monitor фиксирует наблюдение
-аудитом; collect_evidence без агента делает внутренний снимок инцидента
-(события + анализы), с агентом — снимок состояния ВМ.
+аудитом; collect_evidence делает внутренний снимок инцидента (события +
+анализы). Снимок состояния ВМ удалён вместе с агентами-эмуляторами stage-20
+(удаление авторизовано пользователем 2026-11-05).
+
+Активные записи ResponseAction (mode=real, без undone_at) видны во вкладке
+«Реакции (ВМ)» (GET /responses/state) и отменяются обратными AR-командами
+при «Сбросить реакции» (undo_real_action / undo_incident_real_actions).
 """
 
 import logging
 from datetime import datetime, timezone
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
-from app.models import Analysis, ExecutionTarget, Incident, ResponseAction
+from app.models import Analysis, Incident, ResponseAction
 from app.services.audit import audit
+from app.services.wazuh_api import WazuhAPIError, WazuhClient
 
 logger = logging.getLogger("execution")
 
@@ -35,28 +40,15 @@ logger = logging.getLogger("execution")
 # дублируется локально, чтобы сервис не зависел от DVE)
 PASSIVE_ACTIONS = {"monitor", "collect_evidence"}
 
-# действия, меняющие состояние endpoint-агента: имя → параметры вызова
-AGENT_ACTIONS = {
-    "block_ip": "block_ip",
-    "isolate_host": "isolate_host",
-    "disable_account": "disable_account",
+# действие playbook → (AR-команда менеджера, аргумент исполнения, аргумент
+# отката). Первый элемент аргументов — команда скрипта (add/delete/lock/
+# unlock), второй — цель (IP/учётка) из событий инцидента; isolate-host
+# цели не требует (команда работает на самом агенте).
+WAZUH_AR_COMMANDS = {
+    "block_ip": ("block-ip", "add", "delete"),
+    "disable_account": ("lock-account", "lock", "unlock"),
+    "isolate_host": ("isolate-host", "add", "delete"),
 }
-
-
-def resolve_targets(db: Session, incident: Incident) -> list[ExecutionTarget]:
-    """Активные цели исполнения для инцидента: по активу, к которому привязан
-    инцидент (имя цели = имя актива). Инцидент без актива целей не имеет.
-    """
-    if incident.asset_id is None:
-        return []
-    return list(
-        db.scalars(
-            select(ExecutionTarget).where(
-                ExecutionTarget.asset_id == incident.asset_id,
-                ExecutionTarget.is_active.is_(True),
-            )
-        ).all()
-    )
 
 
 def _incident_context(incident: Incident) -> dict:
@@ -68,56 +60,40 @@ def _incident_context(incident: Incident) -> dict:
             src_ip = event.src_ip
         if event.user:
             user = event.user
-    return {"src_ip": src_ip, "user": user, "asset_name": incident.asset.name if incident.asset else None}
+    return {
+        "src_ip": src_ip,
+        "user": user,
+        "asset_name": incident.asset.name if incident.asset else None,
+    }
 
 
-def _agent_headers(target: ExecutionTarget) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if target.auth_token:
-        headers["Authorization"] = f"Bearer {target.auth_token}"
-    return headers
+def _action_target(action: str, context: dict) -> str | None:
+    """Цель действия из событий инцидента: block_ip ← src_ip,
+    disable_account ← user, isolate_host ← имя актива. None — данных нет."""
+    if action == "block_ip":
+        return context.get("src_ip")
+    if action == "disable_account":
+        return context.get("user")
+    if action == "isolate_host":
+        return context.get("asset_name")
+    return None
 
 
-def _mark_target(target: ExecutionTarget, online: bool) -> None:
-    """Heartbeat цели: факт обращения — статистика доступности для UI."""
-    target.status = "online" if online else "offline"
-    target.last_seen = datetime.now(timezone.utc)
+def _ar_arguments(command: str, verb: str, target: str | None) -> list[str]:
+    """Аргументы AR-команды: block-ip/lock-account получают цель вторым
+    аргументом, isolate-host работает без цели."""
+    if command == "isolate-host":
+        return [verb]
+    return [verb, target or ""]
 
 
-def _agent_call(target: ExecutionTarget, payload: dict) -> dict:
-    """Синхронный вызов агента (роутеры синхронные). Ответ агента:
-    {"executed": true/false, "action": ..., "result": ..., "state": {...}}.
-    """
-    timeout = settings.execution_timeout_seconds
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(
-            f"{target.base_url.rstrip('/')}/agent/action",
-            json=payload,
-            headers=_agent_headers(target),
-        )
-        response.raise_for_status()
-        return response.json()
-
-
-def execute_real_action(
-    db: Session,
-    incident: Incident,
-    action: str,
-    requested_by: str | None = None,
-) -> dict:
-    """Реальное исполнение действия playbook на цели (stage-20).
-
-    Возвращает execution-словарь, совместимый с execute_playbook
-    (executed/mode/action + playbook-описание): mode="real". Результат
-    каждого вызова агента — в execution["targets"], полный ответ сохраняется
-    в ResponseAction.metadata_json. Достижимые/недостижимые цели пишут
-    heartbeat; ошибки не поднимают исключение — оператор видит причину.
-    """
-    playbook = None
+def _playbook_result(db: Session, action: str) -> dict:
+    """Общая шапка execution-словаря (совместимость с execute_playbook):
+    playbook-описание в ответе независимо от режима."""
     from app.services.playbook import load_playbook_by_action
 
     playbook = load_playbook_by_action(db, action)
-    result = {
+    return {
         "executed": False,
         "mode": "real",
         "action": action,
@@ -127,17 +103,35 @@ def execute_real_action(
         "targets": [],
     }
 
-    context = _incident_context(incident)
-    targets = resolve_targets(db, incident)
 
-    # --- PASSIVE-действия: цель не требуется -------------------------------
+def execute_real_action(
+    db: Session,
+    incident: Incident,
+    action: str,
+    requested_by: str | None = None,
+) -> dict:
+    """Реальная реакция playbook на ВМ актива через Wazuh active response API.
+
+    Возвращает execution-словарь, совместимый с execute_playbook
+    (executed/mode/action + playbook-описание): mode="real". Данные
+    доставки команды — в result["targets"][0], цель действия (IP/учётка/
+    актив) — в result["target"] (эндпоинт кладёт её в отметку
+    manual_actions). Ошибки не поднимают исключение — оператор видит
+    причину в результате. ResponseAction сохраняется только при
+    исполненной реакции: активные записи — источник отката и сводки
+    «Реакции (ВМ)», неудачная попытка реального эффекта не оставляет.
+    """
+    result = _playbook_result(db, action)
+    context = _incident_context(incident)
+
+    # --- PASSIVE-действия: цель и менеджер не требуются --------------------
     if action == "monitor":
         result["executed"] = True
         result["result"] = (
             "Инцидент взят под наблюдение: повторные события фиксируются "
             "в журнале аудита; состояние инфраструктуры не изменяется"
         )
-        _save_response_action(db, incident, action, result, playbook, context, requested_by)
+        _save_response_action(db, incident, action, result, context, requested_by)
         audit(
             "real_action_executed",
             {"action": action, "mode": "real", "passive": True, "by": requested_by},
@@ -148,38 +142,28 @@ def execute_real_action(
 
     if action == "collect_evidence":
         snapshot = _collect_incident_snapshot(db, incident)
-        agent_state = None
-        if targets:
-            target = targets[0]
-            try:
-                agent_state = _agent_call(target, {"action": "collect_evidence", "params": {}, "incident_id": incident.id})
-                _mark_target(target, online=True)
-                snapshot["agent"] = agent_state.get("state")
-            except Exception as exc:
-                _mark_target(target, online=False)
-                logger.warning("collect_evidence on %s failed: %s", target.name, exc)
-                snapshot["agent_error"] = str(exc)
         result["executed"] = True
         result["result"] = (
-            "Доказательства собраны: снимок событий, анализов и состояния узла "
-            "сохранён в карточке инцидента"
+            "Доказательства собраны: снимок событий и анализов инцидента "
+            "сохранён в карточке"
         )
         result["snapshot"] = snapshot
-        _save_response_action(db, incident, action, result, playbook, context, requested_by)
+        _save_response_action(db, incident, action, result, context, requested_by)
         audit(
             "real_action_executed",
-            {"action": action, "mode": "real", "passive": True, "with_agent": bool(targets), "by": requested_by},
+            {"action": action, "mode": "real", "passive": True, "by": requested_by},
             db=db,
             incident_id=incident.id,
         )
         return result
 
-    # --- Активные действия: требуется агент на ВМ --------------------------
-    if action not in AGENT_ACTIONS:
+    # --- Активные действия: AR-команда через менеджера ---------------------
+    command, verb, _undo_verb = WAZUH_AR_COMMANDS.get(action, (None, None, None))
+    if command is None:
         result["reason"] = "unsupported_action"
         result["result"] = (
-            f"Действие {action} не поддерживается агентами ВМ — доступно только "
-            "в режиме симуляции"
+            f"Действие {action} не выполняется через Wazuh active response — "
+            "доступно только в режиме симуляции"
         )
         audit(
             "real_action_skipped",
@@ -189,24 +173,21 @@ def execute_real_action(
         )
         return result
 
-    if not targets:
+    if incident.asset_id is None or incident.asset is None:
         result["reason"] = "no_target"
         result["result"] = (
-            "Реальное исполнение недоступно: для актива инцидента не "
-            "зарегистрирован агент (цель исполнения). Действие доступно в "
-            "режиме симуляции"
+            "Реальное исполнение недоступно: инцидент не привязан к активу"
         )
         audit(
             "real_action_skipped",
-            {"action": action, "reason": "no_target", "asset_id": incident.asset_id},
+            {"action": action, "reason": "no_target", "asset_id": None},
             db=db,
             incident_id=incident.id,
         )
         return result
 
-    # параметры действия → payload агента
-    params = _agent_params(action, context)
-    if params is None:
+    target = _action_target(action, context)
+    if target is None:
         result["reason"] = "missing_parameters"
         result["result"] = (
             "В событиях инцидента нет данных цели действия (IP-адрес источника "
@@ -220,54 +201,70 @@ def execute_real_action(
         )
         return result
 
-    executed_any = False
-    for target in targets:
-        entry = {"target": target.name, "base_url": target.base_url}
+    asset = incident.asset
+    result["target"] = target
+
+    with WazuhClient() as client:
+        # цель доставки: wazuh-агент по имени актива
         try:
-            response = _agent_call(
-                target,
+            agent_id = client.find_agent_id(asset.name)
+        except WazuhAPIError as exc:
+            return _fail_active(db, incident, action, result, context, requested_by, exc)
+
+        if agent_id is None:
+            result["reason"] = "no_target"
+            result["result"] = (
+                "Реальное исполнение недоступно: для актива инцидента нет "
+                "wazuh-агента в менеджере (агент не установлен или не "
+                "зарегистрирован — см. docs/E2E_STAND.md). Действие доступно "
+                "в режиме симуляции"
+            )
+            audit(
+                "real_action_skipped",
                 {
                     "action": action,
-                    "params": params,
-                    "incident_id": incident.id,
-                    "requested_by": requested_by,
+                    "reason": "no_target",
+                    "asset_id": asset.id,
+                    "asset": asset.name,
                 },
+                db=db,
+                incident_id=incident.id,
             )
-            entry.update(
-                {
-                    "executed": bool(response.get("executed", True)),
-                    "response": response,
-                }
-            )
-            executed_any = executed_any or bool(response.get("executed", True))
-            _mark_target(target, online=True)
-        except Exception as exc:
-            entry.update({"executed": False, "error": str(exc)})
-            _mark_target(target, online=False)
-            logger.warning(
-                "real action %s on %s failed: %s", action, target.name, exc
-            )
+            return result
+
+        arguments = _ar_arguments(command, verb, target)
+        entry = {
+            "target": asset.name,
+            "agent_id": agent_id,
+            "agent_name": asset.name,
+            "command": command,
+            "arguments": arguments,
+        }
         result["targets"].append(entry)
+        try:
+            response = client.active_response(agent_id, command, arguments)
+        except WazuhAPIError as exc:
+            return _fail_active(db, incident, action, result, context, requested_by, exc, entry)
 
-    result["executed"] = executed_any
-    ok_targets = [t["target"] for t in result["targets"] if t.get("executed")]
-    fail_targets = [t["target"] for t in result["targets"] if not t.get("executed")]
-    if executed_any:
-        result["result"] = f"Действие выполнено на: {', '.join(ok_targets)}"
-        if fail_targets:
-            result["result"] += f"; недоступны: {', '.join(fail_targets)}"
-    else:
-        result["reason"] = result.get("reason") or "target_unreachable"
-        result["result"] = "Ни одна цель не подтвердила исполнение (агент недоступен)"
+        entry["executed"] = True
+        entry["response"] = response
+        result["executed"] = True
+        result["result"] = (
+            f"Команда {command} {' '.join(arguments)} принята Wazuh Manager "
+            f"для агента {agent_id} ({asset.name}) — эффект на ВМ можно "
+            "проверить по сценарию (docs/E2E_SCENARIOS.md)"
+        )
 
-    _save_response_action(db, incident, action, result, playbook, context, requested_by)
+    _save_response_action(db, incident, action, result, context, requested_by)
     audit(
-        "real_action_executed" if executed_any else "real_action_failed",
+        "real_action_executed",
         {
             "action": action,
             "mode": "real",
-            "params": params,
-            "targets": [t["target"] for t in result["targets"]],
+            "target": target,
+            "command": command,
+            "arguments": arguments,
+            "agent_id": agent_id,
             "by": requested_by,
         },
         db=db,
@@ -276,23 +273,144 @@ def execute_real_action(
     return result
 
 
-def _agent_params(action: str, context: dict) -> dict | None:
-    """Параметры вызова агента для действия; None — данных в инциденте нет."""
-    if action == "block_ip":
-        if not context.get("src_ip"):
-            return None
-        return {"ip": context["src_ip"]}
-    if action == "disable_account":
-        if not context.get("user"):
-            return None
-        return {"user": context["user"]}
-    if action == "isolate_host":
-        return {"host": context.get("asset_name") or "unknown"}
-    return {}
+def _fail_active(
+    db: Session,
+    incident: Incident,
+    action: str,
+    result: dict,
+    context: dict,
+    requested_by: str | None,
+    exc: WazuhAPIError,
+    entry: dict | None = None,
+) -> dict:
+    """Единый исход неудачного активного действия: reason=target_unreachable,
+    ответ API — в результат и в audit; ResponseAction не пишется (реального
+    эффекта нет — отменять нечего)."""
+    result["reason"] = "target_unreachable"
+    if entry is not None:
+        entry["executed"] = False
+        entry["error"] = str(exc)
+    result["result"] = f"Реакция не выполнена — Wazuh API вернул ошибку: {exc}"
+    audit(
+        "real_action_failed",
+        {
+            "action": action,
+            "mode": "real",
+            "reason": "target_unreachable",
+            "error": str(exc),
+            "by": requested_by,
+        },
+        db=db,
+        incident_id=incident.id,
+    )
+    return result
+
+
+def undo_real_action(
+    db: Session,
+    incident: Incident,
+    action: str,
+    target: str | None,
+) -> dict:
+    """Обратная AR-реакция (stage-23): block_ip → delete IP, disable_account →
+    unlock, isolate_host → release (снятие изоляции). Best-effort: результат
+    {executed, detail} без исключений — ошибки уходят в ответ reset-actions.
+
+    Для monitor/collect_evidence отменять нечего (executed=True — отметка
+    просто снимается со сводки «Реакции (ВМ)»).
+    """
+    mapping = WAZUH_AR_COMMANDS.get(action)
+    if mapping is None:
+        return {
+            "action": action,
+            "executed": True,
+            "detail": "Пассивное действие — отменять нечего, отметка снята",
+        }
+    command, _verb, undo_verb = mapping
+    asset = incident.asset
+    if asset is None:
+        return {
+            "action": action,
+            "executed": False,
+            "detail": "Инцидент не привязан к активу — отмена невозможна",
+        }
+    arguments = _ar_arguments(command, undo_verb, target)
+    try:
+        with WazuhClient() as client:
+            agent_id = client.find_agent_id(asset.name)
+            if agent_id is None:
+                return {
+                    "action": action,
+                    "executed": False,
+                    "detail": (
+                        f"Wazuh-агент актива {asset.name} отсутствует в "
+                        "менеджере — обратная команда не доставляется "
+                        "(эффект на ВМ снимается вручную, см. E2E_STAND.md)"
+                    ),
+                }
+            client.active_response(agent_id, command, arguments)
+        return {
+            "action": action,
+            "executed": True,
+            "detail": (
+                f"Обратная команда {command} {' '.join(arguments)} принята "
+                f"менеджером для агента {agent_id} ({asset.name})"
+            ),
+        }
+    except WazuhAPIError as exc:
+        return {"action": action, "executed": False, "detail": str(exc)}
+
+
+def undo_incident_real_actions(
+    db: Session,
+    incident: Incident,
+    requested_by: str | None = None,
+) -> list[dict]:
+    """Отмена всех активных реальных реакций инцидента (stage-23, «Сбросить
+    реакции»): для каждой записи ResponseAction mode=real без undone_at
+    выполняется обратная AR-команда (best-effort), исполненные откаты
+    помечаются undone_at/undone_by (JSON — полное переприсвоение). Неудачный
+    откат не мешает сбросу отметок: запись остаётся активной в «Реакциях
+    (ВМ)», сброс можно повторить."""
+    results: list[dict] = []
+    records = list(
+        db.scalars(
+            select(ResponseAction).where(ResponseAction.incident_id == incident.id)
+        ).all()
+    )
+    for record in records:
+        metadata = dict(record.metadata_json or {})
+        if metadata.get("mode") != "real" or metadata.get("undone_at"):
+            continue
+        outcome = undo_real_action(db, incident, record.action_type, metadata.get("target"))
+        result_row = {
+            "action": record.action_type,
+            "executed": outcome.get("executed", False),
+            "detail": outcome.get("detail"),
+        }
+        if outcome.get("executed"):
+            metadata["undone_at"] = datetime.now(timezone.utc).isoformat()
+            metadata["undone_by"] = requested_by
+            record.metadata_json = metadata  # полное переприсвоение JSON-колонки
+            db.add(record)
+            audit(
+                "real_action_undone",
+                {
+                    "action": record.action_type,
+                    "target": metadata.get("target"),
+                    "by": requested_by,
+                },
+                db=db,
+                incident_id=incident.id,
+            )
+        results.append(result_row)
+    db.flush()
+    return results
 
 
 def _collect_incident_snapshot(db: Session, incident: Incident) -> dict:
-    """Снимок доказательств по инциденту (без агента): события + анализы."""
+    """Снимок доказательств по инциденту: события + анализы (внутренний,
+    без агента — снимок состояния ВМ удалён вместе с агентами stage-20)."""
     events = [
         {
             "id": e.id,
@@ -325,22 +443,40 @@ def _save_response_action(
     incident: Incident,
     action: str,
     result: dict,
-    playbook,
     context: dict,
     requested_by: str | None,
 ) -> None:
-    """Запись реально исполненного действия в ResponseAction (снимок ответа —
-    в metadata_json для расследования; секция snapshot дублирует объёмные
-    данные, в результат она попадает по ссылке)."""
+    """Запись исполненного действия в ResponseAction: metadata_json хранит
+    цель, AR-команду с аргументами и аргументы отката (undo) — источник
+    сводки «Реакции (ВМ)» и отката при reset-actions. Секция snapshot
+    дублирует объёмные данные, в результат она попадает по ссылке."""
+    playbook = None
+    from app.services.playbook import load_playbook_by_action
+
+    playbook = load_playbook_by_action(db, action)
     if playbook is None:
         return
     snapshot = result.pop("snapshot", None)
+    wazuh_target = result.get("targets") or [{}]
+    wazuh = wazuh_target[0] if result.get("targets") else None
     metadata = {
         "mode": "real",
+        "target": result.get("target"),
         "context": context,
-        "targets": result.get("targets", []),
         "requested_by": requested_by,
     }
+    if wazuh:
+        metadata["wazuh"] = {
+            "agent_id": wazuh.get("agent_id"),
+            "agent_name": wazuh.get("agent_name"),
+            "command": wazuh.get("command"),
+            "arguments": wazuh.get("arguments"),
+        }
+        metadata["undo_arguments"] = _ar_arguments(
+            wazuh["command"],
+            WAZUH_AR_COMMANDS[action][2],
+            result.get("target"),
+        )
     if snapshot is not None:
         metadata["snapshot"] = snapshot
     db.add(

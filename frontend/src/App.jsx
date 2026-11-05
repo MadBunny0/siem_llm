@@ -1,14 +1,17 @@
-// Приложение: лента инцидентов, панель деталей, вкладки и модалка «Добавить событие Wazuh».
-// Вынесено из main.jsx (stage-19-legacy-cleanup).
+// Приложение: лента инцидентов, панель деталей и вкладки. stage-23: события
+// приходят только с wazuh-агентов ВМ (POST /ingest/wazuh) — генераторы демо-
+// данных (форма «Добавить событие», «Тестовое событие», «Мок-сценарии») и
+// переключатель режимов симуляция/реально удалены по явной команде
+// пользователя: реакции playbook всегда реальные (Wazuh active response).
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
-         canConfirmAction, canRunAction, confPct, executionModeRu, formatDate, formatPlaybookSteps,
-         initiatedByBadge, pendingReasonText, populateResultToast,
+         canConfirmAction, canRunAction, confPct, formatDate, formatPlaybookSteps,
+         initiatedByBadge, pendingReasonText,
          PLAYBOOK_ACTIONS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
-         resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
+         resultsAwaitManualRun, resultsNeedConfirmation, SEVERITY_LABELS,
          STATUS_LABELS, structuredAnalysis, verdictBadge }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
@@ -19,10 +22,10 @@ import NotificationsView from './components/NotificationsView.jsx';
 import AuditView from './components/AuditView.jsx';
 import RulesView from './components/RulesView.jsx';
 import PlaybooksView from './components/PlaybooksView.jsx';
-// stage-20 (реальное исполнение на ВМ): вкладка агентов + режимы исполнения
-import TargetsView, { EXECUTION_MODES } from './components/TargetsView.jsx';
+// stage-23 (реальные реакции через Wazuh active response): вкладка «Реакции (ВМ)»
+import ResponsesView from './components/ResponsesView.jsx';
 import { request } from './api.js';
-import { ANALYSIS_BLOCK_LABELS, TABS, TAB_META, applyRuleTemplate, emptyEventForm, latestAnalysis } from './constants.js';
+import { ANALYSIS_BLOCK_LABELS, TABS, TAB_META, latestAnalysis } from './constants.js';
 
 /* ==================== Приложение ==================== */
 
@@ -36,14 +39,8 @@ export default function App({ user, onLogout }) {
   // [5] Отдельные busy-флаги: спиннер показывается только на «своей» кнопке,
   // остальные на время любого запроса просто блокируются (anyBusy).
   const [analyzing, setAnalyzing] = useState(false);
-  const [demoBusy, setDemoBusy] = useState(false);
-  const [formBusy, setFormBusy] = useState(false);
-  const [populateBusy, setPopulateBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [executeBusy, setExecuteBusy] = useState(null);
-  // stage-20: режим исполнения playbook-действий — simulation (dry run, по
-  // умолчанию как в §3.4) | real (реальное исполнение на ВМ через агента)
-  const [executionMode, setExecutionMode] = useState('simulation');
   const [error, setError] = useState('');
   // [15] Мультиселект-фильтры ленты: пустой массив = показывать все значения
   // группы (семантика «Все» без отдельной кнопки); группы сочетаются через AND.
@@ -52,7 +49,6 @@ export default function App({ user, onLogout }) {
   const [search, setSearch] = useState('');
   const [toast, setToast] = useState('');
   const [errorToast, setErrorToast] = useState('');
-  const [showForm, setShowForm] = useState(false);
   const [activeTab, setActiveTab] = useState('incidents');
 
   const [incidentDetail, setIncidentDetail] = useState(null);
@@ -68,15 +64,8 @@ export default function App({ user, onLogout }) {
   const selectedIdRef = useRef(null);
   useEffect(() => { selectedIdRef.current = selected?.id ?? null; }, [selected?.id]);
 
-  const [formData, setFormData] = useState(() => emptyEventForm());
-
-  // [15] Справочник подсказок формы «Добавить событие Wazuh» (GET /ingest/reference):
-  // правила Wazuh, группы, агенты, активы инвентаря, пользователи, IP-адреса.
-  const [reference, setReference] = useState(null);
-  const [templateId, setTemplateId] = useState('');
-
   // Хотя бы один запрос в полёте — блокируем связанные кнопки, чтобы не плодить дубли.
-  const anyBusy = analyzing || demoBusy || formBusy || populateBusy;
+  const anyBusy = analyzing;
 
   function showToast(message) {
     setToast(message);
@@ -138,28 +127,6 @@ export default function App({ user, onLogout }) {
   }
 
   useEffect(() => { load(); const timer = setInterval(load, 10000); return () => clearInterval(timer); }, []);
-
-  // [15] Справочник подсказок грузим при каждом открытии модалки (данные должны
-  // быть достаточно свежими); ошибка загрузки глотается — форма остаётся
-  // полностью ручной, подсказки просто не появляются.
-  useEffect(() => {
-    if (!showForm) return;
-    let cancelled = false;
-    setTemplateId('');
-    request('/ingest/reference')
-      .then(data => { if (!cancelled) setReference(data || null); })
-      .catch(() => { /* справочник не критичен для формы */ });
-    return () => { cancelled = true; };
-  }, [showForm]);
-
-  // [15] Подсказка «Имя агента»: объединение имён активов инвентаря и агентов
-  // Wazuh — известное имя привязывает событие к активу (влияет на оценку риска).
-  const agentNameHints = useMemo(() => {
-    const names = [];
-    for (const a of reference?.assets || []) if (a?.name && !names.includes(a.name)) names.push(a.name);
-    for (const a of reference?.agents || []) if (a?.name && !names.includes(a.name)) names.push(a.name);
-    return names;
-  }, [reference]);
 
   // [5в] Ручное обновление — спиннер на кнопке «Обновить».
   // Автообновление раз в 10с идёт через load() без индикатора, чтобы кнопка не мигала.
@@ -338,8 +305,9 @@ export default function App({ user, onLogout }) {
     finally { setConfirmBusy(false); }
   }
 
-  // Ручной запуск playbook-действия администратором: POST /incidents/{id}/execute-action.
-  // DVE повторно проверяет действие; при AUTO_RESPONSE=false — режим симуляции.
+  // Ручной запуск playbook-действия: POST /incidents/{id}/execute-action.
+  // DVE повторно проверяет действие; stage-23 — исполнение всегда реальное:
+  // Wazuh Manager доставляет AR-команду агенту на ВМ актива.
   async function executeAction(action) {
     if (!selected || !action || executeBusy) return;
     setExecuteBusy(action);
@@ -347,20 +315,22 @@ export default function App({ user, onLogout }) {
     try {
       const result = await request(`/incidents/${selected.id}/execute-action`, {
         method: 'POST',
-        body: JSON.stringify({ action, mode: executionMode }),
+        body: JSON.stringify({ action }),
       });
-      // [16] Успех = симуляция (dry run при AUTO_RESPONSE=false) или реальное
-      // исполнение; reason при симуляции — текст одобрения DVE, а не ошибка.
-      const success = result?.execution?.mode === 'simulation' || result?.execution?.executed === true;
+      // [16]/[23] Успех = реальное исполнение (команда принята менеджером) или
+      // пассивное действие; reason — человекочитаемая причина, не ошибка.
+      const success = result?.execution?.executed === true;
       if (success) {
-        // [20] real: агент возвращает человекочитаемый результат («выполнено
-        // на: wks-finance-12» / причина) — показываем его вместо dry-run фразы
+        // [23] человекочитаемый результат доставки AR-команды («Команда
+        // block-ip add <IP> принята Wazuh Manager…») — в тосте явно назван
+        // канал (Wazuh active response), чтобы оператор помнил про реальный
+        // эффект на ВМ
         const detail = result.execution?.result || actionRuDescription(action);
-        showToast(`Действие выполнено (${executionModeRu(result.execution.mode) || 'готово'}): ${detail}`);
+        showToast(`Команда отправлена на ВМ через Wazuh active response: ${detail}`);
       } else if (result?.execution?.mode === 'pending_confirmation') {
         showErrorToast(`Действие отложено: ${result?.execution?.reason || 'требуется подтверждение администратора'}`);
       } else {
-        // [20] у real-режима result — человекочитаемая причина («Реальное
+        // [23] у real-режима result — человекочитаемая причина («Реальное
         // исполнение недоступно: …»); reason может быть машинным кодом
         const reason = result?.execution?.result || result?.execution?.reason || result?.validation?.reason || 'действие не выполнено';
         showErrorToast(`Не выполнено: ${reason}`);
@@ -399,37 +369,25 @@ export default function App({ user, onLogout }) {
 
   // [18] Сброс серверных отметок «действие запускали вручную»: POST /reset-actions
   // очищает Incident.manual_actions (владелец/админ; чужой аналитик → 403,
-  // закрытый инцидент → 409). Деталь перезагружаем — кнопки снова активны.
+  // закрытый инцидент → 409). [23] попутно выполняет обратные AR-команды
+  // (откат реальных реакций на ВМ; best-effort). Деталь перезагружаем —
+  // кнопки снова активны.
   async function resetActionMarks() {
     if (!selected) return;
     try {
-      await request(`/incidents/${selected.id}/reset-actions`, { method: 'POST' });
+      const data = await request(`/incidents/${selected.id}/reset-actions`, { method: 'POST' });
       await loadIncidentDetail(selected.id);
-      showToast('Отметки выполненных действий сброшены');
+      const undo = Array.isArray(data?.undo) ? data.undo : [];
+      const failed = undo.filter(u => u.executed === false);
+      if (failed.length) {
+        showErrorToast(`Отметки сброшены; не удалось отменить реакции: ${failed.map(u => u.action).join(', ')}`);
+      } else if (undo.length) {
+        showToast(`Отметки сброшены; реальные реакции отменены (${undo.length})`);
+      } else {
+        showToast('Отметки выполненных действий сброшены');
+      }
     } catch (e) {
       showErrorToast(e.message);
-    }
-  }
-
-  // [12б] Мок-сценарии: POST /demo/populate (только admin) —
-  // генерирует 18 событий → ~7 инцидентов всех уровней.
-  async function populateDemo() {
-    if (populateBusy) return;
-    setPopulateBusy(true);
-    setError('');
-    try {
-      const result = await request('/demo/populate', { method: 'POST' });
-      // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
-      // low пройдёт автоконвейер (анализ → исполнение → закрытие); остальные
-      // уровни анализирует и запускает оператор. [22] тост различает новые
-      // инциденты и события, добавленные в существующие (повторное нажатие
-      // в пределах корреляционного окна новых карточек не даёт, §3.3.2)
-      showToast(populateResultToast(result));
-      await load();
-    } catch (e) {
-      showErrorToast(e.message);
-    } finally {
-      setPopulateBusy(false);
     }
   }
 
@@ -444,63 +402,6 @@ export default function App({ user, onLogout }) {
       setSelected(incident);
       if (!sameId) setAnalysis(null);
     } catch (e) { setError(e.message); }
-  }
-
-  // [15] Тестовое событие: бэкенд сам генерирует сценарий (POST /demo/test-event)
-  // и возвращает результат корреляции; тост называет сценарий и исход.
-  async function createDemo() {
-    if (demoBusy) return;
-    setDemoBusy(true); setError('');
-    try {
-      const data = await request('/demo/test-event', { method: 'POST' });
-      await load();
-      const result = data?.result || {};
-      const scenarioTitle = data?.scenario_title || data?.scenario || 'событие';
-      setToast(result.correlated
-        ? `🎲 Событие: ${scenarioTitle} → инцидент #${result.incident_id} (${result.severity})`
-        : `🎲 Событие: ${scenarioTitle} → правила корреляции не сработали`);
-    } catch (e) { showErrorToast(e.message); }
-    finally { setDemoBusy(false); setTimeout(() => setToast(''), 3500); }
-  }
-
-  async function createCustomEvent() {
-    setFormBusy(true);
-    setError('');
-
-    const event = {
-      timestamp: new Date(formData.timestamp).toISOString(),
-      rule: {
-        id: formData.rule_id,
-        level: parseInt(formData.rule_level) || 5,
-        description: formData.rule_description,
-        groups: formData.rule_groups.split(',').map(g => g.trim())
-      },
-      agent: {
-        id: formData.agent_id,
-        name: formData.agent_name
-      },
-      data: {
-        srcip: formData.srcip,
-        dstuser: formData.dstuser
-      },
-      full_log: formData.full_log
-    };
-
-    try {
-      const result = await request('/ingest/wazuh', { method: 'POST', body: JSON.stringify(event) });
-      await load();
-      setToast(result.incident_id
-        ? `Событие создано: инцидент #${result.incident_id}`
-        : 'Событие сохранено: правила корреляции не сработали');
-      setShowForm(false);
-      setFormData(emptyEventForm());
-      setTemplateId('');
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setFormBusy(false);
-      setTimeout(() => setToast(''), 3500);
-    }
   }
 
   const handleSelectIncident = (incident) => {
@@ -559,28 +460,7 @@ export default function App({ user, onLogout }) {
         <section className="workspace">
           <div className="panel incidents-panel">
             <div className="panel-head">
-              <div><h2>Лента инцидентов</h2><p>События, нормализованные и объединённые корреляцией</p></div>
-              <div className="panel-head-actions">
-                <button className="primary" onClick={() => setShowForm(true)} disabled={anyBusy}>＋ Добавить событие</button>
-                <button
-                  className="primary"
-                  onClick={createDemo}
-                  disabled={anyBusy}
-                  title="Случайный мок-сценарий из набора событий: брутфорс, распыление паролей, сканирование, SQLi, вредоносное ПО и др."
-                >
-                  {demoBusy ? <><span className="spinner"></span> Отправка...</> : '🎲 Тестовое событие'}
-                </button>
-                {isAdmin && (
-                  <button
-                    className="primary"
-                    onClick={populateDemo}
-                    disabled={anyBusy}
-                    title="Сгенерировать мок-сценарии: 18 событий → ~7 инцидентов всех уровней (только администратор)"
-                  >
-                    {populateBusy ? <><span className="spinner"></span> Генерация...</> : '🎬 Мок-сценарии'}
-                  </button>
-                )}
-              </div>
+              <div><h2>Лента инцидентов</h2><p>События с wazuh-агентов ВМ, нормализованные и объединённые корреляцией</p></div>
             </div>
             {/* [15] Мультиселект-фильтры: клик по чипу — toggle, можно несколько в группе;
                 пустой выбор группы = показывать все значения (семантика «Все» без кнопки) */}
@@ -591,7 +471,7 @@ export default function App({ user, onLogout }) {
                 <button className="filter-reset" title="Сбросить статус, критичность и поиск" onClick={() => { setStatusFilter([]); setSeverityFilter([]); setSearch(''); }}>✕ Сбросить</button>
               )}
             </div>
-            {loading ? <div className="empty">Загрузка данных...</div> : filtered.length === 0 ? <div className="empty"><div className="empty-icon">✓</div><h3>Инцидентов пока нет</h3><p>Нажмите «Тестовое событие», чтобы проверить весь конвейер.</p></div> : <div className="incident-list">{filtered.map(i => <button className={`incident-row ${selected?.id === i.id ? 'selected-row' : ''}`} key={i.id} onClick={() => handleSelectIncident(i)}><div className={`risk-dot ${i.severity}`}></div><div className="incident-main"><div className="incident-title"><strong>#{i.id} · {i.title}</strong><Severity value={i.severity}/></div><p>{i.description || 'Описание отсутствует'}{i.attack_type ? ` · ${i.attack_type}` : ''}</p><span>Риск: {i.risk_score}{i.asset?.criticality ? ` · ${i.asset.criticality}` : ''} · {formatDate(i.created_at)}</span></div><Status value={i.status}/><span className="chevron">›</span></button>)}</div>}
+            {loading ? <div className="empty">Загрузка данных...</div> : filtered.length === 0 ? <div className="empty"><div className="empty-icon">✓</div><h3>Инцидентов пока нет</h3><p>Инциденты создаются при срабатывании правил корреляции на событиях с wazuh-агентов ВМ — выполните сценарий из docs/E2E_SCENARIOS.md.</p></div> : <div className="incident-list">{filtered.map(i => <button className={`incident-row ${selected?.id === i.id ? 'selected-row' : ''}`} key={i.id} onClick={() => handleSelectIncident(i)}><div className={`risk-dot ${i.severity}`}></div><div className="incident-main"><div className="incident-title"><strong>#{i.id} · {i.title}</strong><Severity value={i.severity}/></div><p>{i.description || 'Описание отсутствует'}{i.attack_type ? ` · ${i.attack_type}` : ''}</p><span>Риск: {i.risk_score}{i.asset?.criticality ? ` · ${i.asset.criticality}` : ''} · {formatDate(i.created_at)}</span></div><Status value={i.status}/><span className="chevron">›</span></button>)}</div>}
           </div>
           <div className="panel detail-panel">
             {!selected ? <div className="detail-empty"><div className="radar">◉</div><h2>Выберите инцидент</h2><p>Здесь появятся контекст события, результат оценки риска и интеллектуальная рекомендация Qwen2.5-3B.</p></div> : <>
@@ -601,9 +481,9 @@ export default function App({ user, onLogout }) {
               <details className="role-hint">
                 <summary>Роль аналитика — как работать с инцидентом</summary>
                 <ol>
-                  <li>Запустите интеллектуальный анализ (кнопка ниже) — анализ выполняется в фоне, результат появится в панели сам. Одобренные DVE действия low-инцидентов выполняются автоматически (сейчас — симуляция).</li>
+                  <li>Запустите интеллектуальный анализ (кнопка ниже) — анализ выполняется в фоне, результат появится в панели сам. Действия анализ только рекомендует — их запускает оператор.</li>
                   <li>При критическом активе DVE откладывает опасное действие — его подтверждает АДМИНИСТРАТОР кнопкой «Подтвердить и выполнить».</li>
-                  <li>Админ может вручную запустить действие кнопкой ▶ на строке результата.</li>
+                  <li>Запуск действия — РЕАЛЬНАЯ реакция на ВМ актива через Wazuh active response (кнопка ▶ или блок «Все действия playbook»).</li>
                   <li>Меняйте статус инцидента кнопками блока «Изменить статус».</li>
                 </ol>
               </details>
@@ -779,7 +659,7 @@ export default function App({ user, onLogout }) {
                     // [15] Подтверждение отложенного — только админ; ручной запуск
                     // одобренного — админ или владелец инцидента (незакреплённый
                     // закрепляется при запуске). DVE-политика всё равно проверяется
-                    // на бэкенде, при AUTO_RESPONSE=false исполнение — dry run.
+                    // на бэкенде; stage-23 — исполнение всегда реальное (Wazuh AR).
                     // [16] На закрытом инциденте обе кнопки недоступны.
                     const canConfirm = canConfirmAction(r, isAdmin, incidentClosed);
                     const canExecute = canRunAction(r, {
@@ -810,14 +690,14 @@ export default function App({ user, onLogout }) {
                             </button>
                           )}
                           {/* [16]/[18] Действие уже запускали вручную: кнопка сменяется
-                              отметкой «Выполнено» (для симуляции — dry run) */}
+                              отметкой «Выполнено» */}
                           {isDone ? (
                             <button
                               className="exec-btn exec-run"
                               disabled
-                              title="Действие уже запускали вручную; повторный запуск — после нового анализа (сухой run повторяем)"
+                              title="Действие уже запускали вручную; повторный запуск — после «Сбросить отметки»"
                             >
-                              ✓ Выполнено{((r.execution?.mode ?? manualRuns[r.action]?.mode) === 'simulation') ? ' (dry run)' : ''}
+                              ✓ Выполнено
                             </button>
                           ) : canExecute && (
                             /* Ручной запуск одобренного DVE действия — владелец инцидента или администратор;
@@ -826,7 +706,7 @@ export default function App({ user, onLogout }) {
                               className="exec-btn exec-run"
                               onClick={() => executeAction(r.action)}
                               disabled={!!executeBusy}
-                              title={`Запустить действие playbook вручную (при симуляции — dry run): ${actionRuDescription(r.action)}`}
+                              title={`Реальная реакция на ВМ актива через Wazuh active response: ${actionRuDescription(r.action)}`}
                             >
                               {executeBusy === r.action
                                 ? <><span className="spinner spinner-sm"></span> Выполняется...</>
@@ -840,19 +720,15 @@ export default function App({ user, onLogout }) {
                         {r.execution?.playbook_description && (
                           <small className="playbook-desc">Сценарий: {r.execution.playbook_description}</small>
                         )}
-                        {/* [15] Шаги сценария — «команды» действия: при симуляции показываем,
-                            что БЫЛО БЫ выполнено, при реальном исполнении — что выполнено;
-                            [17] manual_run — шаги запустит оператор кнопкой «▶ Выполнить» */}
+                        {/* [15]/[23] Шаги сценария — «команды» действия: manual_run —
+                            шаги запустит оператор кнопкой «▶ Выполнить», иначе
+                            сценарий уже исполнялся (реально) */}
                         {formatPlaybookSteps(r.execution?.playbook_steps).length > 0 && (
                           <div className="result-steps">
                             <label>
-                              {r.execution?.mode === 'simulation'
-                                ? 'Что было бы выполнено (симуляция):'
-                                : r.execution?.mode === 'controlled'
-                                  ? 'Шаги сценария (выполнено):'
-                                  : r.execution?.mode === 'manual_run'
-                                    ? 'Шаги сценария (запустит оператор):'
-                                    : 'Шаги сценария:'}
+                              {r.execution?.mode === 'manual_run'
+                                ? 'Шаги сценария (запустит оператор):'
+                                : 'Шаги сценария (выполнено):'}
                             </label>
                             <ol>
                               {formatPlaybookSteps(r.execution.playbook_steps).map((line, i) => (
@@ -884,28 +760,11 @@ export default function App({ user, onLogout }) {
                         </button>
                       )}
                     </div>
-                    {/* [20] Режим исполнения: симуляция (dry run, §3.4) или
-                        реальное исполнение на ВМ наблюдаемого пользователя.
-                        DVE одинаков для обоих режимов */}
-                    <div className="execution-mode-row" role="radiogroup" aria-label="Режим исполнения">
-                      <span className="execution-mode-label">Режим исполнения:</span>
-                      {EXECUTION_MODES.map(m => (
-                        <button
-                          key={m.id}
-                          role="radio"
-                          aria-checked={executionMode === m.id}
-                          className={`mode-btn${executionMode === m.id ? ' active' : ''}`}
-                          onClick={() => setExecutionMode(m.id)}
-                          title={m.hint}
-                        >
-                          {m.label}
-                        </button>
-                      ))}
-                    </div>
+                    {/* [23] Исполнение всегда реальное: команда уходит в Wazuh
+                        Manager (active response) и исполняется на ВМ актива */}
                     <div className="playbook-actions-grid">
                       {PLAYBOOK_ACTIONS.map(a => {
                         const runDone = !!manualRuns[a];
-                        const mode = manualRuns[a]?.mode;
                         return (
                           <button
                             key={a}
@@ -913,7 +772,7 @@ export default function App({ user, onLogout }) {
                             onClick={() => executeAction(a)}
                             disabled={runDone || !!executeBusy || incidentClosed || foreignOwner}
                             title={runDone
-                              ? `Действие выполнил: ${manualRuns[a].by || '—'} · ${formatDate(manualRuns[a].at)}${mode === 'simulation' ? ' · dry run' : ''}`
+                              ? `Действие выполнил: ${manualRuns[a].by || '—'} · ${formatDate(manualRuns[a].at)}`
                               : actionRuDescription(a)}
                           >
                             {runDone ? '✓ Выполнено' : actionShortLabel(a)}
@@ -927,13 +786,14 @@ export default function App({ user, onLogout }) {
                       <div className="playbook-actions-done">
                         {Object.entries(manualRuns).map(([action, info]) => (
                           <span key={action} className="chip">
-                            {actionShortLabel(action)} — {info?.by || '—'}{info?.mode === 'simulation' ? ' (dry run)' : ''}
+                            {actionShortLabel(action)} — {info?.by || '—'}
+                            {info?.target ? ` → ${info.target}` : ''}
                           </span>
                         ))}
                       </div>
                     )}
                     <small className="playbook-actions-hint">
-                      Запуск проверяется DVE; при выключенном AUTO_RESPONSE — симуляция (dry run). Свободный инцидент закрепляется за вами.
+                      Запуск проверяется DVE; действие исполняется на ВМ актива через Wazuh active response. Свободный инцидент закрепляется за вами.
                     </small>
                   </div>
                   {/* [15] Сырой JSON убран под сворачиваемый блок: технические данные
@@ -1024,174 +884,11 @@ export default function App({ user, onLogout }) {
         {activeTab === 'rules' && <RulesView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
         {activeTab === 'playbooks' && <PlaybooksView notify={showToast} toastError={showErrorToast} isAdmin={isAdmin} />}
         {/* [20] Агенты на ВМ наблюдаемых пользователей — реальное исполнение */}
-        {activeTab === 'targets' && <TargetsView request={request} />}
+        {activeTab === 'responses' && <ResponsesView request={request} />}
       </section>}
 
       <footer><span>Intelligent Incident Processing System · Prototype 1.0</span><span>Qwen2.5-3B · Ollama · PostgreSQL</span></footer>
     </main>
 
-    {showForm && (
-      <div className="modal-overlay" onClick={() => setShowForm(false)}>
-        <div className="modal" onClick={e => e.stopPropagation()}>
-          <h3>Добавить событие Wazuh</h3>
-          <p className="modal-subtitle">
-            Выбери шаблон атаки — технические поля заполнятся автоматически. От критичности
-            актива зависит оценка риска и требования подтверждения (DVE)
-          </p>
-
-          {/* [15] Шаблон события — варианты из справочника /ingest/reference (правила Wazuh);
-              выбор заполняет поля правила, но не блокирует дальнейшую правку */}
-          <div className="form-group">
-            <label>Шаблон события</label>
-            <select
-              value={templateId}
-              onChange={e => {
-                const id = e.target.value;
-                setTemplateId(id);
-                const rule = (reference?.rules || []).find(r => String(r.id) === id) || null;
-                setFormData(f => applyRuleTemplate(rule, f));
-              }}
-            >
-              <option value="">— заполнить вручную —</option>
-              {(reference?.rules || []).map(r => <option key={r.id} value={String(r.id)}>{ruleTemplateLabel(r)}</option>)}
-            </select>
-          </div>
-
-          <div className="form-group">
-            <label>Описание правила</label>
-            <input
-              value={formData.rule_description}
-              onChange={e => setFormData({...formData, rule_description: e.target.value})}
-              placeholder="Например: SSH authentication failure"
-            />
-          </div>
-
-          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
-            <div className="form-group">
-              <label>ID правила Wazuh</label>
-              <input
-                value={formData.rule_id}
-                onChange={e => setFormData({...formData, rule_id: e.target.value})}
-                placeholder="5710"
-                list="ref-rule-ids"
-              />
-            </div>
-            <div className="form-group">
-              <label>Уровень правила (1–15)</label>
-              <input
-                type="number"
-                min="1"
-                max="15"
-                value={formData.rule_level}
-                onChange={e => setFormData({...formData, rule_level: e.target.value})}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label>Группы события (через запятую)</label>
-            <input
-              value={formData.rule_groups}
-              onChange={e => setFormData({...formData, rule_groups: e.target.value})}
-              placeholder="authentication_failed,sshd"
-              list="ref-groups"
-            />
-            <small className="form-hint">По группам правила корреляции распознают тип атаки — значения можно выбрать из списка</small>
-          </div>
-
-          <div className="form-group">
-            <label>Имя агента</label>
-            <small className="form-hint">Известное имя агента привязывает событие к активу из инвентаря — критичность актива влияет на оценку риска</small>
-            <input
-              value={formData.agent_name}
-              onChange={e => setFormData({...formData, agent_name: e.target.value})}
-              placeholder="mail-prod-01"
-              list="ref-agent-names"
-              title="Известное имя агента привязывает событие к активу из инвентаря (влияет на оценку риска)"
-            />
-          </div>
-
-          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
-            <div className="form-group">
-              <label>ID агента Wazuh</label>
-              <input
-                value={formData.agent_id}
-                onChange={e => setFormData({...formData, agent_id: e.target.value})}
-                placeholder="001"
-                list="ref-agent-ids"
-              />
-            </div>
-            <div className="form-group">
-              <label>Время (ISO)</label>
-              <input
-                type="datetime-local"
-                value={formData.timestamp}
-                onChange={e => setFormData({...formData, timestamp: e.target.value})}
-              />
-            </div>
-          </div>
-
-          <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px'}}>
-            <div className="form-group">
-              <label>Source IP (источник)</label>
-              <input
-                value={formData.srcip}
-                onChange={e => setFormData({...formData, srcip: e.target.value})}
-                placeholder="198.51.100.7"
-                list="ref-src-ips"
-              />
-            </div>
-            <div className="form-group">
-              <label>Пользователь</label>
-              <input
-                value={formData.dstuser}
-                onChange={e => setFormData({...formData, dstuser: e.target.value})}
-                placeholder="root"
-                list="ref-users"
-              />
-            </div>
-          </div>
-
-          {/* [15] Справочные подсказки (datalist не ограничивает свободный ввод);
-              id уникальны, источники — справочник /ingest/reference */}
-          <datalist id="ref-rule-ids">
-            {(reference?.rules || []).map(r => <option key={r.id} value={String(r.id)} />)}
-          </datalist>
-          <datalist id="ref-groups">
-            {(reference?.groups || []).map(g => <option key={g} value={g} />)}
-          </datalist>
-          <datalist id="ref-agent-names">
-            {agentNameHints.map(name => <option key={name} value={name} />)}
-          </datalist>
-          <datalist id="ref-agent-ids">
-            {(reference?.agents || []).map(a => <option key={a.id} value={String(a.id)} />)}
-          </datalist>
-          <datalist id="ref-users">
-            {(reference?.users || []).map(u => <option key={u} value={u} />)}
-          </datalist>
-          <datalist id="ref-src-ips">
-            {(reference?.src_ips || []).map(ip => <option key={ip} value={ip} />)}
-          </datalist>
-
-          <div className="form-group">
-            <label>Полный лог</label>
-            <textarea
-              value={formData.full_log}
-              onChange={e => setFormData({...formData, full_log: e.target.value})}
-              placeholder="Failed password for root from 192.0.2.10 port 22 ssh2"
-              rows="3"
-              style={{width: '100%', padding: '8px', background: '#080e19', border: '1px solid #1d293e', borderRadius: '6px', color: '#dbe1ec', fontSize: '12px', fontFamily: 'monospace'}}
-            />
-          </div>
-
-          <div className="form-actions">
-            <button className="ghost" onClick={() => setShowForm(false)}>Отмена</button>
-            <button className="primary" onClick={createCustomEvent} disabled={formBusy}>
-              {formBusy ? <><span className="spinner"></span> Отправка...</> : 'Отправить событие'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
   </div>
 }

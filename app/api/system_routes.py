@@ -49,7 +49,6 @@ def health(db: Session = Depends(get_db)):
         "status": "ok",
         "database": "ok",
         "llm_model": settings.ollama_model,
-        "auto_response": settings.auto_response,
         "auto_analysis": settings.auto_analysis,
         "auto_analysis_levels": sorted(auto_analysis_levels()),
         "auto_close_levels": sorted(auto_close_levels()),

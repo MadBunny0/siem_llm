@@ -1,0 +1,5 @@
+# Shell-скрипты стенда (wazuh/*.sh, wazuh/ar/*.sh) монтируются в Linux-контейнеры
+# и запускаются на ВМ — они обязаны оставаться с LF-концами строк. Без этой
+# записи core.autocrlf=true на Windows-хостах отдаёт CRLF, что ломает shebang
+# («bad interpreter») при повторном checkout.
+*.sh text eol=lf
