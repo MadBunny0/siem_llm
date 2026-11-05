@@ -146,6 +146,11 @@ class IncidentDetailOut(IncidentOut):
     # отметки ручных запусков playbook-действий (stage-18, фидбек): состояние
     # кнопок действий видно всем операторам (сервер, а не localStorage)
     manual_actions: dict | None = None
+    # разбор оценки критичности (stage-22): факторы с числами и объяснениями
+    # (матрица MITRE + числовая модель риска §3.3.3) — блок «Оценка
+    # критичности» в карточке; None у инцидентов до stage-22 (заполняется
+    # при ingest / добавлении события)
+    severity_factors: dict | None = None
 
 
 class IncidentStatusIn(BaseModel):

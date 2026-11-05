@@ -74,6 +74,18 @@ INTERNAL_NETWORKS = [
 # Лестница уровней критичности для повышения (escalate)
 _SEVERITY_LADDER = ["low", "medium", "high", "critical"]
 
+# Русские названия категорий повышения (stage-22 — для карточки инцидента,
+# docs/CRITICALITY_MATRIX.md); ключи — коды категорий из derive_severity_detail
+ESCALATION_CATEGORY_INFO = {
+    "critical_asset": "Критичный бизнес-актив",
+    "personal_data": "Персональные данные",
+    "perimeter": "Периметр сети",
+    "admin_zones": "Административные зоны",
+    "ll_redteam": "Красная команда (pentest/red team)",
+    "stop_crane": "Аварийные функции (stop crane)",
+    "vendor_flag": "Критичное событие поставщика логов",
+}
+
 
 def escalate(severity: str, steps: int = 1) -> str:
     """Повышение критичности по лестнице low→medium→high→critical.
@@ -102,11 +114,13 @@ def _is_external_ip(src_ip: str) -> bool:
     )
 
 
-def _escalation_markers_hit(rule, events) -> set[str]:
-    """Категории повышения по маркерам ESCALATION_GROUP_MARKERS.
+def _escalation_markers_hit(rule, events) -> dict[str, str]:
+    """Категории повышения по маркерам ESCALATION_GROUP_MARKERS → сработавший маркер.
 
     Haystack — текстовые поля в lowercase: группы (raw_data.rule.groups) и
     event_type всех событий, имя и описание правила корреляции.
+    Возвращает {код категории, совпавший маркер} — маркер нужен для
+    объяснения фактора в карточке инцидента (stage-22).
     """
     parts: list[str] = []
     for event in events:
@@ -117,11 +131,22 @@ def _escalation_markers_hit(rule, events) -> set[str]:
     parts.append(str(getattr(rule, "description", "") or ""))
     haystack = " ".join(parts).lower()
 
-    return {
-        category
-        for category, markers in ESCALATION_GROUP_MARKERS.items()
-        if any(marker in haystack for marker in markers)
-    }
+    hits: dict[str, str] = {}
+    for category, markers in ESCALATION_GROUP_MARKERS.items():
+        for marker in markers:
+            if marker in haystack:
+                hits[category] = marker
+                break
+    return hits
+
+
+def _perimeter_external_ip(events) -> str | None:
+    """Первый непустой внешний src_ip событий (для объяснения фактора) или None."""
+    for event in events:
+        src_ip = getattr(event, "src_ip", None)
+        if src_ip and _is_external_ip(src_ip):
+            return str(src_ip)
+    return None
 
 
 def _perimeter_hit(events, asset) -> bool:
@@ -133,10 +158,76 @@ def _perimeter_hit(events, asset) -> bool:
     segment = str(getattr(asset, "network_segment", "") or "").strip().lower()
     if segment not in PERIMETER_SEGMENTS:
         return False
-    return any(
-        getattr(event, "src_ip", None) and _is_external_ip(event.src_ip)
-        for event in events
-    )
+    return _perimeter_external_ip(events) is not None
+
+
+def derive_severity_detail(rule, events, asset) -> tuple[str | None, list[str], list[dict]]:
+    """Критичность по матрице MITRE с разбором факторов (stage-22).
+
+    Тот же расчёт, что derive_severity (см. ниже), дополнительно возвращает
+    detail — список объяснений сработавших условий повышения для карточки
+    инцидента (Incident.severity_factors):
+
+    [{"category": "critical_asset",
+      "title": "Критичный бизнес-актив",
+      "explanation": "Актив «web-db-01» имеет критичность critical"}, ...]
+    """
+    tactic = getattr(rule, "mitre_tactic", None)
+    base = MITRE_TACTIC_SEVERITY.get(tactic) if tactic else None
+    if base is None:
+        return None, [], []
+
+    hits = _escalation_markers_hit(rule, events)
+    detail: list[dict] = []
+
+    # (a) критичные бизнес-активы
+    if asset is not None and getattr(asset, "criticality", None) == "critical":
+        detail.append({
+            "category": "critical_asset",
+            "title": ESCALATION_CATEGORY_INFO["critical_asset"],
+            "explanation": (
+                f"Актив «{getattr(asset, 'name', '?')}» имеет критичность "
+                f"{getattr(asset, 'criticality', '?')}"
+            ),
+        })
+
+    # (b) маркеры категорий повышения в текстовых полях
+    for category in sorted(hits):
+        detail.append({
+            "category": category,
+            "title": ESCALATION_CATEGORY_INFO.get(category, category),
+            "explanation": (
+                f"Маркер «{hits[category]}» найден в группах/типе событий "
+                f"или имени/описании правила «{getattr(rule, 'name', '?')}»"
+            ),
+        })
+
+    # (c) условие периметра: сегмент DMZ/edge/internet + внешний источник
+    if asset is not None and _perimeter_hit(events, asset):
+        segment = str(getattr(asset, "network_segment", "") or "").strip().lower()
+        detail.append({
+            "category": "perimeter",
+            "title": ESCALATION_CATEGORY_INFO["perimeter"],
+            "explanation": (
+                f"Актив «{getattr(asset, 'name', '?')}» в периметровом сегменте "
+                f"«{segment}», внешний источник {_perimeter_external_ip(events)}"
+            ),
+        })
+
+    # (d) ручной флаг поставщика логов (п.7 процедуры)
+    if getattr(rule, "escalated_by_vendor", False):
+        detail.append({
+            "category": "vendor_flag",
+            "title": ESCALATION_CATEGORY_INFO["vendor_flag"],
+            "explanation": (
+                "Правило отмечено флагом escalated_by_vendor — критичное "
+                "событие поставщика логов (п.7 процедуры)"
+            ),
+        })
+
+    reasons = sorted({item["category"] for item in detail})
+    severity = escalate(base) if reasons else base
+    return severity, reasons, detail
 
 
 def derive_severity(rule, events, asset) -> tuple[str | None, list[str]]:
@@ -161,28 +252,8 @@ def derive_severity(rule, events, asset) -> tuple[str | None, list[str]]:
     - perimeter — актив сегмента периметра + внешний источник;
     - vendor_flag — отдельно отмеченные критичные события поставщика логов
       (п.7 процедуры — ручной флаг escalated_by_vendor).
+
+    Разбор факторов с объяснениями — derive_severity_detail (stage-22).
     """
-    tactic = getattr(rule, "mitre_tactic", None)
-    base = MITRE_TACTIC_SEVERITY.get(tactic) if tactic else None
-    if base is None:
-        return None, []
-
-    reasons: set[str] = set()
-
-    # (a) критичные бизнес-активы
-    if asset is not None and getattr(asset, "criticality", None) == "critical":
-        reasons.add("critical_asset")
-
-    # (b) маркеры категорий повышения в текстовых полях
-    reasons.update(_escalation_markers_hit(rule, events))
-
-    # (c) условие периметра: сегмент DMZ/edge/internet + внешний источник
-    if _perimeter_hit(events, asset):
-        reasons.add("perimeter")
-
-    # (d) ручной флаг поставщика логов (п.7 процедуры)
-    if getattr(rule, "escalated_by_vendor", False):
-        reasons.add("vendor_flag")
-
-    severity = escalate(base) if reasons else base
-    return severity, sorted(reasons)
+    severity, reasons, _ = derive_severity_detail(rule, events, asset)
+    return severity, reasons
