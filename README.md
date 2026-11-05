@@ -171,7 +171,8 @@ curl http://localhost:8000/api/v1/incidents -H "Authorization: Bearer $TOKEN"
   recreate контейнера). Детали — [WAZUH_INTEGRATION.md](docs/WAZUH_INTEGRATION.md).
 - **Реальный E2E-стенд** (VirtualBox: 2 ВМ Kali с wazuh-агентами; события идут в SIEM,
   реакции playbook — Wazuh active response — реально меняют состояние ВМ):
-  инструкция — [E2E_STAND.md](docs/E2E_STAND.md), 3 сценария атак для оператора
+  установка гипервизора и урезанных консольных ВМ с нуля — [E2E_VM_SETUP.md](docs/E2E_VM_SETUP.md),
+  инструкция стенда — [E2E_STAND.md](docs/E2E_STAND.md), 3 сценария атак для оператора
   (SSH-брутфорс, SQLi, инсайдерский бэкдор-аккаунт) — [E2E_SCENARIOS.md](docs/E2E_SCENARIOS.md).
 
 ## Остановка

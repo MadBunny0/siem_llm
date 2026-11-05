@@ -278,6 +278,7 @@ docker compose exec wazuh-manager tail -n 20 /var/ossec/logs/alerts/alerts.json 
 ## 10. Что дальше
 
 - Полный E2E-стенд с ВМ Kali (агенты, реакции playbook по-настоящему) —
+  установка ВМ с нуля: [E2E_VM_SETUP.md](E2E_VM_SETUP.md); стенд:
   [E2E_STAND.md](E2E_STAND.md); сценарии атак для оператора — [E2E_SCENARIOS.md](E2E_SCENARIOS.md).
 - Подключение и настройка Wazuh — [WAZUH_INTEGRATION.md](WAZUH_INTEGRATION.md).
 - Описание системы — [README.md](../README.md) и [DOCUMENTATION.md](DOCUMENTATION.md).
