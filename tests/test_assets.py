@@ -5,21 +5,7 @@ resolve_asset_id ищет актив по IP-адресу источника (п
 (совпадение с Asset.name). Результат — id актива или None.
 """
 
-import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-
-from app.models import Asset, Base
-
-
-@pytest.fixture
-def db():
-    """Изолированная in-memory SQLite-БД (как в test_correlation.py)."""
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    yield SessionLocal()
-    engine.dispose()
+from app.models import Asset
 
 
 def test_resolve_by_ip_multi_value(db):

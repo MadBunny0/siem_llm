@@ -7,22 +7,13 @@
 """
 
 import logging
-from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Incident, Notification
 
 logger = logging.getLogger("notification")
-
-# Виртуальная 'адресная книга' SOC-аналитиков.
-# В реальности конфигурируется через .env (SOC_RECIPIENTS) или БД.
-SOC_RECIPIENTS = {
-    "analyst@example.com": {"role": "analyst", "channel": "email"},
-    "soc-channel@slack.com": {"role": "soc_channel", "channel": "slack"},
-}
 
 
 def _choose_recipients(severity: str, criticality: str | None) -> list[tuple[str, str]]:

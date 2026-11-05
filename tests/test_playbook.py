@@ -1,19 +1,7 @@
-import pytest
 from unittest.mock import patch
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, Incident, Playbook
-from app.services.playbook import execute_playbook, load_playbook_by_action
-
-
-@pytest.fixture
-def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    session = sessionmaker(bind=engine)()
-    yield session
-    engine.dispose()
+from app.models import Incident, Playbook
+from app.services.playbook import execute_playbook
 
 
 def test_execute_playbook_simulation_mode():

@@ -1,18 +1,8 @@
-import pytest
 from datetime import datetime, timezone
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import sessionmaker
 
-from app.models import Base, AuditLog, Incident, Event
+from sqlalchemy import select
 
-
-@pytest.fixture
-def db():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine)
-    yield SessionLocal()
-    engine.dispose()
+from app.models import AuditLog, Incident, Event
 
 
 def test_log_audit(db):

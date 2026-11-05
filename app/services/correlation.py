@@ -86,36 +86,6 @@ def check_rule_conditions(rule: CorrelationRule, event: Event) -> bool:
     return all(match_condition(event, cond) for cond in conditions)
 
 
-def find_related_events(db: Session, event: Event) -> list[Event]:
-    """Поиск связанных событий на основе активных правил корреляции."""
-    rules = load_correlation_rules(db)
-
-    related = []
-    for rule in rules:
-        if check_rule_conditions(rule, event):
-            window = rule.time_window_minutes if rule.time_window_minutes else settings.correlation_window_minutes
-            start = event.timestamp - timedelta(minutes=window)
-            end = event.timestamp + timedelta(minutes=window)
-            candidates = list(db.scalars(
-                select(Event).where(Event.timestamp.between(start, end))
-            ).all())
-            related.extend([e for e in candidates if e.id != event.id])
-
-    # Дедупликация и добавление самого события
-    seen = set()
-    unique_related = []
-    for e in related:
-        if e.id not in seen:
-            seen.add(e.id)
-            unique_related.append(e)
-    return unique_related + [event]
-
-def match_attribute(event_a: Event, event_b: Event) -> bool:
-    """Сопоставление двух событий по признакам (§3.3.2):
-    IP-адрес источника, учётная запись пользователя, защищаемый актив."""
-    return match_factor_count(event_a, event_b) > 0
-
-
 def match_factor_count(event_a: Event, event_b: Event) -> int:
     """Сколько признаков совпало у двух событий (0–3): IP, учётная запись, актив.
 

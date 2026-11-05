@@ -1,19 +1,25 @@
 """Initialize the PostgreSQL schema before the API container starts."""
 
+import logging
+
 from sqlalchemy import select
-from app.db import Base, engine
+from app.config import settings
+from app.db import Base, SessionLocal, engine
 from app import models  # noqa: F401 - registers all SQLAlchemy models
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_schema_updates()
-    print("Database schema initialized successfully.", flush=True)
+    logger.info("Database schema initialized successfully.")
     _seed_default_users()
     _seed_default_assets()
     _seed_default_correlation_rules()
     _seed_default_playbooks()
     _seed_validation_policy()
+    _seed_execution_targets()
 
 
 def _ensure_schema_updates() -> None:
@@ -55,8 +61,6 @@ def _seed_default_users() -> None:
     soc_lead/soclead123 (администратор — подтверждение действий на
     критических активах, §3.4 ВКР, p:17).
     """
-    from sqlalchemy.orm import Session
-
     from app.services.security import hash_password
 
     users = [
@@ -64,7 +68,7 @@ def _seed_default_users() -> None:
         {"username": "analyst2", "password": "analyst123", "role": "analyst"},
         {"username": "soc_lead", "password": "soclead123", "role": "admin"},
     ]
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for user_data in users:
             stmt = select(models.User).where(models.User.username == user_data["username"])
             existing = session.scalar(stmt)
@@ -89,8 +93,6 @@ def _seed_default_users() -> None:
 
 def _seed_default_assets() -> None:
     """Создание базовых защищаемых активов (согласно Главе 3.2)."""
-    from sqlalchemy.orm import Session
-
     assets = [
         {
             "name": "mail-prod-01",
@@ -133,7 +135,7 @@ def _seed_default_assets() -> None:
             "ip_addresses": "10.20.60.20",
         },
     ]
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for asset_data in assets:
             stmt = select(models.Asset).where(models.Asset.name == asset_data["name"])
             existing = session.scalar(stmt)
@@ -151,8 +153,6 @@ def _seed_default_correlation_rules() -> None:
     критичности (процедура PDF v3.1, см. docs/CRITICALITY_MATRIX.md); правила
     без тактики обрабатываются по числовой модели риска (fallback).
     """
-    from sqlalchemy.orm import Session
-
     rules = [
         {
             # T1110 Метод перебора (§3.3.2: «подбор паролей»)
@@ -259,7 +259,7 @@ def _seed_default_correlation_rules() -> None:
             "mitre_technique": "T1048",
         },
     ]
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for rule_data in rules:
             stmt = select(models.CorrelationRule).where(
                 models.CorrelationRule.name == rule_data["name"]
@@ -286,7 +286,6 @@ def _seed_default_correlation_rules() -> None:
 
 def _seed_default_playbooks() -> None:
     """Создание базовых сценариев реагирования (согласно Главе 3.4)."""
-    from sqlalchemy.orm import Session
     playbooks = [
         {
             "name": "block_ip",
@@ -365,7 +364,7 @@ def _seed_default_playbooks() -> None:
             "is_active": True,
         },
     ]
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for pb_data in playbooks:
             stmt = select(models.Playbook).where(
                 models.Playbook.name == pb_data["name"]
@@ -383,11 +382,9 @@ def _seed_validation_policy() -> None:
     Источник значений — DEFAULT_ALLOWED_ACTIONS из app/services/validation.py:
     какие действия разрешены для каждого уровня риска инцидента.
     """
-    from sqlalchemy.orm import Session
-
     from app.services.validation import ALLOWED_ACTIONS
 
-    with Session(engine) as session:
+    with SessionLocal() as session:
         for severity, allowed in ALLOWED_ACTIONS.items():
             stmt = select(models.ValidationPolicy).where(models.ValidationPolicy.severity == severity)
             existing = session.scalar(stmt)
@@ -399,6 +396,65 @@ def _seed_validation_policy() -> None:
                     )
                 )
         session.commit()
+
+
+def _parse_execution_targets(raw: str) -> list[dict]:
+    """Разбор реестра целей исполнения из env EXECUTION_TARGETS (stage-20).
+
+    Формат: "name=url|token,name=url|token" (разделитель url/токена — «|»,
+    т.к. URL содержит «://» и порт; токен опционален). Имя цели совпадает
+    с именем актива — инцидент по активу находит цель.
+    """
+    targets = []
+    for chunk in (raw or "").split(","):
+        chunk = chunk.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        name, rest = chunk.split("=", 1)
+        url, sep, token = rest.partition("|")
+        if name.strip() and url.strip():
+            targets.append(
+                {"name": name.strip(), "base_url": url.strip().rstrip("/"), "auth_token": token.strip() or None}
+            )
+    return targets
+
+
+def _seed_execution_targets() -> None:
+    """Seed реестра целей реального исполнения (stage-20, docs/REAL_EXECUTION.md).
+
+    Источник — env EXECUTION_TARGETS (name=url|token,...): в compose это три
+    агента-«ВМ» (wks-finance-12, app-web-01, mail-prod-01 — имена совпадают
+    с активами). Цель не из env не создаётся; существующая — обновляется
+    (url/токен), чтобы смена конфигурации подхватывалась рестартом.
+    """
+    targets = _parse_execution_targets(settings.execution_targets)
+    if not targets:
+        logger.info("EXECUTION_TARGETS is empty — real execution registry left empty.")
+        return
+    with SessionLocal() as session:
+        for target_data in targets:
+            stmt = select(models.ExecutionTarget).where(
+                models.ExecutionTarget.name == target_data["name"]
+            )
+            existing = session.scalar(stmt)
+            # связка с активом по имени (инцидент → актив → цель исполнения);
+            # актива с таким именем может не быть — цель остаётся без связки
+            asset = session.scalar(
+                select(models.Asset).where(models.Asset.name == target_data["name"])
+            )
+            if existing:
+                existing.base_url = target_data["base_url"]
+                existing.auth_token = target_data["auth_token"]
+                existing.asset_id = asset.id if asset else None
+                session.add(existing)
+            else:
+                session.add(
+                    models.ExecutionTarget(
+                        asset_id=asset.id if asset else None, **target_data
+                    )
+                )
+        session.commit()
+    logger.info("Execution targets seeded: %s", [t["name"] for t in targets])
 
 
 if __name__ == "__main__":

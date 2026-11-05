@@ -103,7 +103,9 @@
 | **`correlation_rules`** | **Правила корреляции из БД** (ключевое нововведение): `name`, `conditions` (JSON: поле, оператор `eq/neq/in/like`, значение), `time_window_minutes`, `priority`, `is_active`. Раньше корреляция была жёсткой (`src_ip` + `dstuser`), теперь — **настраиваемая без изменения кода**. |
 | **`playbooks`** | Сценарии автоматизированного реагирования: `name`, `description`, `trigger_conditions`, `allowed_actions`, `steps` (порядок операций, например блокировка IP через фаервол), `priority`, `is_active`. |
 | **`response_actions`** | Выполненные ответные действия: привязка к инциденту, playbook, тип действия (`block_ip`, `disable_account`…), результат, кто инициировал (`playbook`/`validation`/`manual`), метаданные. |
-| **`audit_logs`** | **Журнал аудита всех этапов**: `timestamp`, `event_type` (`event_ingested`, `normalized`, `correlated`, `risk_calculated`, `llm_analyzed`, `playbook_selected`, `action_executed`, `validation_result`), привязка к инциденту/событию/пользователю, детали. |
+| **`validation_policy`** | Политика DVE в БД (stage-11): `severity` → перечень разрешённых действий; читается `validate_recommendation` (fallback на дефолты в `validation.py`), отдаётся `GET /validation-policy`. |
+| **`execution_targets`** | **Реестр целей реального исполнения** (stage-20): агент, развёрнутый на ВМ наблюдаемого пользователя/сервера — `name` (= имя актива, связка с инцидентом), `asset_id`, `kind` (`agent`/`firewall`/`itsm` — резерв), `base_url`, `auth_token` (Bearer, не покидает бэкенд), `platform`, `adapter` (`state` — эмуляция стенда / `linux` — реальные команды), `is_active`, `status` (`unknown`/`online`/`offline`), `last_seen` (heartbeat). Seed из `EXECUTION_TARGETS`. |
+| **`audit_logs`** | **Журнал аудита всех этапов**: `timestamp`, `event_type` (`event_ingested`, `normalized`, `correlated`, `risk_calculated`, `llm_analyzed`, `playbook_selected`, `action_executed`, `validation_result`, события исполнения stage-20 — `execution_target_checked`, `execution_target_reset`), привязка к инциденту/событию/пользователю, детали. |
 ### 3. Как строится и запускается проект
 
 #### Структура кода
@@ -112,29 +114,50 @@
 siem_llm/
 ├── app/
 │   ├── api/
-│   │   └── routes.py              # API-маршруты FastAPI
+│   │   ├── routes.py              # агрегатор роутеров (stage-19: монолит разрезан по доменам)
+│   │   ├── common.py              # общие хелперы роутеров (доступ к инциденту, DVE+playbook)
+│   │   ├── auth_routes.py         # /auth/* (JWT, stage-09)
+│   │   ├── ingest_routes.py       # POST /ingest/wazuh, GET /ingest/reference
+│   │   ├── incident_routes.py     # /incidents/* + analyze/confirm-action/execute-action/reset-actions
+│   │   ├── execution_routes.py    # /execution-targets/* — реестр целей real-исполнения (stage-20)
+│   │   ├── catalog_routes.py      # CRUD correlation-rules и playbooks, GET /validation-policy
+│   │   ├── demo_routes.py         # POST /demo/populate, POST /demo/test-event
+│   │   └── system_routes.py       # GET /notifications, /analyses, /audit-logs, /health
 │   ├── services/
 │   │   ├── normalization.py       # этап 2: нормализация Wazuh
+│   │   ├── ingest.py              # конвейер приёма события (stage-19, из routes.py)
 │   │   ├── correlation.py         # этап 3: корреляция (правила из БД)
+│   │   ├── criticality.py         # матрица критичности MITRE (stage-17)
 │   │   ├── risk.py                # этап 4: расчёт риска + severity
 │   │   ├── llm.py                 # этап 5: запрос к Ollama/Qwen
+│   │   ├── auto_analysis.py       # оркестрация LLM-анализа и автозакрытия (stage-19, из routes.py)
 │   │   ├── validation.py          # этап 6: Decision Validation Engine
 │   │   ├── playbook.py            # этап 7: запуск playbook (симуляция)
-│   │   └── audit.py               # логирование AuditLog
-│   ├── models.py                  # SQLAlchemy модели (10 таблиц)
-│   ├── schemas.py                 # Pydantic-схемы (WazuhAlert, IncidentOut)
-│   ├── db.py                      # engine, sessionmaker, Base, get_db
-│   ├── config.py                  # Settings (DATABASE_URL, OLLAMA_URL, AUTO_RESPONSE...)
-│   ├── init_db.py                 # seed правил корреляции + playbook
+│   │   ├── execution.py           # этап 7 (stage-20): реальное исполнение playbook на ВМ через агента
+│   │   ├── assets.py, security.py, auth.py, notification.py, demo_events.py, audit.py
+│   ├── models.py                  # SQLAlchemy модели (12 таблиц)
+│   ├── schemas.py                 # Pydantic-схемы (WazuhAlert, IncidentOut, ...)
+│   ├── db.py                      # engine, SessionLocal, Base, get_db
+│   ├── config.py                  # Settings (DATABASE_URL, OLLAMA_*, AUTO_*, JWT_*, EXECUTION_*)
+│   ├── init_db.py                 # create_all + ALTER-миграции + seed (пользователи, активы, правила, playbook, DVE-политика, цели исполнения из EXECUTION_TARGETS)
 │   └── main.py                    # FastAPI app
-├── frontend/                      # React + Vite
-├── tests/                         # pytest-тесты
+├── agent/                         # endpoint-агент ВМ (stage-20): main.py (FastAPI: /agent/*),
+│                                  #   emu_state.py (состояние ВМ + журнал), activity.py (генератор
+│                                  #   активности → SIEM); переносится на реальную ВМ как есть
+├── frontend/                      # React + Vite: src/main.jsx (точка входа), src/App.jsx (логика UI),
+│                                  #   src/api.js (JWT-сессия + request), src/constants.js,
+│                                  #   src/components/* (вкладки, логин, бейджи), src/lib/helpers.js
+├── tests/                         # pytest-тесты API/сервисов (общие фикстуры — conftest.py, stage-19)
+├── tests_agent/                   # pytest-тесты endpoint-агента (stage-20, pythonpath включает agent/)
+├── samples/                       # примеры JSON-алертов Wazuh
+├── wazuh/                         # интеграция Wazuh (integrator.sh, ossec-integration.xml)
+├── docs/, analysis/               # документация стенда и рабочие материалы
 ├── docker-compose.yml             # оркестрация всех сервисов
 ├── Dockerfile
 ├── requirements.txt
 ├── pytest.ini
 ├── README.md
-└── sample_wazuh_alert.json        # тестовый алерт Wazuh
+└── samples/sample_wazuh_alert.json  # тестовый алерт Wazuh (curl-пример из README)
 ```
 
 #### Пайплайн: как одно событие пробегает через систему
@@ -158,10 +181,33 @@ siem_llm/
    (`execution.mode = manual_run`).
    Подробно — [CRITICALITY_MATRIX.md](CRITICALITY_MATRIX.md).
 
+   > С stage-20 у кнопки «▶ Выполнить» (и автоконвейера low) есть два режима исполнения:
+   **`simulation`** (dry run по умолчанию, как в §3.4 ВКР — инфраструктура не меняется) и
+   **`real`** — действие исполняется **реально** на ВМ через endpoint-агента
+   (`services/execution.py` → HTTP-вызов `POST /agent/action` на цели из
+   `execution_targets`, Bearer-токен не покидает бэкенд). DVE один и тот же для обоих
+   режимов; результат вызова агента сохраняется в `ResponseAction.metadata_json`,
+   heartbeat цели обновляется. Подробно — [REAL_EXECUTION.md](REAL_EXECUTION.md) и
+   [agent/README.md](../agent/README.md).
+
 
 ---
 
 ## ЭТАП 3. ИЗМЕНЕНИЯ. Что уже сделано и что осталось
+
+> ⚠ **stage-19 (2026-11-05): этот раздел описывает историческое состояние проекта (stage-01…03).**
+> Актуальный статус — [analysis/PROJECT_CONTEXT.md](../analysis/PROJECT_CONTEXT.md) и реестр
+> [analysis/DEVIATIONS.md](../analysis/DEVIATIONS.md). Кратко с тех пор: JWT-авторизация (stage-09),
+> CRUD правил/плейбуков и детальная карточка инцидента (stage-08), Wazuh-профиль Docker (stage-10),
+> seed-правила MITRE + честные факторы риска (stage-11), мок-сценарии и мультифильтры (stage-15),
+> матрица критичности (stage-17), фоновый LLM-анализ + серверные состояния кнопок + новый промпт
+> с вердиктом (stage-18); **stage-19** — рефакторинг без изменения функционала: монолит `routes.py`
+> разрезан на доменные роутеры + `services/ingest.py`/`auto_analysis.py`, `main.jsx` — на компоненты,
+> добавлен `tests/conftest.py`, вычищен мёртвый код и CSS-дубли, починена доставка env
+> (`JWT_SECRET` и др. из `.env`), `npm ci` по lock, таймауты nginx 300s; **stage-20** — реальное
+> исполнение playbook на ВМ: реестр `execution_targets`, диспетчер `services/execution.py`
+> (`mode=real`), endpoint-агенты (`agent/`, 3 контейнера в compose, порты 8101–8103); тесты
+> **178 backend (включая tests_agent) + 114 frontend**, все зелёные в контейнере.
 
 ### ✅ Что уже реализовано (коммиты `stage-01-db-models`, `stage-02-services-update`, `stage-03-tests`)
 
@@ -186,6 +232,10 @@ siem_llm/
 - Добавлен `pytest.ini`.
 
 ### 🔧 Что осталось сделать
+
+> ⚠ **stage-19 (2026-11-05): пункты 1–3 ниже давно закрыты** — `test_llm.py` и интеграционные
+> тесты маршрутов существуют с stage-08/11, полный прогон в контейнере зелёный (138 backend +
+> 111 frontend). Пункт 4 (VirtualBox-стенд) — актуален для Главы 4 ВКР. Раздел сохранён как история.
 
 1. Завершить `stage-03-tests`: дописать недостающие тесты (например, `test_llm.py` с мокнутым Ollama, интеграционные тесты маршрутов `routes.py`).
 2. Прогнать полный тестовый прогон `pytest`, исправить падения.

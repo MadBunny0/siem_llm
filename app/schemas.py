@@ -155,9 +155,55 @@ class IncidentStatusIn(BaseModel):
 
 
 class ExecuteActionIn(BaseModel):
-    """Ручной запуск playbook-действия (stage-12; stage-15: владелец или админ)."""
+    """Ручной запуск playbook-действия (stage-12; stage-15: владелец или админ).
+
+    mode (stage-20): simulation — dry run как в §3.4 ВКР (по умолчанию);
+    real — реальное исполнение на ВМ через агента (docs/REAL_EXECUTION.md);
+    DVE один и тот же для обоих режимов.
+    """
 
     action: str = Field(min_length=1)
+    mode: str = Field(default="simulation", pattern="^(simulation|real)$")
+
+
+class ExecutionTargetOut(BaseModel):
+    """Цель реального исполнения — агент на ВМ наблюдаемого пользователя (stage-20)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    asset_id: int | None = None
+    kind: str
+    base_url: str
+    platform: str
+    adapter: str
+    is_active: bool
+    status: str
+    last_seen: datetime | None = None
+
+
+class ExecutionJournalEntry(BaseModel):
+    """Запись журнала действий агента (stage-20, прокси в UI)."""
+
+    at: str | None = None
+    action: str
+    params: dict = {}
+    executed: bool = True
+    requested_by: str | None = None
+    incident_id: int | None = None
+    detail: str | None = None
+
+
+class ExecutionSimulateIn(BaseModel):
+    """Сценарий активности ВМ (stage-20): normal_activity — наблюдаемые
+    пользователи; brute_force / password_spraying / repeated_scan / web_attack /
+    malware / privilege_escalation / data_exfiltration — активность атакующего
+    (сценарии подобраны под seed-правила корреляции, docs/REAL_EXECUTION.md)."""
+
+    scenario: str = Field(min_length=1)
+    count: int | None = Field(default=None, ge=1, le=50)
+    detail: str | None = None
 
 
 class AuditLogOut(BaseModel):
