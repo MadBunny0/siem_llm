@@ -17,6 +17,7 @@ import {
   initiatedByBadge,
   MITRE_TACTIC_RU,
   pendingReasonText,
+  populateResultToast,
   priorityLabel,
   recommendedActionCodes,
   resultExecutionBadge,
@@ -688,5 +689,53 @@ describe('structuredAnalysis — структурированные поля в�
   it('битый JSON в response_raw не роняет функцию', () => {
     expect(structuredAnalysis({ response_raw: '{broken' }).verdict).toBe('');
     expect(structuredAnalysis({ response_raw: 42 }).summary).toBe('');
+  });
+});
+
+describe('populateResultToast (stage-22: новые vs существующие)', () => {
+  it('только новые — как прежде: «Создано N инцидентов» с разбивкой по уровням', () => {
+    const text = populateResultToast({
+      incidents: [
+        { incident_id: 1, severity: 'critical', is_new: true },
+        { incident_id: 2, severity: 'critical', is_new: true },
+        { incident_id: 3, severity: 'low', is_new: true },
+      ],
+      auto_analysis_scheduled: 1,
+    });
+    expect(text).toBe('Создано 3 инцидентов: critical: 2, low: 1 · автоанализ запущен: 1');
+  });
+
+  it('новые + добавленные в существующие — обе части в тосте', () => {
+    const text = populateResultToast({
+      incidents: [
+        { incident_id: 4, severity: 'high', is_new: true },
+        { incident_id: 1, severity: 'critical', is_new: false },
+        { incident_id: 2, severity: 'low', is_new: false },
+      ],
+      auto_analysis_scheduled: 0,
+    });
+    expect(text).toBe('Создано 1 инцидентов: high: 1 · события добавлены в 2 существующих');
+  });
+
+  it('только добавленные в существующие (повторное нажатие populate в окне корреляции)', () => {
+    const text = populateResultToast({
+      incidents: [
+        { incident_id: 1, severity: 'critical', is_new: false },
+        { incident_id: 2, severity: 'low', is_new: false },
+      ],
+    });
+    expect(text).toBe('Новых инцидентов нет — события добавлены в 2 существующих (корреляция §3.3.2)');
+  });
+
+  it('ответ старого бэкенда без флага is_new — считаем новыми (прежний текст)', () => {
+    const text = populateResultToast({
+      incidents: [{ incident_id: 1, severity: 'high' }, { incident_id: 2, severity: 'medium' }],
+    });
+    expect(text).toBe('Создано 2 инцидентов: high: 1, medium: 1');
+  });
+
+  it('корреляция ничего не сформировала — прежний текст', () => {
+    expect(populateResultToast({ incidents: [] })).toBe('События созданы, корреляция не сформировала инцидентов');
+    expect(populateResultToast({})).toBe('События созданы, корреляция не сформировала инцидентов');
   });
 });

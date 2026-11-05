@@ -5,7 +5,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, executionModeRu, formatDate, formatPlaybookSteps,
-         initiatedByBadge, pendingReasonText,
+         initiatedByBadge, pendingReasonText, populateResultToast,
          PLAYBOOK_ACTIONS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
          resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
@@ -419,22 +419,12 @@ export default function App({ user, onLogout }) {
     setError('');
     try {
       const result = await request('/demo/populate', { method: 'POST' });
-      const created = Array.isArray(result?.incidents) ? result.incidents : [];
-      const counts = {};
-      for (const inc of created) {
-        const sev = inc?.severity || 'unknown';
-        counts[sev] = (counts[sev] || 0) + 1;
-      }
-      const order = ['critical', 'high', 'medium', 'low'];
-      const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
-      if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
       // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
       // low пройдёт автоконвейер (анализ → исполнение → закрытие); остальные
-      // уровни анализирует и запускает оператор
-      const scheduled = Number(result?.auto_analysis_scheduled) || 0;
-      showToast(created.length
-        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}${scheduled ? ` · автоанализ запущен: ${scheduled}` : ''}`
-        : 'События созданы, корреляция не сформировала инцидентов');
+      // уровни анализирует и запускает оператор. [22] тост различает новые
+      // инциденты и события, добавленные в существующие (повторное нажатие
+      // в пределах корреляционного окна новых карточек не даёт, §3.3.2)
+      showToast(populateResultToast(result));
       await load();
     } catch (e) {
       showErrorToast(e.message);

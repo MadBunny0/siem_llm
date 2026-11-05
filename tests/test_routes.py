@@ -1136,6 +1136,30 @@ def test_demo_populate(client, db_session):
     assert data["auto_analysis_scheduled"] == 0
 
 
+def test_demo_populate_marks_new_vs_merged(client, db_session):
+    """Повторный populate сразу после первого (stage-22, фидбек «почему не
+    появляются карточки»): события попадают в корреляционные окна только что
+    созданных инцидентов и приклеиваются к ним (§3.3.2) — новых карточек нет,
+    ответ помечает is_new=False и отдаёт счётчики new_incidents/merged_incidents
+    для тоста UI."""
+    seed_demo_rules_and_assets(db_session)
+
+    first = client.post(f"{API}/demo/populate").json()
+    assert len(first["incidents"]) == 7
+    assert all(i["is_new"] for i in first["incidents"])
+    assert first["new_incidents"] == 7
+    assert first["merged_incidents"] == 0
+
+    second = client.post(f"{API}/demo/populate").json()
+    assert second["new_incidents"] == 0
+    assert second["merged_incidents"] == 7
+    assert all(not i["is_new"] for i in second["incidents"])
+    # те же инциденты: события добавлены в существующие, новых карточек нет
+    assert {i["incident_id"] for i in second["incidents"]} == {
+        i["incident_id"] for i in first["incidents"]
+    }
+
+
 def test_demo_populate_runs_auto_pipeline(client, db_session, engine, monkeypatch):
     """Мок-сценарии + автоконвейер (stage-18, фидбек): populate запускает
     фоновый автоанализ ТОЛЬКО для low (AUTO_ANALYSIS_LEVELS="low"); low
