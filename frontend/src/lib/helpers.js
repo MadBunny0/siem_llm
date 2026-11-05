@@ -427,3 +427,35 @@ export function structuredAnalysis(analysis) {
   }
   return structured;
 }
+
+/* ==================== Stage 22: тост «Мок-сценарии» — новые vs существующие ==================== */
+
+// Текст тоста после POST /demo/populate. Повторное нажатие в пределах
+// корреляционного окна приклеивает события к недавним инцидентам (§3.3.2) —
+// новых карточек не даёт, поэтому тост различает «создано новых» и «добавлено
+// в существующие» (is_new приходит с бэкенда stage-22; у старых ответов без
+// флага — считаем новыми, прежнее поведение).
+export function populateResultToast(result) {
+  const created = Array.isArray(result?.incidents) ? result.incidents : [];
+  const fresh = created.filter(inc => inc?.is_new !== false);
+  const merged = created.filter(inc => inc?.is_new === false);
+  const counts = {};
+  for (const inc of fresh) {
+    const sev = inc?.severity || 'unknown';
+    counts[sev] = (counts[sev] || 0) + 1;
+  }
+  const order = ['critical', 'high', 'medium', 'low'];
+  const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
+  if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
+  const scheduled = Number(result?.auto_analysis_scheduled) || 0;
+  const scheduledPart = scheduled ? ` · автоанализ запущен: ${scheduled}` : '';
+  if (fresh.length) {
+    let text = `Создано ${fresh.length} инцидентов: ${parts.join(', ')}`;
+    if (merged.length) text += ` · события добавлены в ${merged.length} существующих`;
+    return text + scheduledPart;
+  }
+  if (merged.length) {
+    return `Новых инцидентов нет — события добавлены в ${merged.length} существующих (корреляция §3.3.2)${scheduledPart}`;
+  }
+  return 'События созданы, корреляция не сформировала инцидентов';
+}

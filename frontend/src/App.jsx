@@ -5,13 +5,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, executionModeRu, formatDate, formatPlaybookSteps,
-         initiatedByBadge, pendingReasonText,
+         initiatedByBadge, pendingReasonText, populateResultToast,
          PLAYBOOK_ACTIONS, recommendedActionCodes,
          resultExecutionBadge, resultNeedsConfirmation, resultValidationBadge,
          resultsAwaitManualRun, resultsNeedConfirmation, ruleTemplateLabel, SEVERITY_LABELS,
          STATUS_LABELS, structuredAnalysis, verdictBadge }
   from './lib/helpers.js';
 import PipelineStatus from './components/PipelineStatus.jsx';
+import SeverityFactors from './components/SeverityFactors.jsx';
 import { Severity, Status } from './components/Badges.jsx';
 import AnalysesView from './components/AnalysesView.jsx';
 import NotificationsView from './components/NotificationsView.jsx';
@@ -418,22 +419,12 @@ export default function App({ user, onLogout }) {
     setError('');
     try {
       const result = await request('/demo/populate', { method: 'POST' });
-      const created = Array.isArray(result?.incidents) ? result.incidents : [];
-      const counts = {};
-      for (const inc of created) {
-        const sev = inc?.severity || 'unknown';
-        counts[sev] = (counts[sev] || 0) + 1;
-      }
-      const order = ['critical', 'high', 'medium', 'low'];
-      const parts = order.filter(sev => counts[sev]).map(sev => `${sev}: ${counts[sev]}`);
-      if (counts.unknown) parts.push(`другие: ${counts.unknown}`);
       // [17] populate запускает фоновый автоанализ (AUTO_ANALYSIS_LEVELS):
       // low пройдёт автоконвейер (анализ → исполнение → закрытие); остальные
-      // уровни анализирует и запускает оператор
-      const scheduled = Number(result?.auto_analysis_scheduled) || 0;
-      showToast(created.length
-        ? `Создано ${created.length} инцидентов: ${parts.join(', ')}${scheduled ? ` · автоанализ запущен: ${scheduled}` : ''}`
-        : 'События созданы, корреляция не сформировала инцидентов');
+      // уровни анализирует и запускает оператор. [22] тост различает новые
+      // инциденты и события, добавленные в существующие (повторное нажатие
+      // в пределах корреляционного окна новых карточек не даёт, §3.3.2)
+      showToast(populateResultToast(result));
       await load();
     } catch (e) {
       showErrorToast(e.message);
@@ -618,6 +609,11 @@ export default function App({ user, onLogout }) {
               </details>
 
               <div className="detail-grid"><div><label>Статус</label><Status value={selected.status}/></div><div><label>Создан</label><span>{formatDate(selected.created_at)}</span></div><div><label>Уровень риска</label><span>{selected.risk_score} / 100</span></div><div><label>Тип атаки</label><span>{selected.attack_type || '-'}</span></div><div><label>Актив</label><span>{selected.asset?.name || '-'}</span></div><div><label>Критичность актива</label><span>{selected.asset?.criticality || '-'}</span></div><div><label>Назначен</label><span className="assignee-cell">{incidentDetail?.analyst?.username ? (<><span className="assignee-badge" title={incidentDetail.analyst.role ? `Роль: ${incidentDetail.analyst.role}` : 'Закреплённый аналитик'}>{incidentDetail.analyst.username}</span>{incidentDetail.analyst.username === user?.username && <span className="assignee-badge mine" title="Инцидент закреплён за вами">твой</span>}</>) : <span className="assignee-badge none" title="Инцидент ещё не закреплён — закрепляется при первом анализе или смене статуса">не закреплён</span>}</span></div></div>
+
+              {/* [22] Блок «Оценка критичности»: из каких факторов получился уровень
+                  критичности — база по матрице MITRE + повышения и числовая модель
+                  риска §3.3.3, с числами и объяснениями (Incident.severity_factors) */}
+              <SeverityFactors factors={incidentDetail?.severity_factors} />
 
               <div className="status-controls">
                 <label>Изменить статус</label>

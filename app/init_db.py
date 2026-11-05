@@ -42,6 +42,9 @@ def _ensure_schema_updates() -> None:
         # карта ручных запусков playbook-действий (stage-18, фидбек) —
         # состояние кнопок действий видно всем операторам
         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS manual_actions JSON",
+        # разбор оценки критичности (stage-22) — факторы с числами и
+        # объяснениями для карточки инцидента
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severity_factors JSON",
         # индексы под корреляцию (stage-11: окно + совпадение атрибутов в SQL)
         "CREATE INDEX IF NOT EXISTS ix_events_timestamp ON events (timestamp)",
         "CREATE INDEX IF NOT EXISTS ix_events_src_ip ON events (src_ip)",

@@ -12,6 +12,8 @@ AUTO_ANALYSIS_LEVELS). Вызвавший сам ставит BackgroundTasks �
 в result больше не кладётся.
 """
 
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -20,10 +22,10 @@ from app.services.assets import resolve_asset_id
 from app.services.audit import audit
 from app.services.auto_analysis import auto_analysis_levels
 from app.services.correlation import create_or_update_incident, evaluate_correlation
-from app.services.criticality import derive_severity
+from app.services.criticality import MITRE_TACTIC_SEVERITY, derive_severity_detail
 from app.services.normalization import normalize_wazuh
 from app.services.notification import notify_analyst
-from app.services.risk import calculate_risk, score_to_severity
+from app.services.risk import calculate_risk_detail, score_to_severity
 
 
 def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
@@ -106,10 +108,12 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
         for e in related
     ]
     # вероятность реализации угрозы — из данных события (§3.3.3, p:74);
-    # числовая оценка остаётся для сортировки/отображения
-    score, _ = calculate_risk(
+    # числовая оценка остаётся для сортировки/отображения (считается один раз —
+    # используется и в расчёте риска, и в severity_factors/аудите)
+    threat_probability = p_implement(risk_events)
+    score, _, risk_breakdown = calculate_risk_detail(
         risk_events,
-        p_implement=p_implement(risk_events),
+        p_implement=threat_probability,
         correlation_confidence=correlation_confidence,
     )
 
@@ -119,7 +123,9 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
     # docs/CRITICALITY_MATRIX.md): базовая — по тактике правила, повышение —
     # по условиям процедуры (критичный актив, маркеры, периметр, флаг
     # поставщика). Без тактики — числовая модель риска (fallback, §3.3.3)
-    matrix_severity, escalation_reasons = derive_severity(rule, related, incident.asset)
+    matrix_severity, escalation_reasons, escalation_detail = derive_severity_detail(
+        rule, related, incident.asset
+    )
     if matrix_severity is not None:
         severity = matrix_severity
         severity_basis = "mitre_matrix"
@@ -127,6 +133,28 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
         severity = score_to_severity(score)
         severity_basis = "risk_score"
     incident.severity = severity
+
+    # Разбор оценки критичности для карточки инцидента (stage-22): из каких
+    # факторов и с какими числами получился итоговый уровень. Полное
+    # переприсвоение JSON-колонки (частичное изменение не отслеживается
+    # SQLAlchemy — см. common.py); на обновлённых инцидентах разбор
+    # пересчитывается под фактический набор событий
+    incident.severity_factors = {
+        "basis": severity_basis,
+        "severity": severity,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        # матрица MITRE (basis=mitre_matrix): базовый уровень по тактике +
+        # сработавшие условия повышения с объяснениями
+        "mitre": {
+            "tactic": rule.mitre_tactic,
+            "technique": rule.mitre_technique,
+            "base_severity": MITRE_TACTIC_SEVERITY.get(rule.mitre_tactic),
+            "escalations": escalation_detail,
+        } if matrix_severity is not None else None,
+        # числовая модель риска (§3.3.3) — рассчитывается всегда (fallback и
+        # числовая метрика «уровень риска» в карточке)
+        "risk": risk_breakdown,
+    }
 
     audit(
         "correlated",
@@ -143,7 +171,7 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
             "severity_basis": severity_basis,
             "mitre_tactic": rule.mitre_tactic,
             "escalation_reasons": escalation_reasons,
-            "p_implement": p_implement(risk_events),
+            "p_implement": threat_probability,
         },
         db=db,
         incident_id=incident.id,

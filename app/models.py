@@ -52,6 +52,12 @@ class Incident(Base):
     asset_id: Mapped[int | None] = mapped_column(ForeignKey("assets.id"), nullable=True)
     attack_type: Mapped[str | None] = mapped_column(String(100))
     risk_score: Mapped[int] = mapped_column(Integer, default=0)
+    # Разбор оценки критичности (stage-22): почему инцидент получил свой
+    # уровень — база по матрице MITRE + повышения с объяснениями и/или
+    # числа модели риска §3.3.3 (база, бонус серии, p_implement,
+    # достоверность корреляции). Заполняется при ingest; в карточке —
+    # блок «Оценка критичности»
+    severity_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

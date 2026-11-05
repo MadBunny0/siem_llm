@@ -7,11 +7,12 @@ import random
 from datetime import timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.common import routes_datetime as datetime  # compat-шов: см. common.py
 from app.db import get_db
-from app.models import User
+from app.models import Incident, User
 from app.services.audit import audit
 from app.services.auth import get_current_user, require_admin
 from app.services.auto_analysis import run_auto_analysis
@@ -35,7 +36,15 @@ def demo_populate(
     уходят в фоновый LLM-анализ как при обычном ingest — low после него
     закрывается автоматически (_maybe_auto_close). Ответ содержит
     auto_analysis_scheduled — сколько анализов запланировано.
+
+    Stage-22 (фидбек): каждый инцидент в ответе помечается is_new — создан
+    этим вызовом (True) или событие добавлено в СУЩЕСТВУЮЩИЙ инцидент
+    (False — повторный populate в пределах корреляционного окна приклеивает
+    события к недавним инцидентам, §3.3.2, новых карточек не даёт);
+    new_incidents/merged_incidents — счётчики для тоста UI.
     """
+    # id инцидентов ДО populate: что появилось после — создано этим вызовом
+    existing_ids = set(db.scalars(select(Incident.id)).all())
     created_incidents: dict[int, dict] = {}
     auto_analysis_ids: list[int] = []
     events_count = 0
@@ -44,10 +53,12 @@ def demo_populate(
             result, should_auto_analyze = ingest_alert(db, alert_payload)
             events_count += 1
             if result.get("correlated") and result.get("incident_id"):
-                created_incidents[result["incident_id"]] = {
-                    "incident_id": result["incident_id"],
+                incident_id = result["incident_id"]
+                created_incidents[incident_id] = {
+                    "incident_id": incident_id,
                     "severity": result["severity"],
                     "rule": result["rule"],
+                    "is_new": incident_id not in existing_ids,
                 }
             if should_auto_analyze and result["incident_id"] not in auto_analysis_ids:
                 auto_analysis_ids.append(result["incident_id"])
@@ -56,11 +67,13 @@ def demo_populate(
     for incident_id in auto_analysis_ids:
         background_tasks.add_task(run_auto_analysis, incident_id)
 
+    new_count = sum(1 for item in created_incidents.values() if item["is_new"])
     audit(
         "demo_populated",
         {
             "events": events_count,
             "incidents": len(created_incidents),
+            "new_incidents": new_count,
             "auto_analysis_scheduled": len(auto_analysis_ids),
             "by": admin.username,
         },
@@ -70,6 +83,8 @@ def demo_populate(
     return {
         "created_events": events_count,
         "incidents": sorted(created_incidents.values(), key=lambda x: x["incident_id"]),
+        "new_incidents": new_count,
+        "merged_incidents": len(created_incidents) - new_count,
         "auto_analysis_scheduled": len(auto_analysis_ids),
     }
 
