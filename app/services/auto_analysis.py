@@ -176,6 +176,26 @@ def _maybe_auto_close(db: Session, incident: Incident, analysis_result: dict) ->
 # Чем меньше промпт, тем быстрее prefill на CPU (stage-18, фидбек про скорость)
 _ECS_MAX_DEPTH = 6
 
+# Ключи реального алерта Wazuh, значимые для анализа LLM (stage-24): правило
+# источника (level/description/groups/mitre), агент, распознанные данные,
+# исходная строка лога, декодер и место обнаружения. Служебные поля менеджера
+# (manager, cluster, input, pre_decode, id) отбрасываются — на реальных
+# алертах это килобайты шума на событие, доказательств не несущие.
+_ECS_KEEP = ("rule", "agent", "data", "full_log", "decoder", "location")
+
+
+def _curate_ecs(raw: dict) -> dict | None:
+    """Белый список полей алерта для контекста LLM (stage-24).
+
+    LLM — независимый наблюдатель (§3.3.4) и работает только с сырыми
+    доказательствами источника: метрики SIEM (оценка риска, сработавшее
+    правило корреляции, разбор критичности) в контекст НЕ передаются
+    сознательно — иначе модель повторяла бы вывод конвейера, а не
+    анализировала события сама. Не-dict → None."""
+    if not isinstance(raw, dict):
+        return None
+    return {key: raw[key] for key in _ECS_KEEP if key in raw}
+
 
 def _trim_ecs(raw: dict, max_str: int = 800) -> dict | None:
     """Глубокая копия ECS-JSON события с обрезкой длинных строк (контекст LLM).
@@ -269,13 +289,15 @@ async def _run_incident_analysis(
                 "user": e.user,
                 "src_ip": e.src_ip,
                 "message": (e.raw_message or "")[:500],
-                # исходный JSON Wazuh/Elastic с парсингом ECS (rule, agent,
-                # data, full_log) — системный промпт LLM ожидает «json из
-                # Elastic Security Solution»; длинные строки обрезаются
-                "ecs": _trim_ecs(e.raw_data),
+                # исходный JSON Wazuh/Elastic — только доказательные поля
+                # (_curate_ecs, stage-24), длинные строки обрезаются (_trim_ecs)
+                "ecs": _trim_ecs(_curate_ecs(e.raw_data)),
             }
             for e in context_events
         ],
+        # всего событий в инциденте: в контекст попадают последние 12 — модель
+        # должна знать, что перед ней часть доказательств, а не весь набор
+        "events_total": len(incident.events),
         # рекомендации из самих событий (raw_data) — промпт просит учитывать
         # их в рекомендациях для дальнейших действий
         "recommendations": _event_recommendations(context_events),

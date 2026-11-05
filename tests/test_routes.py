@@ -250,6 +250,67 @@ def test_analyze_incident_success(client, db_session, engine, monkeypatch):
     )
 
 
+def test_analysis_context_curated_ecs_and_events_total(client, db_session, engine, monkeypatch):
+    """stage-24, принцип «LLM — независимый наблюдатель»: контекст анализа
+    содержит только сырые доказательства — служебные поля Wazuh-алерта
+    (manager/cluster/input/pre_decode) в ECS не попадают; events_total
+    сообщает модели, сколько всего событий в инциденте (в контексте —
+    последние 12). Метрики SIEM (риск/правило корреляции) в контекст
+    сознательно НЕ передаются — иначе модель повторяла бы вывод конвейера."""
+    from sqlalchemy.orm import sessionmaker
+
+    seed_rule(db_session)
+    alert = make_alert()
+    alert["manager"] = {"name": "wazuh-manager"}
+    alert["cluster"] = {"name": "wazuh", "node": "master"}
+    alert["input"] = {"type": "log"}
+    alert["pre_decode"] = "(sshd: root) junk"
+    alert["decoder"] = {"name": "sshd"}
+    alert["location"] = "/var/log/auth.log"
+    incident_id = None
+    for _ in range(2):
+        incident_id = client.post(f"{API}/ingest/wazuh", json=alert).json()["incident_id"]
+
+    captured = {}
+
+    async def fake_analyze(context):
+        captured.update(context)
+        return {
+            "description": "тест",
+            "attack_type": "brute_force",
+            "confidence": 0.5,
+            "explanation": "тест",
+            "recommended_action": "monitor",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+    # фоновая задача создаёт свою сессию — направляем её в тестовую БД
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    resp = client.post(f"{API}/incidents/{incident_id}/analyze")
+    assert resp.status_code == 200
+
+    assert captured, "фейк analyze_incident должен получить контекст"
+    assert captured["events_total"] == 2
+    events = captured["events"]
+    assert len(events) == 2
+    for ev in events:
+        ecs = ev["ecs"]
+        # доказательные поля источника — на месте
+        assert ecs["rule"]["groups"] == ["authentication_failed"]
+        assert ecs["agent"]["name"] == "test-host"
+        assert ecs["data"]["srcip"]
+        assert "Failed password" in ecs["full_log"]
+        assert ecs["decoder"]["name"] == "sshd"
+        assert ecs["location"] == "/var/log/auth.log"
+        # служебный шум Wazuh — отброшен
+        for junk in ("manager", "cluster", "input", "pre_decode", "id"):
+            assert junk not in ecs
+    # метрики SIEM в контексте нет (независимость наблюдателя)
+    assert "siem_assessment" not in captured
+    assert "severity_factors" not in captured
+
+
 def test_manual_playbook_execution_for_high(client, db_session, engine, monkeypatch):
     """stage-17/23: для инцидента high анализ только рекомендует (manual_run),
     действие выполняет оператор через POST /execute-action — stage-23:

@@ -260,6 +260,8 @@ def test_analyze_incident_request_format(monkeypatch):
     # удержание модели в памяти — дефолт num_ctx 2048 меньше промпта
     assert payload["options"]["num_ctx"] == settings.ollama_num_ctx
     assert payload["options"]["num_predict"] == settings.ollama_num_predict
+    # stage-24: низкая температура — детерминированный JSON-анализ без дрейфа
+    assert payload["options"]["temperature"] == settings.ollama_temperature
     assert payload["keep_alive"] == settings.ollama_keep_alive
     # таймаут запроса к LLM — 300 секунд (stage-18: промпт вырос, CPU-инференс
     # может занимать больше трёх минут)

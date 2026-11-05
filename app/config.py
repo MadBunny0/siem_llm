@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     ollama_num_ctx: int = 8192
     ollama_num_predict: int = 2048
     ollama_keep_alive: str = "30m"
+    # температура генерации (stage-24): строгий JSON-анализ на 3B-модели при
+    # дефолтных 0.8 дрейфует и галлюцинирует — нужна детерминированность
+    ollama_temperature: float = 0.2
     correlation_window_minutes: int = 5
     # автоматический LLM-анализ инцидентов без задержек (§3.3.3 ВКР, p:80):
     # auto_analysis — главный выключатель, auto_analysis_levels — какие уровни
