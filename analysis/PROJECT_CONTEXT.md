@@ -46,7 +46,7 @@
 | `frontend/src/main.jsx` | **(stage-19)** точка входа (6 строк) — монолит разрезан: `App.jsx` (логика UI: статистика, лента, фильтры, форма события, ручной анализ, конвейер), `api.js` (JWT-сессия + `request`), `constants.js`, `components/` (Badges, LoginScreen, AuthGate, AnalysesView, NotificationsView, AuditView, RulesView, PlaybooksView, PipelineStatus) | §3.5 (веб-интерфейс) |
 | `docker-compose.yml` | db → db-init → ollama(+ollama-init) → api → frontend + agent-wks/app/mail (stage-20, порты 8101–8103) | §3.5 (Docker) |
 | `tests/`, `tests_agent/` | **178 backend-тестов**: tests/ 11 файлов (routes 46, auth 21, correlation 12, criticality 19, llm 10, assets 6, validation 9, risk 8, audit 3, playbook 2, normalization 2) + execution 11 + execution_routes 11 (stage-20); tests_agent/ — 18 тестов endpoint-агента; общие фикстуры — `conftest.py` (stage-19). Фронтенд отдельно: **114 тестов** Vitest+RTL (в т.ч. TargetsView, stage-20) | — |
-| `samples/sample_wazuh_alert.json`, `samples/test_incident_{low,high,critical}.json` | тестовые данные. ⚠ stage-19: `test_incident_{low,high,critical}.json` — сироты (не используются кодом/тестами/доками), кандидаты на удаление; **НЕ удаляются** по директиве пользователя (2026-11-05) | — |
+| `samples/sample_wazuh_alert.json` | тестовые данные (curl-пример из README). ⚠ Файлы-сироты `samples/test_incident_{low,high,critical}.json` (stage-19: не использовались кодом/тестами/доками, были помечены к удалению) — **удалены 2026-11-05 по явной команде пользователя** | — |
 
 ## 3. Стек (совпадает с таблицей 3.2 ВКР)
 
@@ -139,6 +139,8 @@ Python 3.12 · FastAPI · SQLAlchemy 2 + psycopg3 · PostgreSQL 16 · Ollama + q
 - Изменения в коде коммитить по образцу существующих: `stage-NN: <описание>` или `fix(scope): <описание>` (но только по запросу пользователя).
 
 ## 7. История обновлений файла
+
+- 2026-11-05 — удалены файлы-сироты `samples/test_incident_{low,high,critical}.json` по явной команде пользователя (директива «не удалять» разрешает удаление явной командой); остальные кандидаты (колонки models.py, таблица response_actions) — не файлы, требуют миграции БД, не тронуты.
 
 - 2026-11-05 — stage-21: влив stage-20 в новую структуру stage-19 (стековая версия stage-20-stacked-backup, merge без конфликтов) + порт дельты финальной ветки stage-20 (PR #18: прокси simulate/activity, вкладка «Агенты (ВМ)» в App.jsx, фиксы smoke-теста — db-init env, asset-binding в seed, host-специфичные IP/пользователи агента, REAL_EXECUTION.md); карта файлов §2 + execution/agent/, модели 12, тесты 178+114; статус §4 — stage-21/stage-20 сверху; доки DEPLOYMENT/DOCUMENTATION/DEVIATIONS/README синхронизированы; работа в worktree siem_llm-stage21.
 
