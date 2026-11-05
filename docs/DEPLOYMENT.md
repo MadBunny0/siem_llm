@@ -193,7 +193,7 @@ docker compose --profile tests run --rm tests   # прогнать pytest
 правок: та же команда `run` (кэш сборки обновит только слои с изменившимися файлами —
 это секунды).
 
-**Фронтенд (116 тестов, Vitest + React Testing Library):**
+**Фронтенд (113 тестов, Vitest + React Testing Library):**
 
 ```bash
 docker compose --profile tests run --rm frontend-tests

@@ -1,0 +1,5 @@
+# Контекст сборки фронтенда (frontend/Dockerfile: COPY . . после npm ci) —
+# node_modules хоста затирал бы установленный в образе (нативные бинарники
+# Windows несовместимы с Linux), dist не нужен — собирается в образе.
+node_modules
+dist

@@ -1,0 +1,10 @@
+# Контекст сборки бэкенда (Dockerfile копирует requirements.txt, app/, tests/,
+# pytest.ini) — всё остальное в контекст не нужно (legacy-cleanup: раньше каждый
+# docker build тащил vkr.docx, .git, analysis/, docs/, frontend/node_modules).
+*
+!requirements.txt
+!pytest.ini
+!app
+!app/**
+!tests
+!tests/**

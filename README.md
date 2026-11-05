@@ -39,16 +39,15 @@ Docker Compose специально разделяет подготовку за
 siem_llm/
 ├── app/                  # Бэкенд: FastAPI
 │   ├── api/              # HTTP-маршруты: routes.py — агрегатор; под-роутеры по доменам
-│   │                     # (auth/ingest/incident/catalog/demo/response/system_routes.py) + common.py
+│   │                     # (auth/ingest/incident/catalog/response/system_routes.py) + common.py
 │   ├── services/         # Логика конвейера (normalization, correlation, risk, llm, ...)
 │   │                     # + ingest.py (приём события), auto_analysis.py (оркестрация анализа),
 │   │                     # execution.py + wazuh_api.py (stage-23: реакции через Wazuh active response)
 │   └── models.py, schemas.py, config.py, db.py, init_db.py, main.py
 ├── frontend/             # React-дашборд: src/App.jsx (логика UI), src/api.js, src/constants.js,
-│                         # src/components/* (вкладки, логин), src/lib — хелперы
-├── tests/                # pytest-тесты бэкенда (192, запускаются в контейнере; общие фикстуры — conftest.py)
-├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, E2E_STAND, E2E_SCENARIOS
-├── samples/              # Примеры алертов Wazuh (JSON)
+│                         # src/components/* (вкладки, логин), src/hooks, src/lib — хелперы
+├── tests/                # pytest-тесты бэкенда (171, запускаются в контейнере; общие фикстуры — conftest.py)
+├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, E2E_STAND, E2E_SCENARIOS, E2E_VM_SETUP
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
 ├── wazuh/                # Интеграция с Wazuh (integrator, setup, правила/декодеры, AR-скрипты реакций)
 ├── docker-compose.yml    # Оркестрация: db → db-init → ollama → api → frontend (+adminer, wazuh-manager)
@@ -56,7 +55,7 @@ siem_llm/
 └── requirements.txt, pytest.ini, .env.example, .gitattributes
 ```
 
-Тесты: 192 backend (pytest) + 124 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 171 backend (pytest) + 113 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---
