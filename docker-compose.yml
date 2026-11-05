@@ -79,6 +79,7 @@ services:
       OLLAMA_NUM_CTX: "8192"
       OLLAMA_NUM_PREDICT: "2048"
       OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_TEMPERATURE: "${OLLAMA_TEMPERATURE:-0.2}"
       # реальные реакции playbook (stage-23): Wazuh Manager API —
       # PUT /active-response доставляет команду AR-скрипта на ВМ актива
       WAZUH_API_URL: "${WAZUH_API_URL:-https://wazuh-manager:55000}"

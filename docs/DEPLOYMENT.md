@@ -79,6 +79,7 @@ cd siem_llm
    | `AUTO_CLOSE_LEVELS` | `low` | уровни автозакрытия после успешного автоанализа (реакции не исполняются автоматически, stage-23); пусто = выключено |
    | `CORRELATION_WINDOW_MINUTES` | `5` | окно корреляции по умолчанию |
    | `OLLAMA_MODEL` | `qwen2.5:3b` | модель интеллектуального анализа |
+| `OLLAMA_TEMPERATURE` | `0.2` | температура генерации LLM (stage-24): низкая = детерминированный JSON-анализ |
    | `WAZUH_API_URL` | `https://wazuh-manager:55000` | Wazuh Manager API (stage-23): реальные реакции playbook уходят в `PUT /active-response` менеджера |
    | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh` / `wazuh` | учётка Wazuh API. Дефолт стенда — `wazuh/wazuh`: read-only роль API включает `active-response:run` (verified live; `wazuh-wui` требует run_as). **На стенде пароли дефолтные**; для контура вне учебного стенда — сменить и/или завести отдельного пользователя API (Wazuh UI → Security) |
    | `WAZUH_API_VERIFY_TLS` | `false` | self-signed сертификат менеджера — проверка TLS выключена на стенде |
@@ -230,8 +231,9 @@ cd frontend && npm ci && npm test
 | `OLLAMA_NUM_CTX=8192` | `.env` / compose | Дефолт Ollama **2048 меньше нашего промпта** (система ~1100 токенов + ECS-JSON) — модель теряла контекст и «сдвигала» окно. 8192 вмещает промпт целиком: качество выше, нет накладных расходов на сдвиг |
 | `OLLAMA_NUM_PREDICT=2048` | `.env` / compose | Потолок генерации — защита от «расползающегося» ответа (реальный ответ укладывается) |
 | `OLLAMA_KEEP_ALIVE=30m` | `.env` / compose | Модель остаётся в памяти 30 минут после запроса — повторные анализы не платят ~20–40с за загрузку с диска |
+| `OLLAMA_TEMPERATURE=0.2` | `.env` / compose | Низкая температура (stage-24): детерминированный JSON-анализ без дрейфа — дефолтные 0.8 на 3B-модели приводят к галлюцинациям команд |
 | `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE=q8_0` | compose (ollama) | Ускорение генерации + вдвое меньше памяти под KV-кэш |
-| Обрезка контекста | `auto_analysis.py` (`_trim_ecs`) | Последние 12 событий, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
+| Курирование + обрезка контекста | `auto_analysis.py` (`_curate_ecs`, `_trim_ecs`) | Только доказательные поля алерта (rule/agent/data/full_log/decoder/location — служебные manager/cluster/input/pre_decode отбрасываются, stage-24); последние 12 событий из `events_total`, строки ECS до 800 символов — промпт гарантированно влезает в `num_ctx` |
 | Сериализация запросов | `llm.py` (`LLM_INFERENCE_LOCK`) | CPU-модель обрабатывает запросы по одному — параллельные только трешат CPU |
 
 Быстрая демонстрация (если скорость важнее качества): `OLLAMA_MODEL=qwen2.5:1.5b`
