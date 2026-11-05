@@ -79,8 +79,8 @@ cd siem_llm
    | `AUTO_CLOSE_LEVELS` | `low` | уровни автозакрытия после успешного автоанализа (реакции не исполняются автоматически, stage-23); пусто = выключено |
    | `CORRELATION_WINDOW_MINUTES` | `5` | окно корреляции по умолчанию |
    | `OLLAMA_MODEL` | `qwen2.5:3b` | модель интеллектуального анализа |
-   | `WAZUH_API_URL` | `https://wazuh-manager:55000` | Wazuh Manager API (stage-23): реальные реакции playbook уходят в `POST /active-response` менеджера |
-   | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh-wui` / `wazuh-wui` | учётка Wazuh API. **На стенде пароли дефолтные** (wazuh-wui — полный доступ); для контура вне учебного стенда — сменить и/или завести отдельного пользователя API (Wazuh UI → Security) |
+   | `WAZUH_API_URL` | `https://wazuh-manager:55000` | Wazuh Manager API (stage-23): реальные реакции playbook уходят в `PUT /active-response` менеджера |
+   | `WAZUH_API_USER` / `WAZUH_API_PASSWORD` | `wazuh` / `wazuh` | учётка Wazuh API. Дефолт стенда — `wazuh/wazuh`: read-only роль API включает `active-response:run` (verified live; `wazuh-wui` требует run_as). **На стенде пароли дефолтные**; для контура вне учебного стенда — сменить и/или завести отдельного пользователя API (Wazuh UI → Security) |
    | `WAZUH_API_VERIFY_TLS` | `false` | self-signed сертификат менеджера — проверка TLS выключена на стенде |
    | `WAZUH_API_TIMEOUT_SECONDS` | `15` | таймаут вызова Wazuh API при исполнении реакции |
    | `EXECUTION_DEFAULT_MODE` | `simulation` | режим execute-action по умолчанию: `simulation` (dry run, как в §3.4 ВКР) или `real` (реальная реакция на ВМ через Wazuh active response) |

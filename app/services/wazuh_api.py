@@ -11,13 +11,18 @@
   токен кэшируется в экземпляре, при 401 — одна повторная аутентификация;
 - поиск агента по имени актива: GET /agents?limit=500 и фильтр на клиенте
   (не полагаемся на серверный параметр agents?name — семантика фильтра
-  меняется между версиями API).
+  меняется между версиями API);
+- реакции verified live (Wazuh 4.7.4): **PUT /active-response?agents_list=<id>**
+  с телом {"command", "arguments"} — НЕ POST с полем agents (405/400);
+  учётка по умолчанию wazuh/wazuh (read-only роль включает active-response:run,
+  проверено; wazuh-wui требует run_as — сложнее без пользы).
 
-Формат аргументов POST /active-response (Wazuh 4.7):
-  {"command": "block-ip", "arguments": ["add", "192.168.56.101"], "agents": ["001"]}
-agents — СТРОКОВЫЕ id; аргументы приходят скрипту на агенте как позиционные
-параметры (порядок может искажаться менеджером) — AR-скрипты сканируют
-все аргументы, см. wazuh/ar/*.sh.
+Формат аргументов PUT /active-response (Wazuh 4.7.4, verified live):
+  PUT /active-response?agents_list=001  body: {"command": "block-ip",
+  "arguments": ["add", "192.168.56.101"]}
+Аргументы приходят скрипту на агенте как позиционные параметры (порядок
+может искажаться менеджером) — AR-скрипты сканируют все аргументы,
+см. wazuh/ar/*.sh.
 """
 
 import logging
@@ -139,11 +144,13 @@ class WazuhClient:
         return None
 
     def active_response(self, agent_id: str, command: str, arguments: list[str]) -> dict:
-        """POST /active-response: запуск AR-команды на агенте (доставка
-        менеджером). agents — список СТРОКОВЫХ id (формат Wazuh 4.7)."""
+        """PUT /active-response?agents_list=<id> (формат Wazuh 4.7.4, verified
+        live): запуск AR-команды на агенте — доставку выполняет менеджер.
+        agents_list — СТРОКОВЫЙ id агента в query-параметре."""
         payload = {
             "command": command,
             "arguments": [str(a) for a in arguments],
-            "agents": [str(agent_id)],
         }
-        return self._request("POST", "/active-response", json=payload)
+        return self._request(
+            "PUT", "/active-response", json=payload, params={"agents_list": str(agent_id)}
+        )

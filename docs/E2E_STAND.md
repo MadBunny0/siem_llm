@@ -133,12 +133,14 @@ docker compose up --build        # wazuh-manager — базовый сервис
 docker compose exec wazuh-manager bash /wazuh-config/setup.sh
 ```
 
-setup.sh идемпотентен: ставит exec-бит интегратору, дописывает в `ossec.conf`
-блок `<integration>` (алерты → `POST /api/v1/ingest/wazuh`) и объявления
-AR-команд `block-ip` / `isolate-host` / `lock-account`, включает active-response,
-перезапускает менеджер. Правила (`wazuh/local_rules.xml`), декодеры
-(`wazuh/local_decoder.xml`) и скрипты приходят маунтами и подхватываются
-тем же рестартом.
+setup.sh идемпотентен: ставит exec-биты интегратору и AR-скриптам, дописывает в
+`ossec.conf` блок `<integration>` (алерты → `POST /api/v1/ingest/wazuh`) и
+объявления AR-команд `block-ip` / `isolate-host` / `lock-account`, включает
+active-response, отключает cluster (standalone) и перезапускает менеджер.
+Правила (`wazuh/local_rules.xml`), декодеры (`wazuh/local_decoder.xml`) и скрипты
+приходят маунтом `/wazuh-config-mount` (образ копирует их в `/var/ossec` на старте
+контейнера — прямые маунты в `/var/ossec/etc/**` запрещены, они ломают первую
+инициализацию образа).
 
 ## 7. Проверка стенда
 
@@ -170,17 +172,17 @@ AR-команд `block-ip` / `isolate-host` / `lock-account`, включает a
    ```
 
 4. **Аутентификация Wazuh API** (используется реакциями): env `WAZUH_API_*`
-   (по умолчанию `wazuh-wui/wazuh-wui` — дефолт стенда; для контура вне учебного
-   стенда сменить, см. [DEPLOYMENT.md](DEPLOYMENT.md)):
+   (по умолчанию `wazuh/wazuh` — read-only роль API включает
+   `active-response:run`; `wazuh-wui` требует run_as, сложнее без пользы;
+   для контура вне учебного стенда сменить, см. [DEPLOYMENT.md](DEPLOYMENT.md)):
 
    ```bash
-   TOKEN=$(curl -sk -u wazuh-wui:wazuh-wui https://localhost:55000/security/user/authenticate | sed 's/.*"token":"\([^"]*\)".*/\1/')
+   TOKEN=$(curl -sk -u wazuh:wazuh -X POST "https://localhost:55000/security/user/authenticate?raw=true")
    curl -sk -H "Authorization: Bearer $TOKEN" https://localhost:55000/agents | head -c 300
    ```
 
-   Если учётка не подходит (в свежих версиях `wazuh-wui` требует `run_as`) —
-   сменить пароль/создать пользователя в Wazuh UI (Security → Users) и
-   прописать в `.env` (`WAZUH_API_USER`/`WAZUH_API_PASSWORD`).
+   Если учётка не подходит — сменить пароль/создать пользователя в Wazuh UI
+   (Security → Users) и прописать в `.env` (`WAZUH_API_USER`/`WAZUH_API_PASSWORD`).
 
 5. **(Опционально) косметика IP активов** — Adminer (:8080):
 
@@ -215,5 +217,5 @@ AR-команд `block-ip` / `isolate-host` / `lock-account`, включает a
 | AR-команда принята менеджером? | `docker compose exec wazuh-manager tail -n 20 /var/ossec/logs/api.log` и `alerts.json` (алерты `ossec: active response` с level 3+) |
 | Скрипт выполнился на ВМ? | на ВМ: `tail /var/ossec/logs/active-responses.log` — строки `block-ip.sh:` / `lock-account.sh:` / `isolate-host.sh:` |
 | Эффект на ВМ | `sudo iptables -L INPUT -n --line-numbers` (block-ip / isolate), `sudo passwd -S <user>` (lock-account) |
-| Менеджер не принял реакцию (401/403)? | проверить `WAZUH_API_USER/PASSWORD` (п.7.4), пересоздать токен, `docker compose logs api` |
+| Менеджер не принял реакцию (401/403)? | проверить `WAZUH_API_USER/PASSWORD` (п.7.4), `docker compose logs api` — реакции идут через `PUT /active-response?agents_list=<id>` (формат 4.7.4; `wazuh/wazuh` — read-only роль с правом AR) |
 | setup.sh после recreate | `docker compose exec wazuh-manager bash /wazuh-config/setup.sh` |

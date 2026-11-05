@@ -80,10 +80,10 @@ services:
       OLLAMA_NUM_PREDICT: "2048"
       OLLAMA_KEEP_ALIVE: "30m"
       # реальные реакции playbook (stage-23): Wazuh Manager API —
-      # POST /active-response доставляет команду AR-скрипта на ВМ актива
+      # PUT /active-response доставляет команду AR-скрипта на ВМ актива
       WAZUH_API_URL: "${WAZUH_API_URL:-https://wazuh-manager:55000}"
-      WAZUH_API_USER: "${WAZUH_API_USER:-wazuh-wui}"
-      WAZUH_API_PASSWORD: "${WAZUH_API_PASSWORD:-wazuh-wui}"
+      WAZUH_API_USER: "${WAZUH_API_USER:-wazuh}"
+      WAZUH_API_PASSWORD: "${WAZUH_API_PASSWORD:-wazuh}"
       WAZUH_API_VERIFY_TLS: "${WAZUH_API_VERIFY_TLS:-false}"
       WAZUH_API_TIMEOUT_SECONDS: "${WAZUH_API_TIMEOUT_SECONDS:-15}"
       EXECUTION_DEFAULT_MODE: "${EXECUTION_DEFAULT_MODE:-simulation}"
@@ -159,18 +159,22 @@ services:
       - "55000:55000"     # Wazuh API (реакции + диагностика)
     volumes:
       - wazuh_data:/var/ossec/data
-      # интегратор: rw — setup.sh делает chmod +x (bind-mount с Windows
-      # может терять exec-бит)
-      - ./wazuh/integrator.sh:/var/ossec/integrator_files/custom-integration
-      # конфиг-фрагменты и скрипты setup
+      # Кастомизация — ТОЛЬКО через /wazuh-config-mount (штатный механизм
+      # образа: на старте всё содержимое копируется в /var/ossec с сохранением
+      # путей). Прямые маунты в /var/ossec/etc/** запрещены: непустой
+      # /var/ossec/etc на первом старте ломает инициализацию образа
+      # (mount_permanent_data пропускает восстановление дефолтов из data_tmp
+      # и удаляет его — менеджер остаётся без ossec.conf). Интегратор
+      # ставится в НАСТОЯЩИЙ каталог интеграций /var/ossec/integrations.
+      - ./wazuh/integrator.sh:/wazuh-config-mount/integrations/custom-integration:ro
+      - ./wazuh/local_rules.xml:/wazuh-config-mount/etc/rules/local_rules.xml:ro
+      - ./wazuh/local_decoder.xml:/wazuh-config-mount/etc/decoders/local_decoder.xml:ro
+      - ./wazuh/ar/block-ip.sh:/wazuh-config-mount/active-response/bin/block-ip.sh:ro
+      - ./wazuh/ar/lock-account.sh:/wazuh-config-mount/active-response/bin/lock-account.sh:ro
+      - ./wazuh/ar/isolate-host.sh:/wazuh-config-mount/active-response/bin/isolate-host.sh:ro
+      # фрагмент <integration> и скрипт setup (исполняются вручную, не копируются)
       - ./wazuh/ossec-integration.xml:/wazuh-config/ossec-integration.xml:ro
       - ./wazuh/setup.sh:/wazuh-config/setup.sh:ro
-      # кастомные правила стенда (первая группа = event_type для нормализации):
-      # поверх дефолтного local_rules.xml (в нём только сэмпл 100001)
-      - ./wazuh/local_rules.xml:/var/ossec/etc/rules/local_rules.xml
-      # кастомные декодеры (dstuser для useradd/usermod/passwd — сценарий 3):
-      # поверх дефолтного local_decoder.xml (только примеры в комментариях)
-      - ./wazuh/local_decoder.xml:/var/ossec/etc/decoders/local_decoder.xml
       # кастомные AR-скрипты реакций (block-ip / lock-account / isolate-host);
       # exec-бит при необходимости ставит setup.sh
       - ./wazuh/ar/block-ip.sh:/var/ossec/active-response/bin/block-ip.sh

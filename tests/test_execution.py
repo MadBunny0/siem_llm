@@ -42,7 +42,10 @@ class MockWazuhAPI:
             import json
 
             payload = json.loads(request.content)
-        self.requests.append((request.method, request.url.path, payload))
+        path_q = request.url.path + (
+            f"?{request.url.query.decode()}" if request.url.query else ""
+        )
+        self.requests.append((request.method, path_q, payload))
         if self.net_error:
             raise httpx.ConnectError("connection refused", request=request)
         if request.url.path == "/security/user/authenticate" and request.method == "POST":
@@ -54,12 +57,13 @@ class MockWazuhAPI:
             return httpx.Response(401, json={"error": "invalid token"})
         if request.url.path == "/agents" and request.method == "GET":
             return httpx.Response(200, json={"data": {"affected_items": self.agents}})
-        if request.url.path == "/active-response" and request.method == "POST":
+        if request.url.path == "/active-response" and request.method == "PUT":
+            # формат Wazuh 4.7.4: PUT /active-response?agents_list=<id>,
+            # тело {command, arguments} (agents в теле удалены в 4.x API)
             if self.ar_status >= 400:
                 return httpx.Response(self.ar_status, json={"error": "delivery failed"})
             body = self.ar_responses.pop(0) if self.ar_responses else {
-                "data": {"affected_items": [{"agent_id": payload["agents"][0] if payload else "?"}],
-                         "total_affected_items": 1},
+                "data": {"affected_items": [], "total_affected_items": 1},
                 "error": 0,
             }
             return httpx.Response(200, json=body)
@@ -129,8 +133,21 @@ def add_playbook(db, action="block_ip"):
 
 
 def ar_calls(api):
-    """Только вызовы POST /active-response (payload)."""
-    return [payload for method, path, payload in api.requests if path == "/active-response"]
+    """Только вызовы PUT /active-response (payload без agents — он в query)."""
+    return [
+        payload
+        for method, path, payload in api.requests
+        if path.startswith("/active-response")
+    ]
+
+
+def ar_paths(api):
+    """Пути вызовов /active-response (с query — для проверки agents_list)."""
+    return [
+        path
+        for method, path, payload in api.requests
+        if path.startswith("/active-response")
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +159,8 @@ def test_client_authenticates_and_sends_bearer(mock_api):
     assert agent_id == "001"
     # первый запрос — аутентификация, второй — /agents с Bearer-токеном
     assert mock_api.requests[0][:2] == ("POST", "/security/user/authenticate")
-    assert mock_api.requests[1][:2] == ("GET", "/agents")
+    assert mock_api.requests[1][0] == "GET"
+    assert mock_api.requests[1][1].startswith("/agents")
 
 
 def test_client_find_agent_unknown_name(mock_api):
@@ -182,12 +200,12 @@ def test_execute_real_block_ip_success(db, mock_api):
     assert execution["mode"] == "real"
     assert execution["playbook"] == playbook.name
     assert execution["target"] == "192.168.56.102"
-    # вызов AR: правильная команда, аргументы и строковый id агента
+    # вызов AR: правильная команда, аргументы и агент в query (формат 4.7.4)
     calls = ar_calls(mock_api)
     assert len(calls) == 1
     assert calls[0]["command"] == "block-ip"
     assert calls[0]["arguments"] == ["add", "192.168.56.102"]
-    assert calls[0]["agents"] == ["001"]
+    assert "agents_list=001" in ar_paths(mock_api)[0]
     # данные доставки — в result["targets"]
     assert execution["targets"][0]["agent_id"] == "001"
     assert execution["targets"][0]["agent_name"] == "mail-prod-01"

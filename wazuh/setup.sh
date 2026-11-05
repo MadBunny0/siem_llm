@@ -45,12 +45,31 @@ with open(conf_path, "w", encoding="utf-8") as f:
 PYEOF
 }
 
-echo "[setup] 1/5 exec-бит интегратора"
-if chmod +x /var/ossec/integrator_files/custom-integration 2>/dev/null; then
+echo "[setup] 1/5 exec-биты интегратора и AR-скриптов"
+# Файлы приходят через /wazuh-config-mount (образ копирует их в /var/ossec
+# на старте без прав) — exec-бит ставится здесь, на живые копии
+CHMODED=0
+chmod +x /var/ossec/integrations/custom-integration 2>/dev/null && CHMODED=1
+for f in /var/ossec/active-response/bin/block-ip.sh \
+         /var/ossec/active-response/bin/lock-account.sh \
+         /var/ossec/active-response/bin/isolate-host.sh; do
+    chmod 750 "$f" 2>/dev/null || CHMODED=0
+done
+if [ "$CHMODED" -eq 1 ]; then
     echo "        ок"
 else
-    echo "        ВНИМАНИЕ: chmod не удался — проверь исполнимость интегратора"
+    echo "        ВНИМАНИЕ: chmod не удался — проверь наличие файлов"
+    echo "        (маунты /wazuh-config-mount в docker-compose.yml)"
 fi
+
+echo "[setup] 1b/5 проверка правил и декодеров"
+for f in /var/ossec/etc/rules/local_rules.xml /var/ossec/etc/decoders/local_decoder.xml; do
+    if [ -f "$f" ]; then
+        echo "        $f на месте"
+    else
+        echo "        ВНИМАНИЕ: $f отсутствует — маунт через /wazuh-config-mount"
+    fi
+done
 
 echo "[setup] 2/5 блок <integration> в ossec.conf"
 if grep -q "custom-integration" "$OSSEC_CONF"; then
@@ -71,6 +90,27 @@ else
 </active-response>'
     echo "        блок <active-response> добавлен"
 fi
+
+echo "[setup] 3b/5 кластер отключён (standalone-узел)"
+# В дефолтном ossec.conf кластер включён (<disabled>no</disabled>) с пустым
+# ключом — wazuh-clusterd падает с Configuration error и роняет restart.
+# Замена точечная (последовательность внутри <cluster>), актив-response
+# с таким же <disabled>no</disabled> не затрагивается.
+"$PYTHON" - "$OSSEC_CONF" <<'PYEOF'
+import sys
+
+conf_path = sys.argv[1]
+with open(conf_path, encoding="utf-8") as f:
+    conf = f.read()
+old = "    <hidden>no</hidden>\n    <disabled>no</disabled>\n  </cluster>"
+new = "    <hidden>no</hidden>\n    <disabled>yes</disabled>\n  </cluster>"
+if old in conf:
+    with open(conf_path, "w", encoding="utf-8") as f:
+        f.write(conf.replace(old, new))
+    print("        cluster disabled=yes")
+else:
+    print("        уже настроен (или блок кластера отличается)")
+PYEOF
 
 echo "[setup] 4/5 объявления AR-команд"
 add_command() {

@@ -18,14 +18,19 @@ Wazuh — базовая SIEM-система прототипа (§3.5, p:130): 
 
 ## Состав интеграции (файлы репо, монтируются в контейнер менеджера)
 
-| Файл | Куда смонтирован | Назначение |
-|---|---|---|
-| `wazuh/integrator.sh` | `/var/ossec/integrator_files/custom-integration` | скрипт интеграции: читает JSON-алерт и POST-ит его в наш API (через встроенный python менеджера) |
-| `wazuh/ossec-integration.xml` | `/wazuh-config/ossec-integration.xml` | фрагмент `<integration>`: все события уровня ≥3 в формате JSON на `http://api:8000/api/v1/ingest/wazuh` |
-| `wazuh/setup.sh` | `/wazuh-config/setup.sh` | идемпотентный сетап менеджера (см. ниже) |
-| `wazuh/local_rules.xml` | `/var/ossec/etc/rules/local_rules.xml` | кастомные правила стенда под seed-корреляции (100100/100101 — SSH-неудачки, 100200 — SQLi в access-логе nginx, 100300 — useradd/usermod/sudoers) |
-| `wazuh/local_decoder.xml` | `/var/ossec/etc/decoders/local_decoder.xml` | кастомные декодеры: имя учётной записи из логов useradd/usermod/passwd → `dstuser` (для цели реакции disable_account) |
-| `wazuh/ar/block-ip.sh`, `lock-account.sh`, `isolate-host.sh` | `/var/ossec/active-response/bin/*.sh` | AR-скрипты реакций. **На менеджере — только определение команд; исполняются на агентах**, копируются на ВМ вручную (E2E_STAND, шаг 4) |
+Все кастомизации монтируются ТОЛЬКО в `/wazuh-config-mount` — штатный механизм
+образа: на старте контейнера его содержимое копируется в `/var/ossec` с
+сохранением путей. Прямые маунты файлов в `/var/ossec/etc/**` запрещены:
+непустой `/var/ossec/etc` на первом старте ломает инициализацию образа
+(менеджер остаётся без `ossec.conf` — все демоны не стартуют).
+
+| Файл | Куда смонтирован | Куда попадает в контейнере | Назначение |
+|---|---|---|---|
+| `wazuh/integrator.sh` | `/wazuh-config-mount/integrations/custom-integration` | `/var/ossec/integrations/custom-integration` | скрипт интеграции (НАСТОЯЩИЙ каталог интеграций Wazuh): читает JSON-алерт и POST-ит его в наш API |
+| `wazuh/local_rules.xml` | `/wazuh-config-mount/etc/rules/local_rules.xml` | `/var/ossec/etc/rules/local_rules.xml` | правила стенда: 100100/100101 (SSH-неудачки), 100200/100201 (SQLi), 100300/100301/100302 (useradd/usermod/passwd) — первая группа = event_type |
+| `wazuh/local_decoder.xml` | `/wazuh-config-mount/etc/decoders/local_decoder.xml` | `/var/ossec/etc/decoders/local_decoder.xml` | декодеры: имя учётной записи из useradd/usermod/passwd → `dstuser` (цель реакции disable_account) |
+| `wazuh/ar/*.sh` | `/wazuh-config-mount/active-response/bin/` | `/var/ossec/active-response/bin/` | AR-скрипты (копия менеджера; **исполняются на агентах** — на ВМ ставятся вручную, E2E_STAND шаг 5) |
+| `wazuh/ossec-integration.xml`, `wazuh/setup.sh` | `/wazuh-config/…` (вне mount-копирования) | — | фрагмент `<integration>` и идемпотентный setup |
 
 ## Настройка менеджера — один идемпотентный шаг
 
@@ -33,16 +38,20 @@ Wazuh — базовая SIEM-система прототипа (§3.5, p:130): 
 docker compose exec wazuh-manager bash /wazuh-config/setup.sh
 ```
 
-Скрипт: ставит exec-бит интегратору (bind-mount с Windows теряет exec-бит), дописывает
-блок `<integration>` и `<command>`-объявления реакций в `ossec.conf`, включает
-active-response и перезапускает менеджер. Повторять **после каждого recreate
-контейнера** (`down`/`up`): `ossec.conf` живёт в файловой системе образа, а не в томе
-`wazuh_data`; правила и декодеры приходят маунтами и подхватываются тем же рестартом.
+Скрипт: ставит exec-биты интегратору и AR-скриптам (копия из mount теряет права),
+дописывает блок `<integration>` и `<command>`-объявления реакций в `ossec.conf`,
+включает active-response, отключает cluster (standalone: без ключа clusterd
+падает с Configuration error) и перезапускает менеджер. Повторять **после
+каждого recreate контейнера** (`down`/`up`): правки `ossec.conf` живут в
+контейнере, не в томе.
 
 Кастомные правила гарантируют, что первая группа алерта (`rule.groups[0]`) семантическая
 (`authentication_failed` / `web_attack` / `privilege_escalation`) — именно её берёт
 нормализация SIEM (`app/services/normalization.py`). У built-in правил первой группой
-служебная (`syslog`, `sshd`, …), поэтому для классов атак стенда заведены свои правила.
+служебная (`syslog`, `sshd`, …), поэтому правила стенда сделаны ДОЧЕРНИМИ к built-in
+(if_sid 5710/5711/5716, 31164/31103, 5902) — ребёнок подменяет алерт родителя нашими
+группами; анализd берёт первое совпадение по порядку загрузки, уровень приоритета не
+задаёт. Проверено live через wazuh-logtest.
 
 ## Направление 1: события — агенты → менеджер → SIEM
 
@@ -87,8 +96,11 @@ systemctl enable --now wazuh-agent
 актива**; активы `db-primary-01` / `fw-edge-01` агентов не имеют — на них `mode=real`
 возвращает `no_target` (естественное демо ограничения).
 
-Учётная запись Wazuh API задаётся env `WAZUH_API_*` (по умолчанию `wazuh-wui/wazuh-wui` —
-дефолт стенда; для контура вне учебного стенда сменить, см. [DEPLOYMENT.md](DEPLOYMENT.md)).
+Учётная запись Wazuh API задаётся env `WAZUH_API_*` (по умолчанию `wazuh/wazuh` —
+read-only роль API включает `active-response:run`, verified live; `wazuh-wui`
+требует run_as; для контура вне учебного стенда сменить, см. [DEPLOYMENT.md](DEPLOYMENT.md)).
+Формат вызова (Wazuh 4.7.4): `PUT /active-response?agents_list=<id>`, тело
+`{"command", "arguments"}` — POST/поле agents из старых версий не работают (405/400).
 
 ## Демо-матрица: seed-правила корреляции ↔ техники MITRE ATT&CK ↔ стенд
 

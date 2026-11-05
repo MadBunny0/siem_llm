@@ -32,12 +32,14 @@ class Settings(BaseSettings):
     token_expire_minutes: int = 480
 
     # Wazuh Manager API (stage-23): активные реакции playbook (block_ip /
-    # disable_account / isolate_host) уходят в POST /active-response менеджера,
+    # disable_account / isolate_host) уходят в PUT /active-response менеджера,
     # менеджер доставляет команду wazuh-агенту на ВМ актива (docs/E2E_STAND.md).
     # Self-signed сертификат менеджера — verify_tls=False по умолчанию.
+    # Учётка wazuh/wazuh — дефолт стенда (read-only роль включает
+    # active-response:run, verified live); wazuh-wui требует run_as.
     wazuh_api_url: str = "https://wazuh-manager:55000"
-    wazuh_api_user: str = "wazuh-wui"
-    wazuh_api_password: str = "wazuh-wui"
+    wazuh_api_user: str = "wazuh"
+    wazuh_api_password: str = "wazuh"
     wazuh_api_verify_tls: bool = False
     # таймаут вызова Wazuh API (сек): реакции быстрые, долгих операций нет
     wazuh_api_timeout_seconds: int = 15
