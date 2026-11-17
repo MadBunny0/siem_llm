@@ -251,12 +251,15 @@ def test_analyze_incident_success(client, db_session, engine, monkeypatch):
 
 
 def test_analysis_context_curated_ecs_and_events_total(client, db_session, engine, monkeypatch):
-    """stage-24, принцип «LLM — независимый наблюдатель»: контекст анализа
-    содержит только сырые доказательства — служебные поля Wazuh-алерта
-    (manager/cluster/input/pre_decode) в ECS не попадают; events_total
-    сообщает модели, сколько всего событий в инциденте (в контексте —
-    последние 12). Метрики SIEM (риск/правило корреляции) в контекст
-    сознательно НЕ передаются — иначе модель повторяла бы вывод конвейера."""
+    """stage-24, принцип «LLM — независимый наблюдатель» (уточнён docs-sync
+    2026-11-17): контекст содержит сырые доказательства — служебные поля
+    Wazuh-алерта (manager/cluster/input/pre_decode) в ECS не попадают;
+    events_total сообщает модели, сколько всего событий в инциденте (в
+    контексте — последние 12). Разборы/вердикты конвейера (сработавшее
+    правило, severity_factors, блок-агрегат siem_assessment) НЕ передаются —
+    иначе модель повторяла бы вывод конвейера. Рассчитанный уровень риска
+    (risk_score/severity) и сведения об активе при этом передаются —
+    прямое требование §3.3.4 (p:86, эталон ВКР)."""
     from sqlalchemy.orm import sessionmaker
 
     seed_rule(db_session)
@@ -306,9 +309,14 @@ def test_analysis_context_curated_ecs_and_events_total(client, db_session, engin
         # служебный шум Wazuh — отброшен
         for junk in ("manager", "cluster", "input", "pre_decode", "id"):
             assert junk not in ecs
-    # метрики SIEM в контексте нет (независимость наблюдателя)
+    # разборы/вердикты конвейера в контексте нет (независимость наблюдателя)
     assert "siem_assessment" not in captured
     assert "severity_factors" not in captured
+    # рассчитанный уровень риска и актив — на месте (§3.3.4, p:86):
+    # модель видит предварительную оценку конвейера, но не её разбор
+    stored = client.get(f"{API}/incidents/{incident_id}").json()
+    assert captured["risk_score"] == stored["risk_score"]
+    assert captured["severity"] == stored["severity"]
 
 
 def test_manual_playbook_execution_for_high(client, db_session, engine, monkeypatch):
