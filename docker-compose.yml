@@ -39,6 +39,17 @@ services:
       # и сжатый KV-кэш q8_0 ускоряют генерацию и вдвое экономят память под кэш
       OLLAMA_FLASH_ATTENTION: "true"
       OLLAMA_KV_CACHE_TYPE: q8_0
+    # GPU-ускорение инференса (2026-11-18, запрос пользователя — решение
+    # stage-18 «проект CPU-only» отменено: драйвер NVIDIA 610.88 + Docker
+    # Desktop WSL2 пробрасывают GPU в контейнер, проверено nvidia-smi).
+    # Без GPU-хоста сервис продолжает работать на CPU (fallback Ollama).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
       interval: 5s
@@ -76,8 +87,10 @@ services:
       AUTO_CLOSE_LEVELS: "${AUTO_CLOSE_LEVELS:-low}"
       # производительность инференса (stage-18, фидбек про скорость):
       # окно контекста / потолок генерации / удержание модели в памяти
+      # num_predict 4096 (2026-11-18, GPU-прогон E2E): на 12+ событиях вердикт-JSON
+      # длиннее 2048 токенов — обрезался посреди строки, ломая парсинг
       OLLAMA_NUM_CTX: "8192"
-      OLLAMA_NUM_PREDICT: "2048"
+      OLLAMA_NUM_PREDICT: "4096"
       OLLAMA_KEEP_ALIVE: "30m"
       OLLAMA_TEMPERATURE: "${OLLAMA_TEMPERATURE:-0.2}"
       # реальные реакции playbook (stage-23): Wazuh Manager API —

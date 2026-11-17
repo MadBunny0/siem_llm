@@ -5,57 +5,39 @@
 #
 # Запускается execd wazuh-АГЕНТА на ВМ (не на менеджере!) — скрипт обязан
 # лежать в /var/ossec/active-response/bin/ на каждой ВМ (менеджер скрипты
-# агентам не рассылает). Определение команды block-ip — в ossec.conf
-# менеджера (добавляет wazuh/setup.sh).
+# агентам не рассылает). Менеджер вызывает его командой '!block-ip.sh':
+# префикс '!' заставляет execd агента исполнять скрипт напрямую из
+# active-response/bin без регистрации в ar.conf (src/os_execd/exec.c).
 #
-# Аргументы от менеджера приходят как позиционные параметры, порядок может
-# искажаться (перед аргументами API менеджер подставляет placeholder'ы
-# стандартного AR-протокола) — поэтому сканируются ВСЕ аргументы:
-#   add / delete — заблокировать / снять блокировку;
-#   цель — первый аргумент, похожий на IP-адрес (IPv4 с точками, IPv6
-#   с двоеточиями).
+# Параметры (Wazuh 4.2+, src/os_execd/execd.c): argv пуст — execd передаёт
+# ВСЕ параметры JSON'ом ЧЕРЕЗ STDIN:
+#   {"parameters": {"alert": {...}, "arguments": ["add", "192.168.56.50"], ...}}
+#   arguments[0] — действие (add / delete), arguments[1] — цель (IP).
 # Факт запуска пишет сам framework в /var/ossec/logs/active-responses.log,
 # скрипт добавляет строку о результате.
 # ---------------------------------------------------------------------------
 
 LOG="/var/ossec/logs/active-responses.log"
-ACTION=""
-TARGET=""
 
-for arg in "$@"; do
-  case "$arg" in
-    add|delete)
-      [ -z "$ACTION" ] && ACTION="$arg"
-      ;;
-    "-"|"")
-      ;;
-    *)
-      case "$arg" in
-        # не IPv4 (есть символы кроме цифр и точек)
-        *[!0-9.]*)
-          # IPv6: содержит ':' и только hex-символы/двоеточия
-          case "$arg" in
-            *:*) case "$arg" in
-                   *[!0-9a-fA-F:]*) ;;
-                   *) [ -z "$TARGET" ] && TARGET="$arg" ;;
-                 esac ;;
-          esac
-          ;;
-        # IPv4: есть точка
-        *.*) [ -z "$TARGET" ] && TARGET="$arg" ;;
-      esac
-      ;;
-  esac
-done
+# --- разбор JSON из stdin (execd передаёт параметры именно туда) -----------
+IFS= read -r INPUT
+ARGS=$(printf '%s\n' "$INPUT" | grep -Eo '"(extra_args|arguments)": *\[[^]]*\]' | head -1 | sed 's/^"[^"]*": *\[//; s/\]$//')
+ACTION=$(printf '%s\n' "$ARGS" | cut -d '"' -f2)
+TARGET=$(printf '%s\n' "$ARGS" | cut -d '"' -f4)
 
 log() {
   echo "$(date '+%a %b %d %H:%M:%S %Z %Y') block-ip.sh: $1" >> "$LOG" 2>/dev/null || true
 }
 
-if [ -z "$ACTION" ] || [ -z "$TARGET" ]; then
-  log "не распознаны аргументы (нужны add|delete и IP): $*"
-  exit 1
-fi
+# цель должна быть похожа на IP (IPv4 с точками или IPv6 с двоеточиями)
+case "$TARGET" in
+  *.*) ;;
+  *:*) ;;
+  *)
+    log "не распознаны аргументы (нужны add|delete и IP): arguments=$ARGS"
+    exit 1
+    ;;
+esac
 
 case "$ACTION" in
   add)
@@ -67,5 +49,8 @@ case "$ACTION" in
     iptables -D INPUT -s "$TARGET" -j DROP 2>/dev/null
     iptables -D OUTPUT -d "$TARGET" -j DROP 2>/dev/null
     log "блокировка IP $TARGET снята"
+    ;;
+  *)
+    log "неизвестное действие '$ACTION'"
     ;;
 esac
