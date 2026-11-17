@@ -9,7 +9,8 @@ Wazuh — базовая SIEM-система прототипа (§3.5, p:130): 
 установленных на виртуальных машинах Kali Linux. Оба направления ведут в один эндпоинт —
 `POST /api/v1/ingest/wazuh` (открытый для машинной интеграции; авторизация JWT на него
 сознательно не распространяется), а реакции playbook идут **обратно** — через Wazuh API
-(`POST /active-response`, порт 55000) на те же ВМ.
+(`PUT /active-response?agents_list=<id>`, порт 55000 — формат Wazuh 4.7.4,
+verified live; POST даёт 405) на те же ВМ.
 
 > Пошаговая инструкция стенда с ВМ — [E2E_STAND.md](E2E_STAND.md);
 > сценарии атак для человека-оператора — [E2E_SCENARIOS.md](E2E_SCENARIOS.md).
@@ -139,8 +140,8 @@ access-лога с `id=1'%20OR%20'1'='1` → правило **100200**; для u
                                                           │
                     конвейер: нормализация → корреляция → риск → LLM → DVE
                                                           │
-UI (режим «Реально») ──► POST /incidents/{id}/execute-action ──► Wazuh API :55000
-                                                          │ POST /active-response
+UI «▶ Выполнить» ──► POST /incidents/{id}/execute-action ──► Wazuh API :55000
+                                                          │ PUT /active-response
                  ВМ актива: block-ip.sh / lock-account.sh / isolate-host.sh
                                                           │
 UI вкладка «Реакции (ВМ)» ◄── GET /api/v1/responses/state ◄┘ (откат — reset-actions)

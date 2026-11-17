@@ -46,7 +46,7 @@ siem_llm/
 │   └── models.py, schemas.py, config.py, db.py, init_db.py, main.py
 ├── frontend/             # React-дашборд: src/App.jsx (логика UI), src/api.js, src/constants.js,
 │                         # src/components/* (вкладки, логин), src/hooks, src/lib — хелперы
-├── tests/                # pytest-тесты бэкенда (171, запускаются в контейнере; общие фикстуры — conftest.py)
+├── tests/                # pytest-тесты бэкенда (172, запускаются в контейнере; общие фикстуры — conftest.py)
 ├── docs/                 # DEPLOYMENT, WAZUH_INTEGRATION, DOCUMENTATION, CRITICALITY_MATRIX, E2E_STAND, E2E_SCENARIOS, E2E_VM_SETUP
 ├── analysis/             # Рабочие материалы: gap-анализ, реестр отклонений, контекст
 ├── wazuh/                # Интеграция с Wazuh (integrator, setup, правила/декодеры, AR-скрипты реакций)
@@ -55,7 +55,7 @@ siem_llm/
 └── requirements.txt, pytest.ini, .env.example, .gitattributes
 ```
 
-Тесты: 171 backend (pytest) + 113 frontend (Vitest + RTL) — запускаются в контейнере,
+Тесты: 172 backend (pytest) + 113 frontend (Vitest + RTL) — запускаются в контейнере,
 инструкции в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), раздел 6.
 
 ---
@@ -145,8 +145,9 @@ API защищено JWT (Bearer). Открыты только `GET /health` (м
 ### Плановый режим LLM-анализа (§3.3.3, p:80)
 
 `AUTO_ANALYSIS_LEVELS` — уровни риска, анализируемые LLM **автоматически** при поступлении
-события (по умолчанию `critical` — «передаются без задержек»). Для имитации планового режима
-по всем уровням укажите все: `AUTO_ANALYSIS_LEVELS=low,medium,high,critical`.
+события (по умолчанию `low` — stage-18: полный автоконвейер с автозакрытием только для low).
+Для имитации планового режима §3.3.3 (p:80) по всем уровням укажите все:
+`AUTO_ANALYSIS_LEVELS=low,medium,high,critical`.
 
 Политика Decision Validation Engine (какие действия разрешены для каждого уровня риска)
 хранится в БД (`validation_policy`, seed при инициализации) и доступна через
