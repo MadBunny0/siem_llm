@@ -4,8 +4,14 @@
 # ВМ актива от сети (docs/E2E_SCENARIOS.md, playbook isolate_host).
 #
 # Запускается execd wazuh-АГЕНТА на ВМ — скрипт обязан лежать в
-# /var/ossec/active-response/bin/ на каждой ВМ. Определение команды
-# isolate-host — в ossec.conf менеджера (добавляет wazuh/setup.sh).
+# /var/ossec/active-response/bin/ на каждой ВМ. Менеджер вызывает его
+# командой '!isolate-host.sh' (префикс '!' — исполнение напрямую из
+# active-response/bin без регистрации в ar.conf).
+#
+# Параметры (Wazuh 4.2+): argv пуст — execd передаёт ВСЕ параметры JSON'ом
+# ЧЕРЕЗ STDIN: {"parameters": {"arguments": ["add"], ...}}
+#   arguments[0] — действие (add / delete). Цель не нужна: команда работает
+#   на самом агенте.
 #
 # add — изолировать: отдельная цепочка iptables SIEM_ISOLATE рвёт весь
 #   входящий/исходящий трафик КРОМЕ loopback, установленных соединений и
@@ -16,15 +22,10 @@
 
 CHAIN="SIEM_ISOLATE"
 LOG="/var/ossec/logs/active-responses.log"
-ACTION=""
 
-for arg in "$@"; do
-  case "$arg" in
-    add|delete)
-      [ -z "$ACTION" ] && ACTION="$arg"
-      ;;
-  esac
-done
+# --- разбор JSON из stdin (execd передаёт параметры именно туда) -----------
+IFS= read -r INPUT
+ACTION=$(printf '%s\n' "$INPUT" | grep -Eo '"(extra_args|arguments)": *\[[^]]*\]' | head -1 | sed 's/^"[^"]*": *\[//; s/\]$//' | cut -d '"' -f2)
 
 log() {
   echo "$(date '+%a %b %d %H:%M:%S %Z %Y') isolate-host.sh: $1" >> "$LOG" 2>/dev/null || true

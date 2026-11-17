@@ -2255,13 +2255,14 @@ button:focus-visible {
 }
 
 .responses-card {
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid #1c273b;
   border-radius: 10px;
   padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  background: var(--panel-bg, #fff);
+  background: #0b121f;
+  color: #dce2ed;
 }
 
 .responses-head {
@@ -2271,8 +2272,13 @@ button:focus-visible {
   gap: 8px;
 }
 
+.responses-head strong {
+  color: #e8ecf4;
+  font-size: 14px;
+}
+
 .responses-incident {
-  color: var(--text-muted, #6b7280);
+  color: #a7b4cc;
   font-size: 12px;
 }
 
@@ -2286,18 +2292,21 @@ button:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--border, #e5e7eb);
+  border: 1px solid #2a3550;
   border-radius: 999px;
   padding: 3px 10px;
   font-size: 12px;
+  background: #101a2c;
+  color: #dce2ed;
 }
 
 .responses-action b {
   font-weight: 600;
+  color: #ffffff;
 }
 
 .responses-meta {
-  color: var(--text-muted, #6b7280);
+  color: #a7b4cc;
   font-size: 12px;
 }
 

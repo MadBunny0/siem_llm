@@ -43,10 +43,17 @@ logger = logging.getLogger("execution")
 # отката). Первый элемент аргументов — команда скрипта (add/delete/lock/
 # unlock), второй — цель (IP/учётка) из событий инцидента; isolate-host
 # цели не требует (команда работает на самом агенте).
+#
+# Префикс '!' перед именем скрипта обязателен (Wazuh 4.2+, src/os_execd):
+# агентский execd исполняет команду без префикса только если она
+# зарегистрирована в ar.conf, который менеджер кастомным командам
+# не отдаёт (ERROR 1311 «Invalid command name») — имя с '!' заставляет
+# execd исполнить скрипт напрямую из active-response/bin. Параметры
+# скрипт получает JSON'ом через stdin (argv пуст, протокол Wazuh 4.2+).
 WAZUH_AR_COMMANDS = {
-    "block_ip": ("block-ip", "add", "delete"),
-    "disable_account": ("lock-account", "lock", "unlock"),
-    "isolate_host": ("isolate-host", "add", "delete"),
+    "block_ip": ("!block-ip.sh", "add", "delete"),
+    "disable_account": ("!lock-account.sh", "lock", "unlock"),
+    "isolate_host": ("!isolate-host.sh", "add", "delete"),
 }
 
 
@@ -81,7 +88,7 @@ def _action_target(action: str, context: dict) -> str | None:
 def _ar_arguments(command: str, verb: str, target: str | None) -> list[str]:
     """Аргументы AR-команды: block-ip/lock-account получают цель вторым
     аргументом, isolate-host работает без цели."""
-    if command == "isolate-host":
+    if "isolate-host" in command:
         return [verb]
     return [verb, target or ""]
 

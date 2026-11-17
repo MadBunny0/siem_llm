@@ -203,7 +203,7 @@ def test_execute_real_block_ip_success(db, mock_api):
     # вызов AR: правильная команда, аргументы и агент в query (формат 4.7.4)
     calls = ar_calls(mock_api)
     assert len(calls) == 1
-    assert calls[0]["command"] == "block-ip"
+    assert calls[0]["command"] == "!block-ip.sh"
     assert calls[0]["arguments"] == ["add", "192.168.56.102"]
     assert "agents_list=001" in ar_paths(mock_api)[0]
     # данные доставки — в result["targets"]
@@ -218,7 +218,7 @@ def test_execute_real_block_ip_success(db, mock_api):
     assert metadata["target"] == "192.168.56.102"
     assert metadata["requested_by"] == "soc_lead"
     assert metadata["wazuh"]["agent_id"] == "001"
-    assert metadata["wazuh"]["command"] == "block-ip"
+    assert metadata["wazuh"]["command"] == "!block-ip.sh"
     # аргументы отката сохранены (undo при «Сбросить реакции»)
     assert metadata["undo_arguments"] == ["delete", "192.168.56.102"]
 
@@ -290,7 +290,7 @@ def test_execute_real_disable_account_uses_user_from_events(db, mock_api):
 
     assert execution["executed"] is True
     assert execution["target"] == "svc_helper"
-    assert ar_calls(mock_api)[0]["command"] == "lock-account"
+    assert ar_calls(mock_api)[0]["command"] == "!lock-account.sh"
     assert ar_calls(mock_api)[0]["arguments"] == ["lock", "svc_helper"]
 
 
@@ -303,7 +303,7 @@ def test_execute_real_isolate_host(db, mock_api):
     assert execution["executed"] is True
     # изоляция — на самом агенте, цель (имя актива) в аргументы не передаётся
     assert execution["target"] == "mail-prod-01"
-    assert ar_calls(mock_api)[0]["command"] == "isolate-host"
+    assert ar_calls(mock_api)[0]["command"] == "!isolate-host.sh"
     assert ar_calls(mock_api)[0]["arguments"] == ["add"]
 
 
@@ -344,7 +344,7 @@ def test_undo_real_block_ip(db, mock_api):
     outcome = undo_real_action(db, incident, "block_ip", "192.168.56.102")
 
     assert outcome["executed"] is True
-    assert ar_calls(mock_api)[0]["command"] == "block-ip"
+    assert ar_calls(mock_api)[0]["command"] == "!block-ip.sh"
     assert ar_calls(mock_api)[0]["arguments"] == ["delete", "192.168.56.102"]
 
 
@@ -353,7 +353,7 @@ def test_undo_real_disable_account(db, mock_api):
     outcome = undo_real_action(db, incident, "disable_account", "svc_helper")
 
     assert outcome["executed"] is True
-    assert ar_calls(mock_api)[0]["command"] == "lock-account"
+    assert ar_calls(mock_api)[0]["command"] == "!lock-account.sh"
     assert ar_calls(mock_api)[0]["arguments"] == ["unlock", "svc_helper"]
 
 
