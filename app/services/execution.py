@@ -11,7 +11,7 @@
 
 Поток реального исполнения:
   инцидент → актив (Incident.asset) → wazuh-агент по имени актива
-  (WazuhClient.find_agent_id) → POST /active-response → РЕАЛЬНОЕ изменение
+  (WazuhClient.find_agent_id) → PUT /active-response → РЕАЛЬНОЕ изменение
   на ВМ → результат + запись ResponseAction (аргументы отката — в
   metadata_json) + аудит.
 
@@ -318,8 +318,9 @@ def undo_real_action(
     agent_id: str | None = None,
 ) -> dict:
     """Обратная AR-реакция (stage-23): block_ip → delete IP, disable_account →
-    unlock, isolate_host → release (снятие изоляции). Best-effort: результат
-    {executed, detail} без исключений — ошибки уходят в ответ reset-actions.
+    unlock, isolate_host → delete (снятие изоляции, скрипт isolate-host.sh
+    принимает add|delete). Best-effort: результат {executed, detail} без
+    исключений — ошибки уходят в ответ reset-actions.
 
     client/agent_id — общая сессия менеджера для цикла отката
     (undo_incident_real_actions: одна аутентификация и один список агентов

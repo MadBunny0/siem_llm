@@ -86,7 +86,7 @@ cd siem_llm
    | `WAZUH_API_TIMEOUT_SECONDS` | `15` | таймаут вызова Wazuh API при исполнении реакции |
 
    Все тюнируемые переменные сервиса api из таблицы выше (`JWT_SECRET`, `JWT_ALGORITHM`,
-   `TOKEN_EXPIRE_MINUTES`, `AUTO_RESPONSE`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
+   `TOKEN_EXPIRE_MINUTES`, `AUTO_ANALYSIS`, `AUTO_ANALYSIS_LEVELS`,
    `AUTO_CLOSE_LEVELS`, `CORRELATION_WINDOW_MINUTES`) с stage-19 **пробрасываются в контейнер
    api из `.env`**; значения по умолчанию в `docker-compose.yml` совпадают с прежними —
    совет «смените `JWT_SECRET` в `.env`» теперь реально работает.
@@ -181,7 +181,7 @@ docker compose exec wazuh-manager bash /wazuh-config/setup.sh
 
 ## 6. Автотесты — только Docker, локальный Python/Node не нужны
 
-**Бэкенд (171 тест, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
+**Бэкенд (172 теста, pytest):** тесты запечены в dev-стадию образа (Dockerfile multi-stage:
 `base` — прод, `dev` — прод + тесты):
 
 ```bash
