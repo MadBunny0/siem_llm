@@ -1,0 +1,78 @@
+Сценарий 3 «Инсайдер: бэкдор-аккаунт на сервере» — протокол консольных проверок (2026-11-18)
+Легенда: злоумышленник получил сессию на критичном сервере ВМ-1 и создал бэкдор-аккаунт.
+Исполнитель: ВМ-1 mail-prod-01 (192.168.56.101), ssh socop (сессия с хоста — сама по себе
+часть легенды «получил сессию на сервере»).
+
+=== 1. Атака (на ВМ-1, 16:03:38 UTC / 11:03:38 EST) ===
+$ sudo useradd -m -s /bin/bash svc_helper
+$ usermod -aG sudo svc_helper
+$ passwd svc_helper            # пароль установлен неинтерактивно (дважды из stdin)
+$ id svc_helper
+uid=1002(svc_helper) gid=1002(svc_helper) groups=1002(svc_helper),27(sudo)
+
+Детекция (аутентичные строки auth.log, из «Результата анализа» SIEM):
+- useradd[1802]: new user: name=svc_helper, UID=1002, GID=1002, home=/home/svc_helper, shell=/bin/bash
+- usermod[1807]: add 'svc_helper' to shadow group 'sudo'
+- usermod[1807]: add 'svc_helper' to group 'sudo'
+- passwd[1813]: pam_unix(passwd:chauthtok): password changed for svc_helper
+
+Wazuh: правила 100300 (level 10) / 100301 (9) / 100302 (9), groups[0]=privilege_escalation,
+пользователь события = svc_helper (декодер stand-useradd) → корреляция privilege_escalation
+(порог 1, T1068) → инцидент #6 «Создание учётной записи на сервере: возможный бэкдор-аккаунт
+(стенд).» CRITICAL (база Privilege Escalation → Высокий, повышение «критичный бизнес-актив»),
+риск 100/100. Детекция ≈4–8 с (атака 16:03:38–42 → инцидент 16:03:46).
+
+LLM (Qwen2.5-3B, GPU, ≈13 с): вердикт Pending, тип атаки privilege_escalation, уверенность 75%,
+рекомендация monitor; резюме: «Учётная запись создана с привилегиями sudo и сменён пароль.
+Это может быть аккаунтом бэкдора, но недостаточно доказательств подтверждают это».
+DVE: disable_account разрешён политикой для critical; реакция исполнена soc_lead (админ).
+
+=== 2. Реакция «▶ Отключить учётную запись» (клик 16:11:22.4 UTC) ===
+Цель взята из событий инцидента: svc_helper.
+AR-команда: !lock-account.sh lock svc_helper → агент 001 (mail-prod-01).
+
+ВМ-1 (сразу после реакции):
+$ sudo passwd -S svc_helper
+svc_helper L 2026-11-18 -1 99999 7 -1          ← L = locked
+$ grep '^svc_helper:' /etc/shadow | cut -c1-35
+svc_helper:!$y$j9T$...                          ← '!' перед хешем = блокировка
+$ tail -1 /var/ossec/logs/active-responses.log
+Wed Nov 18 11:11:22 EST 2026 lock-account.sh: учётная запись svc_helper заблокирована (passwd -l)
+
+Замер времени реакции: клик 16:11:22.4 UTC → запись в active-responses.log 11:11:22 EST
+(= 16:11:22 UTC) → эффект < 1 секунды.
+$ ssh svc_helper@192.168.56.101   # с верным паролем
+svc_helper@192.168.56.101: Permission denied (publickey,password).   ← вход отклонён
+
+=== 3. Откат («Сбросить реакции», обратная команда !lock-account.sh unlock, 16:15:15 UTC) ===
+$ grep '^svc_helper:' /etc/shadow | cut -c1-35
+svc_helper:$y$j9T$...                           ← '!' снят — учётная запись разблокирована
+$ ssh svc_helper@192.168.56.101 (пароль Svc123!)
+uid=1002(svc_helper) gid=1002(svc_helper) groups=1002(svc_helper),27(sudo)   ← вход восстановлен
+
+Инцидент #6 закрыт оператором soc_lead (16:17 UTC). Учётная запись svc_helper удалена
+(userdel -r) после завершения сценария.
+
+=== 4. Итог прогона (аудит SIEM, UTC) ===
+16:03:38    атака: useradd/usermod/passwd на ВМ-1 (сессия socop с хоста)
+16:03:46    инцидент #6 создан корреляцией privilege_escalation (детекция ≈4–8 с, порог 1)
+16:08:36    soc_lead запускает интеллектуальный анализ
+16:08:49    вердикт LLM: Pending, privilege_escalation, 75% (анализ ≈13 с, GPU)
+16:11:22.4  клик «▶ Отключить учётную запись» (DVE: разрешено для critical)
+16:11:22    passwd -l на ВМ-1 (реакция < 1 с), ssh под svc_helper — Permission denied
+16:15:15    «Сбросить реакции»: passwd -l снят (unlock), ssh-вход восстановлен
+16:17       инцидент #6 закрыт; svc_helper удалён после сценария
+
+=== 5. Примечания к прогону (грабли, зафиксированы для С3-повторов) ===
+- Склейка корреляции идёт по активу в окне ±5 мин: SSH-шум сессии оператора попал в
+  «События» инцидента и в заголовок; вычищено точечной правкой демо-БД до скриншотов
+  (4 события privilege_escalation оставлены). Тихий период перед атакой не спасает:
+  команды атаки выполняются через sudo на самой ВМ — их pam/sudo-события всегда рядом.
+- `passwd -S svc_helper` сам матчится правилом 100302 (program_name passwd) и
+  перезапускает пересчёт «Оценки критичности» + переклейку окна. Проверки статуса
+  блокировки делать через /etc/shadow (grep) или sshpass-ssh, не через passwd-команды.
+- `su svc_helper` из root-сессии пароль не спрашивает — такой тест недействителен;
+  проверка блокировки — sshpass-ssh под svc_helper (Permission denied при блоке).
+- userdel порождает 100300-событие (без пользователя — декодер stand-useradd не
+  разбирает userdel) → после сценария создаётся мусорный инцидент; удалён точечной
+  правкой демо-БД. Повторному прогону С3 это не мешает.

@@ -1,0 +1,53 @@
+Сценарий 2 «SQL-инъекция на веб-сервис» — протокол консольных проверок (2026-11-18)
+Атакующий узел: хост Windows, алиас 192.168.56.50 на host-only адаптере (роль ВМ-2)
+Цель: ВМ-1 mail-prod-01 (192.168.56.101), nginx
+
+=== 1. Атака (два SQLi-запроса, источник 192.168.56.50) ===
+PS> curl.exe --interface 192.168.56.50 "http://192.168.56.101/index.php?id=1 UNION SELECT username,password FROM users"
+HTTP 404 (запрос логируется — этого достаточно)
+PS> curl.exe --interface 192.168.56.50 "http://192.168.56.101/index.php?id=1' UNION SELECT version(),user()"
+HTTP 404
+
+nginx access.log (ВМ-1):
+192.168.56.50 - - [18/Nov/2026:10:42:09 -0500] "GET /index.php?id=1 UNION SELECT username,password FROM users HTTP/1.1" 404 146 "-" "curl/8.23.0"
+192.168.56.50 - - [18/Nov/2026:10:42:12 -0500] "GET /index.php?id=1' UNION SELECT version(),user() HTTP/1.1" 404 146 "-" "curl/8.23.0"
+
+Wazuh: правило 100200 (level 10, groups[0]=web_attack), агент 001 mail-prod-01 →
+SIEM: 2 события web_attack (IP 192.168.56.50) → корреляция web_attack (2 за 5 мин, T1190)
+→ инцидент #5 «nginx: SQL-инъекция в параметрах запроса (стенд).» high, риск 100/100 (18:42:14)
+
+=== 2. Физический эффект после реакции «▶ Блокировать IP» (клик 18:47:34.9 локального времени хоста) ===
+PS> curl.exe --interface 192.168.56.50 --max-time 5 "http://192.168.56.101/"
+curl: (28) Connection timeout after 5001 ms   ← соединение не устанавливается
+
+ВМ-1 mail-prod-01 (ssh socop@192.168.56.101):
+$ sudo iptables -L INPUT -n --line-numbers
+num  target     prot opt source               destination
+1    DROP       all  --  192.168.56.50        0.0.0.0/0
+$ tail -1 /var/ossec/logs/active-responses.log
+Wed Nov 18 10:47:35 EST 2026 block-ip.sh: IP 192.168.56.50 заблокирован (INPUT/OUTPUT DROP)
+
+Замер времени реакции: клик 15:47:34.9 UTC → правило iptables 15:47:35 UTC ≈ 1 с
+(в сценарии 1 — ≈2 с; AR-команда !block-ip.sh add 192.168.56.50, агент 001)
+
+=== 3. Откат («Сбросить реакции», обратная команда !block-ip.sh delete) ===
+ВМ-1 mail-prod-01:
+$ sudo iptables -L INPUT -n --line-numbers
+(пусто — правило снято)
+$ tail -1 /var/ossec/logs/active-responses.log
+Wed Nov 18 10:49:57 EST 2026 block-ip.sh: блокировка IP 192.168.56.50 снята
+
+PS> curl.exe --interface 192.168.56.50 --max-time 5 "http://192.168.56.101/"
+HTTP 200, time=0.004s   ← доступ восстановлен
+
+=== 4. Итог прогона (аудит SIEM, UTC) ===
+15:42:08.5  атака: 1-й SQLi-запрос
+15:42:14.19 инцидент #5 создан корреляцией web_attack (детекция ≈6 с)
+15:44:52    soc_lead запускает интеллектуальный анализ
+15:45:08    вердикт LLM: Pending, attack_type web_attack, confidence 80% (анализ ≈16 с, GPU)
+15:47:34.9  клик «▶ Блокировать IP» (DVE: block_ip разрешён политикой, soc_lead — админ)
+15:47:35.0  iptables DROP 192.168.56.50 на ВМ-1 (реакция ≈1 с)
+15:48:07    проверка: curl с .50 — timeout (exit 28)
+15:49:57    «Сбросить реакции»: !block-ip.sh delete → iptables пуст
+15:50:00    проверка: curl с .50 — HTTP 200 за 4 мс
+15:50:45    инцидент #5 закрыт
