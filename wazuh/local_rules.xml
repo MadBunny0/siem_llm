@@ -41,6 +41,22 @@
 
 </group>
 
+<!-- С1-бис «Успешная компрометация учётной записи после подбора пароля»
+     (фидбек заказчика 2026-11-18: демо TP-вердикта LLM на доказательствах
+     успешного входа). Ребёнок built-in 5715 (sshd: authentication success) —
+     подменяет его алерт семантической группой authentication_success;
+     правило корреляции SIEM brute_force_succeeded (min 1) приклеивает
+     событие к инциденту брутфорса в том же окне — модель видит пару
+     «неудачные попытки → успешный вход с того же адреса». -->
+<group name="authentication_success,sshd,stand,">
+
+  <rule id="100110" level="8">
+    <if_sid>5715</if_sid>
+    <description>sshd: успешная аутентификация (стенд).</description>
+  </rule>
+
+</group>
+
 <group name="web_attack,nginx,stand,">
 
   <!-- С2 «SQL-инъекция на веб-сервис»: ребёнок built-in web-правил
