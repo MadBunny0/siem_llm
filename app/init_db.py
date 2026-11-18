@@ -43,6 +43,11 @@ def _ensure_schema_updates() -> None:
         # разбор оценки критичности (stage-22) — факторы с числами и
         # объяснениями для карточки инцидента
         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severity_factors JSON",
+        # правило формирования инцидента + итоговый Summary оператора
+        # (фидбек заказчика 2026-11-18): стабильность тактики критичности
+        # при доклейке событий других правил; резюме сохраняется при закрытии
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS rule_id INTEGER",
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS summary TEXT",
         # stage-23: старая реализация агентов ВМ удалена (по явной команде
         # пользователя 2026-11-05) — таблица реестра целей больше не нужна
         "DROP TABLE IF EXISTS execution_targets",

@@ -105,14 +105,20 @@ describe('SeverityFactors', () => {
     expect(screen.getByTestId('sf-risk')).toBeTruthy();
   });
 
-  it('без повышений: «условий не выполнено», без «+1 уровень»', () => {
+  it('без повышений: блок «Повышение критичности» и «Итог по матрице» скрыты (фидбек заказчика 2026-11-18)', () => {
     const factors = {
       ...MITRE_FACTORS,
       mitre: { ...MITRE_FACTORS.mitre, escalations: [] },
     };
     render(<SeverityFactors factors={factors} />);
-    expect(screen.getByText(/условий не выполнено — итог равен базовому уровню/)).toBeTruthy();
-    expect(screen.queryByText(/\+ 1 уровень/)).toBeNull();
+    // база по матрице остаётся, итоговый уровень несёт бейдж карточки и
+    // числовая модель («Итог: N/100 → уровень»)
+    expect(screen.getByText(/База по матрице:/)).toBeTruthy();
+    expect(screen.queryByText(/Повышение критичности/)).toBeNull();
+    expect(screen.queryByText(/Итог по матрице/)).toBeNull();
+    expect(screen.queryByText(/условий не выполнено/)).toBeNull();
+    // числовая модель не затронута
+    expect(screen.getByTestId('sf-risk')).toBeTruthy();
   });
 
   it('нет разбора (инцидент до stage-22): пояснение вместо блока', () => {

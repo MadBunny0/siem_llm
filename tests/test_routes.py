@@ -812,6 +812,165 @@ def test_auto_analysis_closes_low_incident(client, db_session, engine, monkeypat
     )
 
 
+def test_auto_analysis_escalates_low_on_tp(client, db_session, engine, monkeypatch):
+    """Эскалация критичности (фидбек заказчика 2026-11-18): low-инцидент с
+    вердиктом LLM «True Positive» НЕ закрывается автоматически — severity
+    поднимается на один уровень (low→medium, меняется только критичность),
+    в аудит пишется incident_severity_escalated, аналитику — уведомление."""
+    from sqlalchemy.orm import sessionmaker
+
+    from app.models import Analysis
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.95,
+            "explanation": "e",
+            "recommended_action": "monitor",
+            "verdict": "True Positive",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    data = resp.json()
+    assert data["severity"] == "low"
+    incident_id = data["incident_id"]
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    # эскалация: low → medium, меняется только критичность
+    assert detail["severity"] == "medium"
+    assert detail["status"] == "in_progress"
+
+    analyses = db_session.query(Analysis).filter_by(incident_id=incident_id).all()
+    assert len(analyses) == 1
+    assert "auto_closed" not in (analyses[0].response_raw or {})
+
+    logs = client.get(f"{API}/audit-logs").json()
+    entry = next(a for a in logs if a["event_type"] == "incident_severity_escalated")
+    assert entry["incident_id"] == incident_id
+    assert entry["details"]["reason"] == "llm_verdict_tp"
+    assert entry["details"]["from"] == "low"
+    assert entry["details"]["to"] == "medium"
+
+    notes = client.get(f"{API}/notifications").json()
+    assert any(
+        n["event_type"] == "incident_severity_escalated" and n["incident_id"] == incident_id
+        for n in notes
+    )
+
+
+def test_auto_close_still_fires_on_pending_verdict(client, db_session, engine, monkeypatch):
+    """Эскалация не затрагивает прежнее поведение: low + вердикт Pending
+    (доказательств компрометации нет) → автозакрытие выполняется как прежде."""
+    from sqlalchemy.orm import sessionmaker
+
+    _seed_low_rule(db_session)
+    monkeypatch.setattr(settings, "auto_analysis", True)
+    monkeypatch.setattr("app.db.SessionLocal", sessionmaker(bind=engine))
+
+    async def fake_analyze(context):
+        return {
+            "description": "d",
+            "attack_type": "scan",
+            "confidence": 0.9,
+            "explanation": "e",
+            "recommended_action": "monitor",
+            "verdict": "Pending",
+        }
+
+    monkeypatch.setattr("app.api.routes.analyze_incident", fake_analyze)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert())
+    data = resp.json()
+    incident_id = data["incident_id"]
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["severity"] == "low"
+    assert detail["status"] == "closed"
+
+
+def test_incident_tactic_stable_on_foreign_rule_glue(client, db_session, monkeypatch):
+    """Стабильность тактики критичности (фидбек заказчика 2026-11-18,
+    пункт «проверить правильность расчёта критичности»): инцидент сформирован
+    правилом privilege_escalation; доклейка события другого правила
+    (authentication_failed, связанность по активу) НЕ меняет тактику в разборе
+    критичности — она остаётся по правилу формирования инцидента."""
+    seed_rule(
+        db_session,
+        name="priv_rule",
+        conditions=[{"field": "event_type", "operator": "like", "value": "privilege"}],
+        mitre_tactic="privilege_escalation",
+        mitre_technique="T1068",
+    )
+    seed_rule(
+        db_session,
+        name="auth_rule",
+        conditions=[{"field": "event_type", "operator": "like", "value": "authentication_failed"}],
+        mitre_tactic="credential_access",
+    )
+
+    resp1 = client.post(
+        f"{API}/ingest/wazuh",
+        json=make_alert(rule={"level": 10, "description": "t1", "groups": ["privilege_escalation"]}),
+    )
+    data1 = resp1.json()
+    assert data1["severity"] == "high"  # база privilege_escalation = high
+    incident_id = data1["incident_id"]
+
+    # событие другого правила, тот же агент (→ тот же актив, связанность)
+    resp2 = client.post(
+        f"{API}/ingest/wazuh",
+        json=make_alert(rule={"level": 7, "description": "t2", "groups": ["authentication_failed"]}),
+    )
+    assert resp2.json()["incident_id"] == incident_id  # доклейка в тот же инцидент
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    factors = detail["severity_factors"]
+    assert factors["mitre"]["tactic"] == "privilege_escalation"
+    assert factors["mitre"]["technique"] == "T1068"
+    assert factors["mitre"]["base_severity"] == "high"
+
+
+def test_close_saves_operator_summary(client, db_session, monkeypatch):
+    """Summary при закрытии (фидбек заказчика 2026-11-18): PATCH closed с
+    summary сохраняет итоговое резюме оператора в таску; повторное закрытие
+    без summary не затирает сохранённое; поле возвращается в карточке."""
+    # автоанализ выключен — инцидент остаётся в статусе new для PATCH closed
+    monkeypatch.setattr(settings, "auto_analysis", False)
+    _seed_low_rule(db_session)
+
+    resp = client.post(f"{API}/ingest/wazuh", json=_low_alert(agent={"id": "002", "name": "plain-host-2"}))
+    incident_id = resp.json()["incident_id"]
+
+    summary_text = "Проверено: легитимный скан сканером администратора, инцидент закрыт."
+    patched = client.patch(
+        f"{API}/incidents/{incident_id}/status",
+        json={"status": "closed", "summary": summary_text},
+    )
+    assert patched.status_code == 200
+
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["summary"] == summary_text
+
+    logs = client.get(f"{API}/audit-logs").json()
+    entry = next(
+        a for a in logs
+        if a["event_type"] == "incident_status_changed" and a["incident_id"] == incident_id
+    )
+    assert entry["details"]["summary_saved"] is True
+
+    # возврат в работу и повторное закрытие без summary — резюме сохраняется
+    client.patch(f"{API}/incidents/{incident_id}/status", json={"status": "in_progress"})
+    client.patch(f"{API}/incidents/{incident_id}/status", json={"status": "closed"})
+    detail = client.get(f"{API}/incidents/{incident_id}").json()
+    assert detail["summary"] == summary_text
+
+
 def test_auto_close_skipped_on_pending_confirmation(client, db_session, engine, monkeypatch):
     """Автозакрытие не выполняется при отложенном действии: low-инцидент на
     КРИТИЧЕСКОМ активе, block_ip ждёт подтверждения администратора → инцидент
