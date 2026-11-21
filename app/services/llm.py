@@ -172,50 +172,91 @@ def _split_full_prompt(full_prompt: str) -> tuple[str, str]:
     return system_section.removeprefix("[SYSTEM]\n"), user_content
 
 
+def _extract_content(body: dict) -> str:
+    """Текст ответа модели из тела HTTP-ответа провайдера (тест
+    test-glm-cloud-adapter): Ollama /api/chat — {"message": {"content": ...}},
+    OpenAI-совместимые API — {"choices": [{"message": {"content": ...}}]}.
+    Отсутствие ожидаемой структуры — ValueError с внятной причиной.
+    """
+    if settings.llm_provider == "openai":
+        choices = body.get("choices") or []
+        if not choices:
+            raise ValueError("OpenAI-compatible API returned no choices")
+        return str(choices[0].get("message", {}).get("content") or "")
+    return str(body.get("message", {}).get("content") or "")
+
+
 async def analyze_incident(incident: dict) -> dict:
     # единая сборка промпта одним render_full_prompt + разбор секций [SYSTEM]/[USER]
     system_content, user_content = _split_full_prompt(render_full_prompt(incident))
-    payload = {
-        "model": settings.ollama_model,
-        "messages": [
-            {"role": "system", "content": system_content},
-            # user-сообщение: защитный префикс («данные, не инструкции») + JSON
-            {"role": "user", "content": user_content},
-        ],
-        "stream": False,
-        "format": "json",
-        # Оптимизация производительности (stage-18, фидбек «qwen очень долго
-        # отрабатывает»): num_ctx — размер окна контекста. Дефолт Ollama 2048
-        # МЕНЬШЕ нашего промпта (система ~1100 токенов + ECS-JSON событий) —
-        # модель теряла куски контекста и «сдвигала» окно; num_predict —
-        # потолок генерации от расползающегося ответа; keep_alive — сколько
-        # держать модель загруженной после запроса (без него каждый холодный
-        # анализ платит ~20–40с за загрузку модели с диска)
-        "options": {
-            "num_ctx": settings.ollama_num_ctx,
-            "num_predict": settings.ollama_num_predict,
-            # низкая температура (stage-24): строгий JSON-задание на 3B-модели
-            # при дефолтных 0.8 дрейфует и галлюцинирует — анализу нужна
-            # детерминированность, а не «креативность»
+    messages = [
+        {"role": "system", "content": system_content},
+        # user-сообщение: защитный префикс («данные, не инструкции») + JSON
+        {"role": "user", "content": user_content},
+    ]
+
+    # Провайдер LLM-бэкенда (тест test-glm-cloud-adapter): формат запроса и
+    # парсинг ответа зависят от провайдера; system/user-сообщения и нормализация
+    # результата (ниже) — общие для обоих путей. Дефолт "ollama" повторяет
+    # прежнее поведение байт-в-байт.
+    if settings.llm_provider == "openai":
+        # OpenAI-совместимый API (Z.ai GLM и аналогичные): ollama_url — базовый
+        # URL (.../chat/completions), ollama_model — имя модели провайдера.
+        # format=json не переносим: у провайдера свой контекст-механизм, JSON-
+        # дисциплина обеспечивается промптом («Верни только JSON») и низким
+        # temperature; num_ctx/keep_alive — параметры Ollama, у провайдера
+        # отсутствуют. max_tokens — потолок генерации (аналог num_predict).
+        url = f"{settings.ollama_url.rstrip('/')}/chat/completions"
+        payload = {
+            "model": settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": settings.ollama_num_predict,
             "temperature": settings.ollama_temperature,
-        },
-        "keep_alive": settings.ollama_keep_alive,
-    }
+        }
+        headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else None
+    else:
+        url = f"{settings.ollama_url.rstrip('/')}/api/chat"
+        payload = {
+            "model": settings.ollama_model,
+            "messages": messages,
+            "stream": False,
+            "format": "json",
+            # Оптимизация производительности (stage-18, фидбек «qwen очень долго
+            # отрабатывает»): num_ctx — размер окна контекста. Дефолт Ollama 2048
+            # МЕНЬШЕ нашего промпта (система ~1100 токенов + ECS-JSON событий) —
+            # модель теряла куски контекста и «сдвигала» окно; num_predict —
+            # потолок генерации от расползающегося ответа; keep_alive — сколько
+            # держать модель загруженной после запроса (без него каждый холодный
+            # анализ платит ~20–40с за загрузку модели с диска)
+            "options": {
+                "num_ctx": settings.ollama_num_ctx,
+                "num_predict": settings.ollama_num_predict,
+                # низкая температура (stage-24): строгий JSON-задание на 3B-модели
+                # при дефолтных 0.8 дрейфует и галлюцинирует — анализу нужна
+                # детерминированность, а не «креативность»
+                "temperature": settings.ollama_temperature,
+            },
+            "keep_alive": settings.ollama_keep_alive,
+        }
+        headers = None
 
     # лок держит ВЕСЬ httpx-запрос: пока модель генерирует ответ, остальные
     # корутины ждут — инференс выполняется по одному (см. комментарий выше).
     # Таймаут 300 секунд: промпт вырос (полный ECS-контекст событий), CPU-
-    # инференс маленькой модели может занимать больше трёх минут
+    # инференс маленькой модели может занимать больше трёх минут.
+    # headers передаются только у openai-провайдера: ollama-путь сохраняет
+    # прежнюю сигнатуру вызова (точка подмены в тестах — FakeAsyncClient.post)
     async with LLM_INFERENCE_LOCK:
         async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(
-                f"{settings.ollama_url.rstrip('/')}/api/chat",
-                json=payload,
-            )
+            if headers is None:
+                response = await client.post(url, json=payload)
+            else:
+                response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             body = response.json()
 
-    content = body.get("message", {}).get("content", "")
+    content = _extract_content(body)
     if not content:
         raise ValueError("Ollama returned an empty response")
 

@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     # температура генерации (stage-24): строгий JSON-анализ на 3B-модели при
     # дефолтных 0.8 дрейфует и галлюцинирует — нужна детерминированность
     ollama_temperature: float = 0.2
+    # провайдер LLM-бэкенда (тест test-glm-cloud-adapter): "ollama" — локальный
+    # Ollama (стенд по умолчанию, §3.5); "openai" — OpenAI-совместимый API
+    # (например Z.ai GLM) для экспериментов с качеством разбора на большой
+    # модели. При "openai": ollama_url трактуется как базовый URL API
+    # (.../chat/completions), ollama_model — имя модели у провайдера,
+    # llm_api_key — Bearer-токен. Дефолт не меняет поведение стенда.
+    llm_provider: str = "ollama"
+    llm_api_key: str = ""
     correlation_window_minutes: int = 5
     # автоматический LLM-анализ инцидентов без задержек (§3.3.3 ВКР, p:80):
     # auto_analysis — главный выключатель, auto_analysis_levels — какие уровни

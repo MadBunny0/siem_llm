@@ -92,6 +92,11 @@ services:
       OLLAMA_NUM_CTX: "8192"
       OLLAMA_NUM_PREDICT: "4096"
       OLLAMA_KEEP_ALIVE: "30m"
+      # провайдер LLM (тест test-glm-cloud-adapter): ollama (дефолт — локальный
+      # стенд, поведение прежнее) | openai — OpenAI-совместимый API; базовый URL
+      # и модель переиспользуют OLLAMA_URL/OLLAMA_MODEL, ключ — в .env
+      LLM_PROVIDER: "${LLM_PROVIDER:-ollama}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
       OLLAMA_TEMPERATURE: "${OLLAMA_TEMPERATURE:-0.2}"
       # реальные реакции playbook (stage-23): Wazuh Manager API —
       # PUT /active-response доставляет команду AR-скрипта на ВМ актива
