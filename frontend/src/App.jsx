@@ -707,6 +707,20 @@ export default function App({ user, onLogout }) {
                       <pre className="process-tree">{structured.process_tree.join('\n')}</pre>
                     </div>
                   )}
+                  {/* Сырой ответ модели (response_raw) — как вернул провайдер, без
+                      нормализации и подписей: полный JSON (Ollama / OpenAI-совместимый,
+                      включая reasoning-поля). Схлопнуто по умолчанию — раскрывается
+                      для проверки «что модель вернула на самом деле» */}
+                  {(() => {
+                    const raw = analysis.response_raw;
+                    const rawText = typeof raw === 'string' ? raw : (raw ? JSON.stringify(raw, null, 2) : '');
+                    return rawText ? (
+                      <details className="analysis-block raw-response">
+                        <summary>Сырой ответ модели (JSON)</summary>
+                        <pre className="process-tree">{rawText}</pre>
+                      </details>
+                    ) : null;
+                  })()}
                   {/* [18] Предложенные действия — отдельные боксы (result-item) внутри общего бокса;
                       Stage 11: по одному результату на каждое действие из перечня LLM
                       (fallback на старый одиночный формат — см. analysisResults) */}
