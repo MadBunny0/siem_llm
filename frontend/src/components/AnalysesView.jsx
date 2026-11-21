@@ -4,7 +4,7 @@
 
 import React from 'react';
 import { useListResource } from '../hooks/useListResource.js';
-import { confPct, formatDate } from '../lib/helpers.js';
+import { confPct, formatDate, modelDisplayName } from '../lib/helpers.js';
 
 /* ==================== Вкладка «Анализы» ==================== */
 
@@ -48,7 +48,7 @@ export default function AnalysesView({ onOpenIncident }) {
             <tbody>
               {items.map(a => (
                 <tr key={a.id}>
-                  <td><span className="chip accent">{a.model || '—'}</span></td>
+                  <td><span className="chip accent">{modelDisplayName(a.model) || '—'}</span></td>
                   <td>
                     <button className="link-btn" onClick={() => onOpenIncident(a.incident_id)} title="Открыть инцидент">
                       #{a.incident_id}

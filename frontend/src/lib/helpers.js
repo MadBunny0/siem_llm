@@ -358,6 +358,17 @@ export function actionShortLabel(action) {
   return ACTION_SHORT_RU[action] || String(action ?? '');
 }
 
+// Отображаемое имя LLM-модели: тег Ollama (qwen2.5:14b) — это instruct-вариант
+// модели, полное имя включает суффикс (qwen2.5:14b-instruct). Прочие провайдеры
+// (glm-4.6 и т.п.) показываются как есть. Используется в карточке инцидента
+// и в истории анализов.
+export function modelDisplayName(model) {
+  const name = String(model ?? '').trim();
+  if (!name) return '';
+  if (/^qwen2\.5:\d+b$/.test(name)) return `${name}-instruct`;
+  return name;
+}
+
 // [18] Структурированные поля ответа LLM: свежий analyze кладёт их в recommendation,
 // для панелей, восстановленных из истории, — в response_raw.recommendation
 // (response_raw может прийти строкой JSON — парсим, как в parseResponseRaw).
