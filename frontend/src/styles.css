@@ -2407,3 +2407,78 @@ button:focus-visible {
     padding: 10px 12px;
   }
 }
+
+/* Диалог итогового Summary при закрытии инцидента + поле Summary в карточке
+   (фидбек заказчика 2026-11-18) */
+.summary-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 18, 0.72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.summary-dialog {
+  width: min(680px, calc(100vw - 32px));
+  background: #0b121f;
+  border: 1px solid #263149;
+  border-radius: 12px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.summary-dialog label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #8a96ad;
+}
+.summary-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 120px;
+  background: #111827;
+  border: 1px solid #263149;
+  border-radius: 8px;
+  color: #dce2ed;
+  font: inherit;
+  padding: 10px 12px;
+}
+.summary-input:focus {
+  outline: none;
+  border-color: #4f74ff;
+}
+.summary-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.summary-cancel {
+  background: #111827;
+  border: 1px solid #263149;
+  border-radius: 8px;
+  color: #a7b4cc;
+  font: inherit;
+  padding: 9px 14px;
+  cursor: pointer;
+}
+.summary-confirm {
+  font: inherit;
+  padding: 9px 16px;
+  cursor: pointer;
+}
+.incident-summary {
+  white-space: pre-wrap;
+  background: #0b121f;
+  border: 1px solid #1c273b;
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: #dce2ed;
+  font-size: 14px;
+  line-height: 1.5;
+}

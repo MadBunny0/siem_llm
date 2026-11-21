@@ -106,6 +106,16 @@ def _maybe_auto_close(db: Session, incident: Incident, analysis_result: dict) ->
     (analyst_id is None); ни одно из рекомендуемых действий не отложено до
     подтверждения администратора (pending_confirmation).
 
+    Эскалация критичности (фидбек заказчика 2026-11-18): если вердикт LLM —
+    True Positive (прямые доказательства компрометации по критериям SOC,
+    stage-18 промпт), автозакрытие НЕ выполняется, а критичность инцидента
+    поднимается на один уровень (low→medium→high→critical — меняется только
+    severity, статус и реакции не затрагиваются); в аудит пишется
+    incident_severity_escalated, аналитикам уходит уведомление. Уровень
+    critical не поднимается выше. Разбор критичности в карточке (severity_factors)
+    сохраняет матричное основание — итоговый уровень виден в бейдже карточки
+    и в аудите; зафиксировано в DEVIATIONS.
+
     Пометка auto_closed ставится в response_raw ПОСЛЕДНЕГО Analysis инцидента
     (переприсвоение JSON-колонок обязательно — канонический комментарий в
     app/api/common.py). Изменения сохраняются коммитом вызывающего
@@ -117,6 +127,32 @@ def _maybe_auto_close(db: Session, incident: Incident, analysis_result: dict) ->
     incident_auto_close_skipped с reason/detail. Не применимые случаи
     (severity вне уровней, инцидент уже закрыт) проходят тихо.
     """
+    # вердикт LLM — из рекомендации (нормализация verdict — stage-18 промпт)
+    verdict = (analysis_result.get("recommendation") or {}).get("verdict")
+    escalation_next = {"low": "medium", "medium": "high", "high": "critical"}
+    if (
+        verdict == "True Positive"
+        and incident.status != "closed"
+        and incident.severity in escalation_next
+    ):
+        previous = incident.severity
+        incident.severity = escalation_next[previous]
+        audit(
+            "incident_severity_escalated",
+            {
+                "initiated_by": "auto_close_check",
+                "reason": "llm_verdict_tp",
+                "verdict": verdict,
+                "from": previous,
+                "to": incident.severity,
+                "risk_score": incident.risk_score,
+            },
+            db=db,
+            incident_id=incident.id,
+        )
+        notify_analyst(db, incident, "incident_severity_escalated")
+        return False
+
     if incident.severity not in auto_close_levels():
         return False
     if incident.status == "closed":

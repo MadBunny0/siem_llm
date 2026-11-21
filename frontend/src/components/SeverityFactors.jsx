@@ -39,24 +39,28 @@ function MatrixPart({ mitre, severity }) {
       <div className="sf-line">
         <strong>База по матрице:</strong> тактика «{tacticRu}»{mitre.technique ? ` (${mitre.technique})` : ''} → базовый уровень «{baseRu}»
       </div>
-      <div className="sf-line">
-        <strong>Повышение критичности</strong> (при выполнении хотя бы одного условия — на один уровень, суммарно максимум +1):
-        {escalations.length ? (
-          <ul className="sf-escalations">
-            {escalations.map(item => (
-              <li key={item.category}>
-                <strong>{item.title}</strong> — {item.explanation}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <span className="sf-muted"> условий не выполнено — итог равен базовому уровню</span>
-        )}
-      </div>
-      <div className="sf-line sf-result">
-        Итог по матрице: <Severity value={severity} />
-        {escalations.length > 0 && <span> («{baseRu}» + 1 уровень)</span>}
-      </div>
+      {/* Повышение критичности и итог по матрице показываются только при
+          сработавших условиях повышения (фидбек заказчика 2026-11-18): без
+          повышений итог равен базовому уровню — дублирующие строки убраны,
+          итоговый уровень несёт бейдж карточки и числовая модель */}
+      {escalations.length > 0 && (
+        <>
+          <div className="sf-line">
+            <strong>Повышение критичности</strong> (при выполнении хотя бы одного условия — на один уровень, суммарно максимум +1):
+            <ul className="sf-escalations">
+              {escalations.map(item => (
+                <li key={item.category}>
+                  <strong>{item.title}</strong> — {item.explanation}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="sf-line sf-result">
+            Итог по матрице: <Severity value={severity} />
+            <span> («{baseRu}» + 1 уровень)</span>
+          </div>
+        </>
+      )}
     </div>
   );
 }

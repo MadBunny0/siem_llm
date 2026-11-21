@@ -3,7 +3,10 @@
 
 const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
 
-export const STATUS_LABELS = { new: 'Новый', in_progress: 'В работе', closed: 'Закрыт' };
+// Названия статусов таски (фидбек заказчика 2026-11-18): англоязычные
+// OPEN / IN PROGRESS / CLOSED; значения в API/БД не менялись
+// (new/in_progress/closed) — словарь только для отображения
+export const STATUS_LABELS = { new: 'OPEN', in_progress: 'IN PROGRESS', closed: 'CLOSED' };
 
 export const PRIORITY_LABELS = { 1: 'низкий', 2: 'средний', 3: 'высокий', 4: 'критический' };
 

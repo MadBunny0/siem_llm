@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Asset, Event
+from app.models import Asset, CorrelationRule, Event
 from app.services.assets import resolve_asset_id
 from app.services.audit import audit
 from app.services.auto_analysis import auto_analysis_levels
@@ -120,12 +120,24 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
 
     incident = create_or_update_incident(db, related, risk_score=score)
 
+    # Правило формирования инцидента (фидбек заказчика 2026-11-18): при
+    # создании фиксируется сработавшее правило; на обновлённых инцидентах
+    # (доклейка события другого правила — связанность по активу, §3.3.2)
+    # тактика оценки критичности остаётся по правилу формирования, иначе
+    # разбор «уезжает» за каждым доклеенным событием (проявлено на инциденте
+    # privilege_escalation, в который доклеился brute_force)
+    if incident.rule_id is None:
+        incident.rule_id = rule.id
+    rule_for_factors = (
+        db.get(CorrelationRule, incident.rule_id) if incident.rule_id is not None else None
+    ) or rule
+
     # Критичность по матрице MITRE (stage-17, процедура PDF v3.1,
     # docs/CRITICALITY_MATRIX.md): базовая — по тактике правила, повышение —
     # по условиям процедуры (критичный актив, маркеры, периметр, флаг
     # поставщика). Без тактики — числовая модель риска (fallback, §3.3.3)
     matrix_severity, escalation_reasons, escalation_detail = derive_severity_detail(
-        rule, related, incident.asset
+        rule_for_factors, related, incident.asset
     )
     if matrix_severity is not None:
         severity = matrix_severity
@@ -145,11 +157,12 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
         "severity": severity,
         "computed_at": datetime.now(timezone.utc).isoformat(),
         # матрица MITRE (basis=mitre_matrix): базовый уровень по тактике +
-        # сработавшие условия повышения с объяснениями
+        # сработавшие условия повышения с объяснениями (тактика — по правилу
+        # формирования инцидента, стабильна при доклейке)
         "mitre": {
-            "tactic": rule.mitre_tactic,
-            "technique": rule.mitre_technique,
-            "base_severity": MITRE_TACTIC_SEVERITY.get(rule.mitre_tactic),
+            "tactic": rule_for_factors.mitre_tactic,
+            "technique": rule_for_factors.mitre_technique,
+            "base_severity": MITRE_TACTIC_SEVERITY.get(rule_for_factors.mitre_tactic),
             "escalations": escalation_detail,
         } if matrix_severity is not None else None,
         # числовая модель риска (§3.3.3) — рассчитывается всегда (fallback и
@@ -170,7 +183,7 @@ def ingest_alert(db: Session, alert_payload: dict) -> tuple[dict, bool]:
             "risk_score": score,
             "severity": severity,
             "severity_basis": severity_basis,
-            "mitre_tactic": rule.mitre_tactic,
+            "mitre_tactic": rule_for_factors.mitre_tactic,
             "escalation_reasons": escalation_reasons,
             "p_implement": threat_probability,
         },

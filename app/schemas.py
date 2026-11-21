@@ -124,6 +124,9 @@ class IncidentOut(BaseModel):
     asset_id: int | None
     asset: AssetOut | None = None
     analyst: UserBrief | None = None  # владелец инцидента (stage-14)
+    # итоговый Summary оператора (фидбек заказчика 2026-11-18) —
+    # сохраняется при закрытии инцидента, отображается в карточке
+    summary: str | None = None
     created_at: datetime
 
 
@@ -159,9 +162,16 @@ class IncidentDetailOut(IncidentOut):
 
 
 class IncidentStatusIn(BaseModel):
-    """Смена статуса инцидента оператором."""
+    """Смена статуса инцидента оператором.
+
+    summary (фидбек заказчика 2026-11-18): при закрытии инцидента вместе со
+    статусом сохраняется итоговое резюме оператора (предзаполняется из
+    последнего анализа LLM, редактируется в диалоге закрытия); None —
+    не менять сохранённое значение.
+    """
 
     status: str = Field(pattern="^(new|in_progress|closed)$")
+    summary: str | None = None
 
 
 class ExecuteActionIn(BaseModel):

@@ -62,6 +62,10 @@ export default function App({ user, onLogout }) {
   const [statusBusy, setStatusBusy] = useState(false);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmedAction, setConfirmedAction] = useState(false);
+  // Диалог итогового Summary при закрытии инцидента (фидбек заказчика
+  // 2026-11-18): { draft } — редактируемое резюме, предзаполняется из
+  // последнего анализа LLM; null — диалог закрыт
+  const [summaryDialog, setSummaryDialog] = useState(null);
   // Защита от гонки при быстрой смене инцидентов: устаревшие ответы detail игнорируются.
   const detailReqRef = useRef(0);
   // [18] Актуальный id выбранного инцидента в ref: поллинг фонового анализа
@@ -305,15 +309,29 @@ export default function App({ user, onLogout }) {
 
   async function changeStatus(status) {
     if (!selected || status === selected.status) return;
+    // Закрытие — через диалог итогового Summary (фидбек заказчика 2026-11-18):
+    // резюме предзаполняется из последнего анализа LLM и редактируется
+    if (status === 'closed') {
+      setSummaryDialog({ draft: incidentDetail?.analyses?.[0]?.description || '' });
+      return;
+    }
+    await submitStatus(status, null);
+  }
+
+  async function submitStatus(status, summary) {
+    if (!selected || status === selected.status) return;
     setStatusBusy(true);
     try {
+      const body = { status };
+      if (summary !== null && summary !== undefined) body.summary = summary;
       const updated = await request(`/incidents/${selected.id}/status`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(body),
       });
       setSelected(prev => (prev && prev.id === updated?.id ? { ...prev, ...updated } : prev));
       await loadIncidentDetail(selected.id);
       await load();
+      setSummaryDialog(null);
       showToast(`Статус инцидента #${selected.id}: ${STATUS_LABELS[status] || status}`);
     } catch (e) { setError(e.message); }
     finally { setStatusBusy(false); }
@@ -883,6 +901,16 @@ export default function App({ user, onLogout }) {
                 ) : !detailLoading ? <div className="detail-hint">События не найдены.</div> : null}
               </div>
 
+              {/* Итоговый Summary оператора (фидбек заказчика 2026-11-18):
+                  сохраняется при закрытии через диалог, отображается в карточке
+                  рядом с историей анализов */}
+              {incidentDetail?.summary && (
+                <div className="section">
+                  <label>Summary</label>
+                  <div className="incident-summary">{incidentDetail.summary}</div>
+                </div>
+              )}
+
               <div className="section">
                 <label>История анализов {(incidentDetail?.analyses || []).length}</label>
                 {(incidentDetail?.analyses || []).length ? (
@@ -937,5 +965,33 @@ export default function App({ user, onLogout }) {
       <footer><span>Intelligent Incident Processing System · Prototype 1.0</span><span>Qwen2.5-3B · Ollama · PostgreSQL</span></footer>
     </main>
 
+      {/* Диалог итогового Summary при закрытии инцидента (фидбек заказчика
+          2026-11-18): резюме предзаполняется из последнего анализа LLM,
+          редактируется оператором и сохраняется в таску */}
+      {summaryDialog && (
+        <div className="summary-overlay" onClick={() => setSummaryDialog(null)}>
+          <div className="summary-dialog" onClick={e => e.stopPropagation()}>
+            <label>Summary — итоговое резюме инцидента #{selected.id}</label>
+            <textarea
+              className="summary-input"
+              rows={7}
+              value={summaryDialog.draft}
+              onChange={e => setSummaryDialog({ draft: e.target.value })}
+              placeholder="Итоговое резюме инцидента (предзаполнено из последнего анализа LLM)"
+              autoFocus
+            />
+            <div className="summary-actions">
+              <button className="summary-cancel" onClick={() => setSummaryDialog(null)}>Отмена</button>
+              <button
+                className="primary summary-confirm"
+                disabled={statusBusy}
+                onClick={() => submitStatus('closed', summaryDialog.draft.trim() || null)}
+              >
+                {statusBusy ? 'Сохранение…' : 'Сохранить Summary и закрыть'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
   </div>
 }

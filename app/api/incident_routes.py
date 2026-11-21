@@ -127,9 +127,21 @@ def update_incident_status(
 
     previous = incident.status
     incident.status = payload.status
+    # итоговый Summary оператора (фидбек заказчика 2026-11-18): сохраняется
+    # при закрытии вместе со статусом (предзаполняется из последнего анализа
+    # LLM в диалоге закрытия на фронтенде); None — не менять сохранённое
+    summary_saved = False
+    if payload.status == "closed" and payload.summary is not None:
+        incident.summary = payload.summary
+        summary_saved = True
     audit(
         "incident_status_changed",
-        {"incident_id": incident.id, "from": previous, "to": payload.status},
+        {
+            "incident_id": incident.id,
+            "from": previous,
+            "to": payload.status,
+            "summary_saved": summary_saved,
+        },
         db=db,
         incident_id=incident.id,
     )

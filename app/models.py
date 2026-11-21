@@ -65,6 +65,16 @@ class Incident(Base):
     # достоверность корреляции). Заполняется при ingest; в карточке —
     # блок «Оценка критичности»
     severity_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Правило корреляции, при котором инцидент СФОРМИРОВАН (фидбек заказчика
+    # 2026-11-18): тактика в разборе критичности стабильна при доклейке
+    # событий других правил — пересчёт использует правило формирования,
+    # а не правило последнего события. Integer без FK: правило может быть
+    # удалено оператором после формирования инцидента
+    rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Итоговый Summary оператора (фидбек заказчика 2026-11-18): при закрытии
+    # инцидента сохраняется редактируемое резюме (предзаполняется из
+    # последнего анализа LLM); отображается в карточке рядом с историей анализов
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

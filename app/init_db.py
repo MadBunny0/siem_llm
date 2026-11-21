@@ -43,6 +43,11 @@ def _ensure_schema_updates() -> None:
         # разбор оценки критичности (stage-22) — факторы с числами и
         # объяснениями для карточки инцидента
         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS severity_factors JSON",
+        # правило формирования инцидента + итоговый Summary оператора
+        # (фидбек заказчика 2026-11-18): стабильность тактики критичности
+        # при доклейке событий других правил; резюме сохраняется при закрытии
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS rule_id INTEGER",
+        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS summary TEXT",
         # stage-23: старая реализация агентов ВМ удалена (по явной команде
         # пользователя 2026-11-05) — таблица реестра целей больше не нужна
         "DROP TABLE IF EXISTS execution_targets",
@@ -183,6 +188,27 @@ def _seed_default_correlation_rules() -> None:
             "min_events": 3,
             "priority": 2,
             "is_active": True,
+            "mitre_tactic": "credential_access",
+            "mitre_technique": "T1110",
+        },
+        {
+            # T1110 Успешная компрометация после подбора (С1-бис, фидбек
+            # заказчика 2026-11-18): успешный вход с того же адреса после
+            # неудачных попыток — прямое доказательство компрометации учётной
+            # записи; событие доклеивается к инциденту брутфорса (связанность
+            # по активу в окне) и даёт LLM доказательства для TP-вердикта
+            "name": "brute_force_succeeded",
+            "description": "T1110 Успешный вход после неудачных попыток: признак компрометации учётной записи",
+            "conditions": [
+                {"field": "event_type", "operator": "like", "value": "authentication_success"},
+            ],
+            "time_window_minutes": 5,
+            "min_events": 1,
+            "priority": 2,
+            # по умолчанию ВЫКЛЮЧЕНО: успешный вход сам по себе легитимен и
+            # без инцидента брутфорса в окне создавал бы шумовой инцидент на
+            # каждый легитимный вход. Активируется для С1-бис прогона
+            "is_active": False,
             "mitre_tactic": "credential_access",
             "mitre_technique": "T1110",
         },
