@@ -213,6 +213,10 @@ async def analyze_incident(incident: dict) -> dict:
             "stream": False,
             "max_tokens": settings.ollama_num_predict,
             "temperature": settings.ollama_temperature,
+            # GLM-4.6: reasoning включён по умолчанию — thinking-токены съедают
+            # max_tokens до основного content (JSON-вердикт обрезался бы).
+            # Отключаем: детерминированный JSON-анализ в размышлениях не нуждается
+            "thinking": {"type": "disabled"},
         }
         headers = {"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else None
     else:
