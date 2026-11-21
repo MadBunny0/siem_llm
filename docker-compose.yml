@@ -73,8 +73,11 @@ services:
       target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: qwen2.5:3b
+      # URL и модель LLM-бэкенда: дефолт — локальный Ollama; при
+      # LLM_PROVIDER=openai из .env задаётся адрес облачного API (тест
+      # test-glm-cloud-adapter, см. .env.example)
+      OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:3b}"
       # тюнируемые приложением параметры: значения берутся из .env
       # (см. .env.example), после :- указаны дефолты
       JWT_SECRET: "${JWT_SECRET:-dev-secret-change-me-in-production}"
@@ -92,6 +95,11 @@ services:
       OLLAMA_NUM_CTX: "8192"
       OLLAMA_NUM_PREDICT: "4096"
       OLLAMA_KEEP_ALIVE: "30m"
+      # провайдер LLM (тест test-glm-cloud-adapter): ollama (дефолт — локальный
+      # стенд, поведение прежнее) | openai — OpenAI-совместимый API; базовый URL
+      # и модель переиспользуют OLLAMA_URL/OLLAMA_MODEL, ключ — в .env
+      LLM_PROVIDER: "${LLM_PROVIDER:-ollama}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
       OLLAMA_TEMPERATURE: "${OLLAMA_TEMPERATURE:-0.2}"
       # реальные реакции playbook (stage-23): Wazuh Manager API —
       # PUT /active-response доставляет команду AR-скрипта на ВМ актива
