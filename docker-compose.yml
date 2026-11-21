@@ -73,8 +73,11 @@ services:
       target: base
     environment:
       DATABASE_URL: postgresql+psycopg://siem:siem@db:5432/siem
-      OLLAMA_URL: http://ollama:11434
-      OLLAMA_MODEL: qwen2.5:3b
+      # URL и модель LLM-бэкенда: дефолт — локальный Ollama; при
+      # LLM_PROVIDER=openai из .env задаётся адрес облачного API (тест
+      # test-glm-cloud-adapter, см. .env.example)
+      OLLAMA_URL: "${OLLAMA_URL:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:3b}"
       # тюнируемые приложением параметры: значения берутся из .env
       # (см. .env.example), после :- указаны дефолты
       JWT_SECRET: "${JWT_SECRET:-dev-secret-change-me-in-production}"
