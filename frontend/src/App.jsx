@@ -6,7 +6,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 
-import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters, modelDisplayName,
+import { actionRuDescription, actionShortLabel, analysisFromHistory, analysisResults, applyIncidentFilters,
          canConfirmAction, canRunAction, confPct, formatDate, formatPlaybookSteps,
          initiatedByBadge, pendingReasonText,
          PLAYBOOK_ACTIONS, recommendedActionCodes,
@@ -939,7 +939,7 @@ export default function App({ user, onLogout }) {
                       const verdict = structuredAnalysis({ response_raw: a.response_raw }).verdict;
                       return (
                         <div className="history-item" key={a.id}>
-                          <div className="history-head"><strong>{modelDisplayName(a.model) || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
+                          <div className="history-head"><strong>{a.model || 'LLM'}</strong><span>{formatDate(a.created_at)}</span></div>
                           <div className="history-meta">
                             {badge && <span className={`initiated-badge ${badge.cls}`} title={badge.title}>{badge.text}</span>}
                             {verdict && <span className="chip">{verdict}</span>}

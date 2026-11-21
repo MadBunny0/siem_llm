@@ -14,7 +14,6 @@ import {
   formatPlaybookStep,
   formatPlaybookSteps,
   initiatedByBadge,
-  modelDisplayName,
   MITRE_TACTIC_RU,
   pendingReasonText,
   priorityLabel,
@@ -653,24 +652,5 @@ describe('structuredAnalysis — структурированные поля в�
   it('битый JSON в response_raw не роняет функцию', () => {
     expect(structuredAnalysis({ response_raw: '{broken' }).verdict).toBe('');
     expect(structuredAnalysis({ response_raw: 42 }).summary).toBe('');
-  });
-});
-
-describe('modelDisplayName — отображаемое имя LLM-модели', () => {
-  it('qwen2.5-теги Ollama дополняются суффиксом -instruct', () => {
-    expect(modelDisplayName('qwen2.5:14b')).toBe('qwen2.5:14b-instruct');
-    expect(modelDisplayName('qwen2.5:3b')).toBe('qwen2.5:3b-instruct');
-  });
-
-  it('имена с уже имеющимся суффиксом и другие провайдеры — как есть', () => {
-    expect(modelDisplayName('qwen2.5:14b-instruct')).toBe('qwen2.5:14b-instruct');
-    expect(modelDisplayName('glm-4.6')).toBe('glm-4.6');
-    expect(modelDisplayName('qwen3:8b')).toBe('qwen3:8b');
-  });
-
-  it('пустое/отсутствующее имя → пустая строка', () => {
-    expect(modelDisplayName('')).toBe('');
-    expect(modelDisplayName(null)).toBe('');
-    expect(modelDisplayName(undefined)).toBe('');
   });
 });
